@@ -172,6 +172,15 @@ def prepare_workspace(
         key: prepared.get(key)
         for key in identity_keys
     }
+    extra_identity = prepared.get("identity", {})
+    if not isinstance(extra_identity, Mapping):
+        raise TypeError("packet.identity must be an object")
+    identity.update(
+        {
+            str(key): value
+            for key, value in extra_identity.items()
+        }
+    )
     paths.write_task_meta(
         task_dir,
         {

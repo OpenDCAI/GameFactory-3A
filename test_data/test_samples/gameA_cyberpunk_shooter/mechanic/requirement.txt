@@ -1,0 +1,133 @@
+# FPS Mechanic Requirement
+
+## Runtime target
+
+- Engine: Unreal Engine 5
+- Mode: single-player first-person shooter
+- Arena: abandoned prison native UE content pack
+- Enemy count: 3
+- Win condition: all enemies are dead
+- Lose condition: player health reaches zero
+- Restart: available from victory and defeat states
+
+## Player
+
+- First-person camera with mouse yaw and pitch.
+- WASD movement, Space jump, and Left Shift sprint.
+- Walk speed: approximately 600 cm/s.
+- Sprint speed: approximately 900 cm/s.
+- Maximum health: 100.
+- The supplied player model is a full-body Mixamo avatar. It must not be treated
+  as a dedicated first-person arms mesh.
+- Prefer a true first-person setup using the supplied avatar's own arms: attach
+  the camera near the head or eyes, hide only obstructing local-player bones
+  such as the head or neck, retain visible arms and body where practical, and
+  attach the rifle to a hand socket.
+- A separate arms-only viewmodel is optional. Use a weapon-only fallback only if
+  the provided avatar cannot produce a usable view after camera and bone
+  visibility adjustments.
+
+## True first-person embodiment contract
+
+- The local player must keep the full-body skeletal mesh enabled and visible to
+  its owner. Do not solve camera clipping by setting the complete mesh to
+  owner-no-see.
+- After the supplied Mixamo skeletal mesh is assigned, hide only the local head
+  bone when it obstructs the camera. Test common names such as
+  `mixamorig:Head` and `Head`; do not hide a parent bone that also removes the
+  shoulders or arms.
+- Place the camera at an eye-height transform attached to the character and
+  clamp pitch to a usable FPS range.
+- Keep both forearms/hands visible in the lower first-person view. The weapon
+  must be visible to the owning player.
+- Attach the rifle to the first valid right-hand bone or socket from a small
+  explicit candidate list. Preserve a configurable relative transform for the
+  supplied rifle. If no hand attachment target exists, attach the rifle to the
+  camera as a visible fallback and report that fallback in runtime state/logs.
+- Fire the hitscan from the first-person camera location along the camera
+  forward vector. Weapon muzzle visuals may be offset, but damage direction
+  must agree with the center crosshair.
+- Expose observable booleans or query methods for local body visibility,
+  first-person arm visibility, weapon visibility, and whether the weapon is
+  hand-attached or using the fallback.
+
+## Rifle
+
+- Hitscan weapon.
+- Damage: 20 per body hit.
+- Headshot multiplier: 2.0.
+- Magazine capacity: 30.
+- Reserve ammunition: 120.
+- Fire interval: 0.12 seconds.
+- Reload duration: 1.5 seconds.
+- Left Mouse Button fires.
+- R reloads.
+- Firing is blocked while reloading, paused, victorious, or defeated.
+- Reloading transfers only the ammunition needed to fill the magazine.
+- Do not consume ammunition when no shot is emitted.
+
+## Enemy AI
+
+- Spawn exactly three enemies at valid separated arena locations.
+- States: idle, detect, pursue, attack, dead.
+- Detect the player through distance and line of sight.
+- Pursue with navigation when outside attack range.
+- Attack with hitscan or deterministic direct damage when in range and visible.
+- Suggested enemy health: 80.
+- Suggested enemy attack damage: 10.
+- Suggested attack interval: 0.8 seconds.
+- Dead enemies stop movement, collision-based damage, and attacks.
+- The enemy count decrements exactly once per enemy death.
+
+## Game flow
+
+- Start in active play with mouse captured.
+- Escape toggles pause and restores mouse interaction for the pause menu.
+- Killing all enemies enters Victory.
+- Player death enters Defeat.
+- Victory and Defeat stop combat input and expose Restart.
+- Restart resets health, ammunition, enemies, counters, AI, and game state.
+
+## Optional primitive pickups
+
+- One health pickup may restore up to 25 health.
+- One ammunition pickup may restore up to 30 reserve rounds.
+- Use engine-generated primitive visuals because no pickup mesh artifacts are
+  supplied.
+
+## Observable gameplay state
+
+Expose stable state suitable for UI binding and automated traces:
+
+- game_state: playing, paused, victory, defeat
+- player_health and player_max_health
+- magazine_ammo, magazine_capacity, reserve_ammo
+- enemies_remaining and enemies_total
+- is_reloading
+- objective_text
+
+## Required trace
+
+The generated mechanic artifact must include a replayable test trace or an
+equivalent deterministic automation sequence that demonstrates:
+
+1. Launch the arena and enter `playing`.
+2. Apply forward movement and verify player location changes.
+3. Apply look input and verify camera yaw changes.
+4. Verify the local full-body mesh remains enabled, the head is hidden only for
+   the local view when present, and the arms and weapon remain visible.
+5. Verify the weapon is attached to a right-hand target or the explicit camera
+   fallback and remains attached after look/movement input.
+6. Fire once from the camera-center direction and verify magazine ammunition
+   decreases by one.
+7. Damage an enemy and verify enemy health decreases.
+8. Reload after reducing the magazine and verify ammunition transfer and the
+   timed `is_reloading` transition.
+9. Allow an enemy attack and verify player health decreases.
+10. Kill all three enemies and verify `victory`.
+11. Restart and verify all initial state is restored.
+12. Reduce player health to zero and verify `defeat`.
+
+The Mechanic output must be a complete runnable Unreal project artifact with a
+project file, generated gameplay plugin, launch script, and demo output
+directory declared in its `meta.json`.

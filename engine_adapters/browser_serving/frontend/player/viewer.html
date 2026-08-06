@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AAAGameForge Browser Player</title>
+  <link rel="stylesheet" href="/static/viewer.css" />
+</head>
+<body tabindex="-1">
+  <header class="topbar">
+    <div>
+      <h1>AAAGameForge Browser Player</h1>
+      <p>选择运行引擎、角色与已发布场景，并管理当前浏览器会话。</p>
+    </div>
+    <div class="status-row">
+      <label>
+        Engine
+        <select id="engineSelect"></select>
+      </label>
+      <span id="ueStatus" class="pill muted">Editor RC: checking</span>
+      <span id="pixelStatus" class="pill muted">Session Stream: waiting</span>
+      <span id="runtimeStatus" class="pill muted">Runtime: offline</span>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="viewport-panel">
+      <div class="runtime-hint">
+        每个浏览器窗口拥有独立 Runtime Session。进入场景后，本页面捕获 WASD 控制当前玩家。
+        <a id="pixelDirectLink" href="#" target="_blank" rel="noreferrer" hidden>打开 Pixel Streaming 页面</a>
+      </div>
+      <iframe id="pixelFrame" title="Runtime streaming viewport" allow="fullscreen; autoplay; clipboard-read; clipboard-write; pointer-lock" hidden></iframe>
+      <div id="viewportInputOverlay" class="viewport-input-overlay" hidden>
+        <span>拖拽旋转 · 滚轮缩放 · Shift 拖拽平移</span>
+      </div>
+      <div id="pixelFallback" class="fallback">
+        <h2>等待玩家客户端</h2>
+        <p id="pixelMessage">正在检查 Pixel Streaming 配置。</p>
+        <p>点击右侧 <code>启动客户端</code> 后，Runtime 会根据所选引擎创建独立会话与画面地址。</p>
+        <p>端口分工：<code>7860</code> 是资产上传页，<code>7870</code> 是玩家控制页，<code>18080+</code> 是每个玩家客户端的画面页。</p>
+      </div>
+    </section>
+
+    <aside class="control-panel">
+      <section class="card">
+        <h2>Avatar / Motion</h2>
+        <button id="refreshAssetsBtn" class="primary">刷新 Avatar / Motion / Scene</button>
+        <p class="muted-text">Runtime 只加载已发布资产；上传、导入和构建属于 Admin/Engine 流程。</p>
+        <label>
+          Avatar（SkeletalMesh）
+          <select id="avatarSelect"></select>
+        </label>
+        <label>
+          Idle Motion（站立待机）
+          <select id="idleMotionSelect"></select>
+        </label>
+        <label>
+          Move Motion（移动/跑步）
+          <select id="moveMotionSelect"></select>
+        </label>
+        <div class="button-grid two">
+          <label>
+            Mesh Forward
+            <select id="meshForwardSelect">
+              <option value="auto">Auto</option>
+              <option value="+X">+X</option>
+              <option value="+Y">+Y</option>
+              <option value="-X">-X</option>
+              <option value="-Y">-Y</option>
+            </select>
+          </label>
+          <label>
+            Mesh Yaw（可选）
+            <input id="meshYawInput" type="number" step="1" placeholder="空=用左侧方向" />
+          </label>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Player Runtime</h2>
+        <p class="muted-text">按顺序启动客户端、预览角色和动作，确认后再选择场景进入。</p>
+        <div class="button-grid two">
+          <button id="playerSessionCreateBtn" class="primary">1. 启动客户端</button>
+          <button id="playerSessionRefreshBtn">刷新客户端状态</button>
+        </div>
+        <button id="playerPreviewBtn">2. 预览当前角色</button>
+        <label>
+          预览动作
+          <select id="motionSelect"></select>
+        </label>
+        <button id="playerPreviewAnimationBtn">3. 播放预览动作</button>
+        <label>
+          4. Scene / World
+          <select id="worldSelect"></select>
+        </label>
+        <p id="worldSummaryText" class="muted-text">尚未选择 Scene</p>
+        <button id="playerJoinWorldBtn" class="primary">5. 进入所选场景</button>
+        <div class="button-grid two">
+          <button id="playerLeaveWorldBtn">离开世界</button>
+          <button id="playerDestroySessionBtn" class="danger">关闭客户端</button>
+        </div>
+        <details>
+          <summary>会话设置</summary>
+          <label>
+            User
+            <input id="runtimeUserInput" placeholder="空=自动" />
+          </label>
+          <button id="playerLoadWorldBtn">仅加载 World Package</button>
+        </details>
+        <dl class="runtime-meta">
+          <div><dt>client</dt><dd id="playerSessionText">-</dd></div>
+          <div><dt>state</dt><dd id="playerSessionStateText">-</dd></div>
+          <div><dt>画面</dt><dd id="playerStreamText">-</dd></div>
+          <div><dt>端口</dt><dd id="playerPortsText">-</dd></div>
+        </dl>
+      </section>
+
+      <details class="card developer-card">
+        <summary>Developer Mode</summary>
+        <section>
+          <h2>手动资产路径</h2>
+          <p class="muted-text">只有 UE 资产列表不可用时才需要手填；正式玩家流程应优先使用上方下拉框。</p>
+          <label>
+            Avatar Path
+            <input id="avatarPathInput" placeholder="/Game/Imported/Avatars/YourAvatar" />
+          </label>
+          <label>
+            Idle Motion Path
+            <input id="idleMotionPathInput" placeholder="/Game/Imported/Motions/YourIdle" />
+          </label>
+          <label>
+            Move Motion Path
+            <input id="moveMotionPathInput" placeholder="/Game/Imported/Motions/YourWalk" />
+          </label>
+          <label class="inline-check">
+            <input id="showAllMotionsInput" type="checkbox" />
+            显示全部 Motion（调试）
+          </label>
+        </section>
+
+        <section>
+          <h2>Runtime Core Debug</h2>
+          <p class="muted-text">旧 FastAPI WebSocket -> UDP 调试链路，用于排查输入桥，不代表正式玩家 Runtime。</p>
+          <div class="button-grid two">
+            <label>
+              World
+              <input id="runtimeWorldInput" value="world_001" />
+            </label>
+            <label>
+              UE Input Host
+              <input id="runtimeUeHostInput" value="127.0.0.1" />
+            </label>
+          </div>
+          <label>
+            UE Input Port
+            <input id="runtimeUePortInput" type="number" min="1" max="65535" value="30020" />
+          </label>
+          <div class="button-grid two">
+            <button id="runtimePreviewBtn">旧 Runtime 预览</button>
+            <button id="runtimeJoinBtn">Runtime Core Join</button>
+          </div>
+          <div class="button-grid two">
+            <button id="runtimeLeaveBtn">Runtime Core Leave</button>
+            <button id="runtimeSnapshotBtn">World State</button>
+          </div>
+          <button id="runtimeCaptureBtn">控制当前 Runtime Entity</button>
+          <dl class="runtime-meta">
+            <div><dt>participant</dt><dd id="runtimeParticipantText">-</dd></div>
+            <div><dt>controller</dt><dd id="runtimeControllerText">-</dd></div>
+            <div><dt>entity</dt><dd id="runtimeEntityText">-</dd></div>
+            <div><dt>input</dt><dd id="runtimeInputText">-</dd></div>
+          </dl>
+        </section>
+
+        <section>
+          <h2>多人 Play 配置</h2>
+          <p class="muted-text">仅用于本地 UE PIE/Play slot 调试；不会创建玩家 Runtime Session。</p>
+          <div class="button-grid two">
+            <button id="mpSetSlot0Btn">设为 Player 0</button>
+            <button id="mpSetSlot1Btn">设为 Player 1</button>
+          </div>
+          <div class="button-grid two">
+            <button id="mpWriteConfigBtn">写入 UE 多人配置</button>
+            <button id="mpRefreshConfigBtn">读取配置</button>
+          </div>
+          <button id="mpClearConfigBtn">清空配置</button>
+          <dl class="runtime-meta">
+            <div><dt>slot 0</dt><dd id="mpSlot0Text">-</dd></div>
+            <div><dt>slot 1</dt><dd id="mpSlot1Text">-</dd></div>
+          </dl>
+        </section>
+
+        <section>
+          <h2>资产 / Editor 调试展示</h2>
+          <p class="muted-text">旧 Editor 调试路径，只生成展示 Actor / Sequencer，不属于玩家 Runtime。</p>
+          <div class="button-grid two">
+            <button id="presentAvatarBtn">调试展示 Avatar</button>
+            <button id="playMotionBtn">调试播放 Motion</button>
+          </div>
+          <button id="clearSceneBtn" class="danger">清除当前展示</button>
+        </section>
+      </details>
+
+      <section class="card log-card">
+        <h2>日志</h2>
+        <pre id="logOutput"></pre>
+      </section>
+    </aside>
+  </main>
+
+  <script src="/static/viewer.js?v=runtime-scene-flow-v30"></script>
+</body>
+</html>

@@ -278,6 +278,8 @@ def finalize_workspace(
         "finalized_at": _now(),
         "elapsed_sec": round(time.time() - started, 2),
     }
+    for key, value in identity.items():
+        result.setdefault(str(key), value)
     write_json(finalize_result_path, result)
     if ok:
         paths.write_task_meta(workspace, result)

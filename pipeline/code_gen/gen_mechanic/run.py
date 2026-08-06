@@ -92,10 +92,11 @@ def _prepare_command(args: argparse.Namespace) -> int:
             args.tasks,
             args.game,
         )
-        task = _select_task(
+        task = select_task(
             tasks_path,
             game_id=args.game,
             task_id=args.task_id,
+            task_label="Mechanic",
         )
     if args.mode:
         task["mode"] = args.mode

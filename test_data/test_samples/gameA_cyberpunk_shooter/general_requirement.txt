@@ -1,0 +1,52 @@
+Build a single-player first-person shooter vertical slice in Unreal Engine 5.
+
+The player enters an abandoned prison combat arena and must eliminate three
+hostile guards with a rifle. The playable loop must include first-person
+movement and camera control, aiming, hitscan shooting, magazine and reserve
+ammunition, manual reloading, player and enemy health, enemy detection and
+combat AI, victory, defeat, pause, and restart flows.
+
+Required player input:
+- WASD: move
+- Mouse: look
+- Space: jump
+- Left Shift: sprint
+- Left Mouse Button: fire
+- R: reload
+- Escape: pause or resume
+
+Required HUD:
+- Center crosshair
+- Player health
+- Current magazine and reserve ammunition
+- Remaining enemy count
+- Current objective
+- Pause menu
+- Victory and defeat screens with a restart command
+
+Use the provided Layer A artifacts from run `fps_baseline_v1`. The provided
+player asset is a full-body avatar, not a dedicated first-person arms mesh. The
+baseline should first implement true first person with this avatar: place the
+camera at the head or eye position, hide only obstructing local-player bones
+such as the head when necessary, keep the avatar arms visible, and attach the
+rifle to the hand skeleton. A separate arms-only viewmodel is an optional
+quality upgrade, not a required input artifact. Do not mislabel the full-body
+avatar as a dedicated arms asset.
+
+True first-person embodiment is a hard acceptance requirement:
+
+- Do not hide the complete local-player skeletal mesh from its owner.
+- Hide only the local head bone and any directly obstructing facial geometry;
+  the chest, shoulders, forearms, hands, and rifle must remain visible.
+- Attach the rifle to the right-hand skeleton using discovered Mixamo hand-bone
+  candidates. A camera-mounted weapon fallback is allowed only when no usable
+  hand bone exists, and it must remain visibly aligned with the arms.
+- Aim and hitscan origin must follow the center of the first-person camera so
+  the crosshair, camera, and shot direction agree.
+- Looking, moving, sprinting, firing, and reloading must not detach the weapon
+  or replace the embodied view with an invisible-body camera.
+
+Health and ammunition pickups may use generated engine primitives because no
+pickup meshes are supplied. Rifle and hit audio must degrade to silent gameplay
+until properly licensed audio fixtures are added; missing audio must not block
+the core playable loop.

@@ -1,0 +1,125 @@
+Game
+Cyberpunk Prison Assault
+
+Genre
+Single-player first-person shooter
+
+Player Goal
+Enter an abandoned prison arena and eliminate all three hostile guards. The
+player wins when no enemies remain and loses when player health reaches zero.
+
+Target Experience
+Produce a compact, replayable FPS vertical slice rather than a content-heavy
+game. The first launch must enter a functional arena quickly. Movement, aiming,
+shooting, reloading, enemy pressure, readable HUD feedback, and restart are the
+primary quality targets.
+
+Provided Layer A Artifacts
+
+- Full-body player avatar: `player_character`
+- Rifle weapon: `fps_rifle`
+- Enemy guard avatar: `enemy_soldier`
+- Native UE prison content pack: `combat_arena`
+- Rifle idle motion: `player_idle`
+- Rifle firing motion: `player_fire`
+- Rifle reload motion: `player_reload`
+- Enemy movement motion: `enemy_run`
+- Enemy death motion: `enemy_death`
+
+All provided artifacts belong to:
+
+- game_id: `gameA_cyberpunk_shooter`
+- run_id: `fps_baseline_v1`
+
+Known Fixture Limits
+
+- The player asset is a full-body Mixamo avatar, not dedicated first-person
+  arms. The baseline should use its visible arms in a true first-person camera
+  setup; separate arms are optional.
+- The enemy idle and attack roles reuse the available rifle idle and shooting
+  motions.
+- No licensed rifle-shot or hit audio fixture is currently supplied.
+- No health or ammunition pickup meshes are supplied.
+- Source URLs and licenses must be filled in before external redistribution.
+
+Generation Order
+
+- Current validation scope is Mechanic only.
+- Generate `fps_core_001` through the real Mechanic Agent and validate build,
+  Automation Tests, and runtime behavior before generating `fps_hud_001`.
+- UI must later consume the stable Mechanic state/event contract rather than
+  bind directly to concrete character, weapon, or inventory members.
+- Full Pipeline assembly starts only after Mechanic and UI artifacts are
+  independently reproducible.
+
+Player Mechanics
+
+- First-person mouse look.
+- WASD movement, Space jump, Left Shift sprint.
+- True first person uses the supplied full-body avatar. The complete local mesh
+  remains enabled; hide only the obstructing local head bone while keeping
+  shoulders, forearms, hands, body, and rifle visible.
+- Attach the rifle to a discovered right-hand Mixamo bone/socket. Use a visible
+  camera attachment only as a recorded fallback.
+- Crosshair and hitscan direction must follow the center of the first-person
+  camera.
+- 100 maximum health.
+- Hitscan rifle with 20 body damage and a 2.0 headshot multiplier.
+- 30-round magazine, 120 reserve rounds, 1.5-second manual reload, and
+  0.12-second fire interval.
+
+Enemy Mechanics
+
+- Spawn three hostile guards at separated valid arena locations.
+- Enemies idle, detect, pursue, attack, and die.
+- Each enemy has 80 health.
+- Enemies attack only while alive and stop contributing damage after death.
+
+Game Flow
+
+- Start in active gameplay.
+- Escape pauses and resumes.
+- Eliminating all enemies shows Victory.
+- Player death shows Defeat.
+- Victory, Defeat, and Pause expose Restart.
+- Restart restores the initial player, ammunition, enemy, and UI state.
+
+UI
+
+- Crosshair
+- Health bar and value
+- Magazine and reserve ammunition
+- Remaining enemy count
+- Objective
+- Reload indicator
+- Damage indicator
+- Pause menu
+- Victory and Defeat screens
+- Restart action
+
+Assembly Constraints
+
+- Resolve every generated or provided dependency by
+  `(game_id, run_id, task_kind, task_id, artifact_key)`.
+- Do not pass raw output filesystem paths into the UE adapter.
+- Use the public `engine_adapters.ue5.UEClient` boundary only inside Mechanic
+  and UI operators.
+- The full pipeline orchestrator must not import or construct `UEClient`.
+- Generated gameplay belongs in a project-local plugin and may depend only on
+  public `A3GamePlayable` headers.
+- The final Pipeline artifact must be a runnable Unreal project with a launch
+  script and captured demonstration outputs.
+
+Acceptance
+
+- The project launches into the intended prison arena.
+- The player can move, aim, fire, reload, take damage, die, and restart.
+- The first-person view visibly includes the supplied avatar's arms and the
+  supplied rifle during movement, look, fire, and reload.
+- Only obstructing local head geometry is hidden; the complete player body is
+  not owner-hidden.
+- Camera-center crosshair and hitscan damage direction agree.
+- Three enemies can pursue, attack, take damage, die, and trigger victory.
+- HUD and menus reflect live mechanic state.
+- A deterministic trace covers movement, firing, reload, enemy damage, player
+  damage, victory, restart, and defeat.

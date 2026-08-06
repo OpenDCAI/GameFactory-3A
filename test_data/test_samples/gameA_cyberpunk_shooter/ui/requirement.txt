@@ -1,0 +1,57 @@
+# FPS UI Requirement
+
+Create an in-game Unreal Engine HUD and menu flow for the FPS mechanic
+`fps_core_001`.
+
+## Active gameplay HUD
+
+- A small center crosshair that remains visually clear over dark and light
+  scene regions.
+- Player health shown as both a bar and numeric value.
+- Ammunition shown as `magazine / reserve`.
+- Remaining enemies shown as `Enemies: remaining / total`.
+- A short objective line: `Eliminate all hostile guards`.
+- A brief directional or full-screen damage indicator when the player is hit.
+- A reload state indicator while reloading.
+
+## Pause menu
+
+- Opened and closed by Escape.
+- Resume button.
+- Restart button.
+- Quit-to-desktop command may be included but is not required for benchmark
+  acceptance.
+
+## End states
+
+- Victory screen after all enemies are eliminated.
+- Defeat screen after player health reaches zero.
+- Both screens include a Restart button.
+- Combat HUD must not visually compete with the end-state screen.
+
+## Data contract
+
+Bind the UI to these stable mechanic values:
+
+- game_state
+- player_health and player_max_health
+- magazine_ammo, magazine_capacity, reserve_ammo
+- enemies_remaining and enemies_total
+- is_reloading
+- objective_text
+
+## Visual and layout constraints
+
+- Functional at 1920x1080 and 1280x720.
+- Keep critical HUD information inside safe screen margins.
+- Do not overlap the crosshair, health, ammunition, enemy count, or objective.
+- Keep the lower-center and lower-right weapon/forearm view readable; HUD
+  panels must not cover the visible first-person arms or rifle.
+- Use restrained cyberpunk accents over a mostly neutral high-contrast HUD.
+- Reference images are optional and belong in `ui/ref_images/`.
+
+The completed `fps_core_001` Mechanic artifact is the read-only implementation
+and binding source for this UI task.
+
+The UI output must include generated UI code or assets, screenshots, and a
+`meta.json` describing the artifact locations.
