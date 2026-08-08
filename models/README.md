@@ -18,8 +18,11 @@ classification, response cache, submit → poll → download) lives in
 | `gen_3d_object` | `Trellis2Model` | `gen_3d_object/trellis_2_model.py` | local weights | GPU + the o-voxel extension |
 | `gen_3d_object` | `TripoModel` | `gen_3d_object/tripo_model.py` | cloud API | `$TRIPO_API_KEY` + `scripts/installing/cloud_api_install.sh` |
 | `gen_3d_object` | `MeshyModel` | `gen_3d_object/meshy_model.py` | cloud API | `$MESHY_API_KEY` + `scripts/installing/cloud_api_install.sh` |
+| `gen_3d_scene` | `WorldMirrorModel` | `gen_3d_scene/world_mirror_model.py` | local weights | GPU |
+| `gen_3d_scene` | `WorldPlayModel` | `gen_3d_scene/world_play_model.py` | local weights | GPU + a checkout of HY-WorldPlay |
 | `gen_image` | `QwenEditModel` | `gen_image/qwen_edit.py` | local weights | GPU |
 | `tools/image_matting` | `RMBGModel`, `DepthAnythingModel` | `tools/image_matting/` | local weights | — |
+| `tools/segmentation` | `SkySegmentationModel` | `tools/segmentation/sky.py` | local weights | `onnxruntime` (CPU is fine) |
 
 All three `gen_3d_object` backends expose the same
 `infer_and_save(image, output_path, seed, decimation_target, texture_size)`, so
@@ -33,6 +36,19 @@ All three `gen_3d_object` backends expose the same
 | text-to-3D | one task | preview + refine (two billed tasks) |
 | low poly | `smart_low_poly`, P-series models | `model_type="lowpoly"` |
 | face budget | `face_limit` | `target_polycount`, 100-300 000 |
+
+The two `gen_3d_scene` wrappers chain rather than substitute for each other.
+`WorldPlayModel` flies a camera through a reference image to produce frames and
+`WorldMirrorModel` reconstructs geometry from frames, so `Gen3DSceneOperator`
+takes them in separate slots. Only the geometry slot is required — a task that
+already has footage, or that is content with what a single view can see, needs
+no world model at all. `world_mirror_utils/` holds the vendored HunyuanWorldMirror
+source that backs the geometry wrapper; see its README for what was changed.
+
+`SkySegmentationModel` is a third, smaller piece of the same chain. Depth heads
+cannot express "infinitely far", so they place sky at a finite depth that no
+threshold separates from real surface, and it gets meshed into a curtain over
+the scene. Only segmentation finds it.
 
 ## Sub-modules
 

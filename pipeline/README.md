@@ -19,7 +19,7 @@ pipeline/
 ├── assets_gen/                              # Asset generation tasks
 │   ├── gen_3d_object/{run.py, eval.py}      #   image / text → 3D object
 │   ├── gen_tpose_image/{run.py, eval.py}    #   character image → T-pose RGBA
-│   ├── gen_3d_scene/{run.py, eval.py}       #   text → 3D scene
+│   ├── gen_3d_scene/{hunyuan_worldplay_*.py}  #   run / eval / render
 │   ├── gen_motion/{run.py, eval.py}         #   text + skeleton → animation
 │   ├── gen_cg_video/{run.py, eval.py}       #   text / frame → CG video
 │   ├── gen_audio/{run.py, eval.py}          #   text / reference → dialogue or game SFX

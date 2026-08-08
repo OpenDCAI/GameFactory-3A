@@ -431,6 +431,58 @@ class StubDepthAnythingModel(_StubBase):
         return self.predict(image, **kw)
 
 
+class StubWorldMirrorModel(_StubBase):
+    """
+    Mimics `models.gen_3d_scene.world_mirror_model.WorldMirrorModel`.
+
+    Returns a pinhole unprojection of a two-slab depth map: a near wall on the
+    left, a far wall on the right. That gives the meshing code a real occlusion
+    boundary to cut and a real surface to keep, at 64×64 and in microseconds.
+    """
+
+    #: Focal length the fake intrinsics advertise, in pixels.
+    FOCAL = 100.0
+
+    def infer(self, images, seed: int = 42, **kw) -> dict[str, np.ndarray]:
+        self.calls.append({"op": "infer", "frames": len(images), "seed": seed})
+        frames, height, width = len(images), 64, 64
+
+        depth = np.full((height, width), 2.0, dtype=np.float32)
+        depth[:, width // 2 :] = 6.0
+
+        rows, columns = np.mgrid[0:height, 0:width]
+        x = (columns - (width - 1) / 2) * depth / self.FOCAL
+        y = (rows - (height - 1) / 2) * depth / self.FOCAL
+        points = np.stack([x, y, depth], axis=-1).astype(np.float32)
+
+        intrinsic = np.array(
+            [[self.FOCAL, 0, (width - 1) / 2], [0, self.FOCAL, (height - 1) / 2], [0, 0, 1]],
+            dtype=np.float32,
+        )
+        normals = np.zeros((frames, height, width, 3), dtype=np.float32)
+        normals[..., 2] = -1.0
+
+        return {
+            "points": np.repeat(points[None], frames, axis=0),
+            "depth": np.repeat(depth[None], frames, axis=0),
+            "normals": normals,
+            "confidence": np.full((frames, height, width), 5.0, dtype=np.float32),
+            "colors": np.full((frames, height, width, 3), 180, dtype=np.uint8),
+            "camera_poses": np.repeat(np.eye(4, dtype=np.float32)[None], frames, axis=0),
+            "intrinsics": np.repeat(intrinsic[None], frames, axis=0),
+        }
+
+
+class StubWorldPlayModel(_StubBase):
+    """Mimics `models.gen_3d_scene.world_play_model.WorldPlayModel`."""
+
+    def infer(self, image: Image.Image, prompt: str = "", pose: str = "",
+              video_length: int = 61, seed: int = 42, **kw) -> list[Image.Image]:
+        self.calls.append({"op": "infer", "prompt": prompt, "pose": pose, "seed": seed})
+        # A handful of frames is enough; the geometry stub ignores their content.
+        return [image.convert("RGB") for _ in range(4)]
+
+
 # ── Registry ──────────────────────────────────────────────────────────────────
 
 #: task_kind -> {backend name: stub class} for slots with several backends.
@@ -442,6 +494,10 @@ STUB_BACKENDS: dict[str, dict[str, Any]] = {
         "tripo": StubTripoModel,
         "meshy": StubMeshyModel,
     },
+    "3d_scene": {
+        "worldmirror": StubWorldMirrorModel,
+        "worldplay": StubWorldMirrorModel,
+    },
 }
 
 #: task_kind -> factory returning the kwargs for that task's operator.
@@ -451,6 +507,11 @@ STUB_OPERATOR_KWARGS: dict[str, Any] = {
         "model": STUB_BACKENDS["3d_object"][model_key or "trellis2"]()},
     "tpose": lambda model_key=None: {
         "gen_model": StubQwenEditModel(), "mask_model": StubRMBGModel()},
+    # `worldplay` adds the video stage in front, so a reference image alone is a
+    # valid task; `worldmirror` alone needs the task to bring its own frames.
+    "3d_scene": lambda model_key=None: {
+        "model": STUB_BACKENDS["3d_scene"][model_key or "worldmirror"](),
+        "video_model": StubWorldPlayModel()},
 }
 
 
@@ -495,7 +556,7 @@ def build_operator(task_kind: str, run_id: str = "_smoke",
 OPERATOR_LOCATION: dict[str, tuple[str, str]] = {
     "3d_object": ("operators.gen_3d_object.operator", "Gen3DObjectOperator"),
     "tpose": ("operators.gen_tpose_image.operator", "GenTPoseImageOperator"),
-    "3d_scene": ("operators.gen_3d_scene.operator", "Gen3DSceneOperator"),
+    "3d_scene": ("operators.gen_3d_scene.hunyuan_worldplay_operator", "Gen3DSceneOperator"),
     "motion": ("operators.gen_motion.operator", "GenMotionOperator"),
     "cg_video": ("operators.gen_cg_video.operator", "GenCGVideoOperator"),
     "retarget": ("operators.retarget.operator", "RetargetOperator"),
