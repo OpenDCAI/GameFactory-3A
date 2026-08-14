@@ -579,12 +579,17 @@ class StubQwenEditModel(_StubBase):
     def load(self) -> None:
         self.calls.append({"op": "load"})
 
-    def edit(self, image: Image.Image, prompt: str, seed: int = 42,
-             steps: int = 40) -> Image.Image:
-        self.calls.append({"op": "edit", "seed": seed, "steps": steps,
+    def infer(self, image: Image.Image, prompt: str, seed: int = 42,
+              steps: int = 40) -> Image.Image:
+        self.calls.append({"op": "infer", "seed": seed, "steps": steps,
                            "prompt_len": len(prompt)})
         # Return a white-bg image with a blob, i.e. what the real T-pose edit yields.
         return make_ref_image(size=max(image.size), seed=seed)
+
+    def edit(self, image: Image.Image, prompt: str, seed: int = 42,
+             steps: int = 40) -> Image.Image:
+        """Compatibility alias, mirroring `QwenEditModel.edit`."""
+        return self.infer(image, prompt=prompt, seed=seed, steps=steps)
 
 
 class StubVideoModel(_StubBase):
@@ -690,33 +695,33 @@ class StubSeedAudioModel(_StubBase):
 class StubRMBGModel(_StubBase):
     """Mimics `models.tools.image_matting.rmbg_model.RMBGModel` — HxW float32 in [0, 1]."""
 
-    def predict(self, image: Image.Image, **kw) -> np.ndarray:
-        self.calls.append({"op": "predict", "size": image.size})
+    def infer(self, image: Image.Image, **kw) -> np.ndarray:
+        self.calls.append({"op": "infer", "size": image.size})
         arr = np.asarray(image.convert("RGB"))
         # Foreground = anything not near-white, matching RMBG's practical behaviour.
         fg = (arr < 240).any(axis=-1)
         return fg.astype(np.float32)
 
     def __call__(self, image: Image.Image, **kw) -> np.ndarray:
-        return self.predict(image, **kw)
+        return self.infer(image, **kw)
 
     def remove_background(self, image: Image.Image) -> Image.Image:
         rgba = np.array(image.convert("RGBA"))
-        rgba[..., 3] = (self.predict(image) * 255).astype(np.uint8)
+        rgba[..., 3] = (self.infer(image) * 255).astype(np.uint8)
         return Image.fromarray(rgba, "RGBA")
 
 
 class StubDepthAnythingModel(_StubBase):
     """Mimics `models.tools.image_matting.depth_anything_model.DepthAnythingModel`."""
 
-    def predict(self, image: Image.Image, **kw) -> np.ndarray:
-        self.calls.append({"op": "predict", "size": image.size})
+    def infer(self, image: Image.Image, **kw) -> np.ndarray:
+        self.calls.append({"op": "infer", "size": image.size})
         arr = np.asarray(image.convert("RGB")).astype(np.float32)
         # Darker (non-white) pixels read as "closer".
         return 1.0 - arr.mean(axis=-1) / 255.0
 
     def __call__(self, image: Image.Image, **kw) -> np.ndarray:
-        return self.predict(image, **kw)
+        return self.infer(image, **kw)
 
 
 class StubWorldMirrorModel(_StubBase):
