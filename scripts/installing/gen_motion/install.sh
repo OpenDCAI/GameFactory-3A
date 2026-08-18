@@ -160,7 +160,8 @@ ensure_env aaagf-retarget-bpy 3.11
 "${CONDA_BIN}" install -n aaagf-momask -y --override-channels \
   -c conda-forge "python=3.10" pip ffmpeg "numpy=1.23.5"
 "${CONDA_BIN}" install -n aaagf-retarget-bpy -y --override-channels \
-  -c conda-forge "python=3.11" pip xorg-libsm xorg-libxext xorg-libxrender xorg-libxi libxkbcommon.so.0
+  -c conda-forge "python=3.11" pip xorg-libsm xorg-libxext xorg-libxrender \
+  xorg-libxi libxkbcommon.so.0 # Linux runtime libraries required by bpy for motion retargeting and FBX export
 
 "${CONDA_BIN}" run -n aaagf-puppeteer python -m pip install \
   torch==2.1.1 torchvision==0.16.1 torchaudio==2.1.1 \
