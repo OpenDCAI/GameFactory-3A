@@ -8,7 +8,7 @@
   <a href="https://github.com/OpenDCAI/GameFactory-3A/issues"><img src="https://img.shields.io/github/issues/OpenDCAI/GameFactory-3A?style=flat-square&logo=github" alt="GitHub issues" /></a>
   <a href="https://github.com/OpenDCAI/GameFactory-3A/pulls"><img src="https://img.shields.io/github/issues-pr/OpenDCAI/GameFactory-3A?style=flat-square&logo=github" alt="Pull requests" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg?style=flat-square" alt="License: Apache 2.0" /></a>
-  <img src="https://img.shields.io/badge/Engines-UE5%20%7C%20Blender%20%7C%20Unity%20%7C%20three.js-6a4cff?style=flat-square" alt="Supported engines" />
+  <img src="https://img.shields.io/badge/Engines-UE5%20%7C%20Blender%20%7C%20Unity%20%7C%20Godot%20%7C%20three.js-6a4cff?style=flat-square" alt="Supported engines" />
   <img src="https://img.shields.io/badge/Assets-Image%20%7C%203D%20%7C%20Motion%20%7C%20Audio%20%7C%20CG%20Video-00897b?style=flat-square" alt="Asset coverage" />
 </p>
 
@@ -16,7 +16,7 @@
 
 **3AGameFactory turns a game requirement into production-ready game assets and engine-ready game code with a coding agent.**
 
-> **3AGameFactory is a comprehensive open-source 3A game-generation skill and asset framework.** It covers image, 3D asset, motion, audio, and CG-video generation, and supports game construction with **UE5, Blender, Unity, and three.js**.
+> **3AGameFactory is a comprehensive open-source 3A game-generation skill and asset framework.** It covers image, 3D asset, motion, audio, and CG-video generation, and supports game construction with **UE5, Blender, Unity, Godot 4, and three.js**.
 
 <p align="center">
   <b><a href="#quick-start">Quick Start</a></b>
@@ -183,6 +183,7 @@ and use its CPU-only smoke harness before requiring model weights or a GPU.
 | UE5 | `agent_skills/engine_context/ue5_api.md` | `engine_adapters/ue5/` |
 | Blender | `agent_skills/engine_context/blender_api.md` | `engine_adapters/blender/` |
 | Unity | `agent_skills/engine_context/unity3d_api.md` | `engine_adapters/unity3d/` |
+| Godot 4 | `agent_skills/engine_context/godot_api.md` | `engine_adapters/godot/` |
 | three.js | `agent_skills/engine_context/three_js_api.md` | `engine_adapters/three_js/` |
 
 ---
@@ -196,7 +197,7 @@ GameFactory-3A/
 │   ├── asset_qa/               # Asset generation and visual QA skills
 │   ├── code_gen/               # Skills that integrate approved assets into gameplay and UI
 │   ├── develop_harness/        # Contributor contracts for models → operators → pipeline
-│   └── engine_context/         # UE5, Blender, Unity, three.js, and browser API context
+│   └── engine_context/         # UE5, Blender, Unity, Godot, three.js, and browser API context
 ├── engine_adapters/            # Engine reference code and public adapter APIs
 ├── models/                     # Local-model and cloud-model wrappers
 ├── operators/                  # Task logic that composes loaded models
@@ -206,7 +207,7 @@ GameFactory-3A/
 │   └── common/                 # Shared helpers; paths.py is the single source of truth for I/O paths
 ├── scripts/                    # Environment setup, engine launchers, and import helpers
 │   ├── asset_env_setup/        # Per-asset environment setup, including gen_motion runtime and weights
-│   └── engine_install/         # UE5, Blender, Unity, and three.js launch/setup scripts
+│   └── engine_install/         # UE5, Blender, Unity, Godot, and three.js launch/setup scripts
 ├── test/                       # Runnable current-use scripts for contract, integration, and smoke checks
 ├── test_data/                  # Sample requirements; generated game results live in outputs/
 └── third_party/                # Externally cloned repositories, e.g. trimesh and engine material/asset packs

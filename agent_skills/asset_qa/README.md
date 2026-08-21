@@ -42,7 +42,7 @@ Asset QA and code generation are separate but connected stages:
   `<REPO_PATH>/agent_skills/code_gen/ui/game_ui_generation.md` for HUD, menus, and player
   interaction surfaces.
 - The selected document under `<REPO_PATH>/agent_skills/engine_context/` connects both
-  stages to UE5, Blender, Unity, or three.js.
+  stages to UE5, Blender, Unity, Godot, or three.js.
 
 Do not fix an asset's orientation or scale by scattering compensating rotations
 inside gameplay code. Record validated asset metadata in the engine’s documented

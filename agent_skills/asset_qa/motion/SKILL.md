@@ -323,6 +323,37 @@ After import, confirm in Content Browser:
 Higher-level UE client: `ue.animation.import_motion(...)` in
 `<REPO_PATH>/engine_adapters/ue5/animation/client.py`.
 
+### Godot 4
+
+Use the public Client with the generated task descriptor; it stages the FBX or
+glTF/GLB under `res://` and requires a successful real Godot `--import` run:
+
+```python
+from engine_adapters.godot import GodotClient
+
+godot = GodotClient(
+    project_path="/path/to/MyGame",
+    godot_executable="/path/to/godot4",
+)
+result = godot.animation.import_motion(
+    {
+        "game_id": "my_game",
+        "run_id": "run_001",
+        "task_kind": "motion",
+        "task_id": "walk",
+        "artifact_key": "retargeted_fbx_path",
+    },
+    skeleton="Character/Armature/Skeleton3D",
+)
+```
+
+`result.ok` proves Godot 4 loaded the imported resource, found an animation, a
+Skeleton3D and a bone-targeted track, and matched the requested live Skeleton3D
+path before registration. glTF/GLB motion remains a `PackedScene`; the adapter
+does not mislabel it as `AnimationLibrary`. Run the Blender structural check
+first, then inspect/play the imported animation in Godot: these native checks do
+not prove a good visible pose or complete retargeting quality.
+
 ## 5. Quality Checklist (What Code Cannot Decide Alone)
 
 Run these after `inspect_fbx` / Blender import report `ok=True`:

@@ -189,7 +189,8 @@ artifacts/mechanic/<task_id>/
 
 `native/` is the cross-Engine boundary: for example
 `native/Plugins/GameMechanic/` in Unreal,
-`native/Assets/Mechanics/` in Unity, or
+`native/Assets/Mechanics/` in Unity,
+`native/addons/game_mechanic/` in Godot, or
 `native/src/mechanics/` in Three.js. Upper layers must not assume Unreal.
 `native/` is the source of truth; product copies are read-only assembly output.
 Keep `Binaries/`, `Intermediate/`, `Saved/`, Derived Data Cache,

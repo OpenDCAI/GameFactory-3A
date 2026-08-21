@@ -1,0 +1,21 @@
+; Godot 4 project: Orbit Pinball
+config_version=5
+
+[application]
+config/name="Orbit Pinball"
+run/main_scene="res://main.tscn"
+
+[display]
+window/size/viewport_width=960
+window/size/viewport_height=540
+window/size/window_width_override=960
+window/size/window_height_override=540
+window/stretch/mode="canvas_items"
+
+[rendering]
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"
+environment/defaults/default_clear_color=Color(0.02, 0.008, 0.06, 1)
+
+[physics]
+2d/default_gravity=0.0

@@ -140,6 +140,18 @@ _ENGINE_DEFINITIONS = (
         "aliases": set(),
     },
     {
+        "engine_id": "godot",
+        "enabled": True,
+        "aliases": {"godot4", "godot_engine"},
+        "primary_api": "godot_api.md",
+        "mechanic_example_roots": (
+            "engine_adapters/godot/examples",
+        ),
+        "ui_example_roots": (
+            "engine_adapters/godot/examples",
+        ),
+    },
+    {
         "engine_id": "three_js",
         "enabled": False,
         "aliases": {"three", "threejs"},

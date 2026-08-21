@@ -1,0 +1,24 @@
+{
+  "schema_version": "gamefactory3a.godot.plugin_capabilities.v1",
+  "plugin": "A3GamePlayable",
+  "capabilities": {
+    "identity_component": "identity.gd",
+    "normalized_input": "input_state.gd",
+    "runtime_sessions": "runtime.gd",
+    "runtime_entity": "runtime_entity.gd",
+    "scene_loading": "scene_loader.gd",
+    "animation_dispatch": "animation_director.gd",
+    "collision_queries": "collision_probe.gd",
+    "hud_telemetry": "hud_layer.gd",
+    "pbr_material_and_lighting": "visual_kit.gd"
+  },
+  "gameplay_owned": [
+    "movement",
+    "combat",
+    "camera_rules",
+    "weapons",
+    "vehicles",
+    "scoring",
+    "game_specific_ui"
+  ]
+}

@@ -10,7 +10,7 @@ engine-ready projects. It is not a source-code API reference.
 3AGameFactory helps a coding agent turn a game requirement into a playable game
 slice. It supports image and T-pose preparation, 3D objects, 3D scenes, motion,
 audio, CG video, gameplay mechanics, UI, and full-pipeline assembly for UE5,
-Blender, Unity, and three.js.
+Blender, Unity, Godot 4, and three.js.
 
 ## Path convention
 
@@ -71,7 +71,7 @@ generation before the game has a plan.
 
 Before writing or running anything, identify:
 
-1. **Target engine** — `ue5`, `blender`, `unity3d`, or `three_js`.
+1. **Target engine** — `ue5`, `blender`, `unity3d`, `godot`, or `three_js`.
 2. **Requested deliverables** — assets, motion, audio, CG video, gameplay, UI,
    a scene, or a full playable slice.
 3. **Acceptance criteria** — visual style, player interactions, platforms,
@@ -109,6 +109,7 @@ API context:
 | `ue5` | `<REPO_PATH>/agent_skills/engine_context/ue5_api.md` | `<REPO_PATH>/engine_adapters/ue5/` |
 | `blender` | `<REPO_PATH>/agent_skills/engine_context/blender_api.md` | `<REPO_PATH>/engine_adapters/blender/` |
 | `unity3d` | `<REPO_PATH>/agent_skills/engine_context/unity3d_api.md` | `<REPO_PATH>/engine_adapters/unity3d/` |
+| `godot` | `<REPO_PATH>/agent_skills/engine_context/godot_api.md` | `<REPO_PATH>/engine_adapters/godot/` |
 | `three_js` | `<REPO_PATH>/agent_skills/engine_context/three_js_api.md` | `<REPO_PATH>/engine_adapters/three_js/` |
 
 Use public client APIs and documented launch paths only. Treat engine reference

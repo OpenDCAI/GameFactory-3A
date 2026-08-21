@@ -1,0 +1,16 @@
+{
+  "schema_version": "gamefactory3a.godot.example.v1",
+  "example_id": "orbit_pinball_2d",
+  "camera": "fixed_2d",
+  "genre": "physics_pinball",
+  "features": [
+    "keyboard_input",
+    "rigid_body_2d_simulation",
+    "static_body_2d_collisions",
+    "animatable_flippers",
+    "collision_impulses",
+    "procedural_animation",
+    "combo_score_and_lives_loop"
+  ],
+  "generated_output": "my_code/AAAGameForge/test_data/outputs/game303/godot"
+}

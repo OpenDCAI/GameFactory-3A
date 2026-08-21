@@ -1,0 +1,17 @@
+{
+  "schema_version": "gamefactory3a.godot.example.v1",
+  "example_id": "solar_rally_3d",
+  "camera": "third_person_chase",
+  "genre": "arcade_racing",
+  "features": [
+    "keyboard_input",
+    "character_body_3d",
+    "area_3d_checkpoints",
+    "static_body_3d_collisions",
+    "pbr_materials_and_emission",
+    "directional_and_omni_lighting",
+    "chase_camera",
+    "lap_and_win_loop"
+  ],
+  "generated_output": "my_code/AAAGameForge/test_data/outputs/game202/godot"
+}

@@ -9,6 +9,8 @@ __pycache__/
 .venv-*/
 .env
 build/
+!engine_adapters/godot/build/
+!engine_adapters/godot/build/*.py
 # Eigen, checked out by o-voxel's setup.py rather than vendored.
 models/gen_3d_object/trellis_utils/trellis_2_utils/o-voxel/third_party/
 
@@ -43,6 +45,9 @@ test_data/outputs/**
 !test_data/outputs/README.md
 !test_data/outputs/**/
 !test_data/outputs/**/.gitkeep
+
+# Godot editor/import cache
+.godot/
 
 # Cloned code agents
 third_party/*/

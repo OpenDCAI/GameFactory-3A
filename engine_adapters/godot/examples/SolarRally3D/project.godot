@@ -1,0 +1,17 @@
+; Godot 4 project: Solar Rally
+config_version=5
+
+[application]
+config/name="Solar Rally 3D"
+run/main_scene="res://main.tscn"
+
+[display]
+window/size/viewport_width=960
+window/size/viewport_height=540
+window/size/window_width_override=960
+window/size/window_height_override=540
+
+[rendering]
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"
+environment/defaults/default_clear_color=Color(0.01, 0.018, 0.04, 1)
