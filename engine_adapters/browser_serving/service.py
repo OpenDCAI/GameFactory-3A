@@ -12,6 +12,7 @@ from .contracts import (
     normalize_backend_result,
     serving_result,
 )
+from .cg_video import CgVideoGateway, CgVideoGatewayProtocol
 from .registry import EngineRegistry
 from .storage import UploadStore
 
@@ -23,10 +24,16 @@ class BrowserServingService:
         config: BrowserServingConfig,
         *,
         uploads: UploadStore | None = None,
+        cg_video: CgVideoGatewayProtocol | None = None,
     ) -> None:
         self.registry = registry
         self.config = config
         self.uploads = uploads or UploadStore(config)
+        self.cg_video = cg_video or CgVideoGateway(
+            enabled=config.cg_video_enabled,
+            allow_cloud=config.cg_video_allow_cloud,
+            max_workers=config.cg_video_max_workers,
+        )
 
     def health(self) -> dict[str, Any]:
         return serving_result(
@@ -34,11 +41,103 @@ class BrowserServingService:
             payload={
                 "service": "gamefactory3a-browser-serving",
                 "api_version": "v1",
+                "cg_video": {
+                    "enabled": bool(self.cg_video.enabled),
+                },
                 "engines": [
                     backend.descriptor.engine_id
                     for backend in self.registry.list()
                 ],
             },
+        )
+
+    def submit_cg_video(
+        self,
+        *,
+        game_id: str,
+        task_id: str,
+        run_id: str = "",
+        backend: str = "",
+        trigger_id: str = "",
+        session_id: str = "",
+        engine: str = "",
+        idempotency_key: str = "",
+        options: Mapping[str, Any] | None = None,
+        playback: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Queue one CG-video task and return its request identity."""
+
+        if session_id and engine:
+            session_backend = self._require(engine, "runtime_sessions")
+            session_backend.get_session(session_id)
+        job = self.cg_video.submit(
+            game_id=game_id,
+            task_id=task_id,
+            run_id=run_id,
+            backend=backend,
+            trigger_id=trigger_id,
+            session_id=session_id,
+            engine=engine,
+            idempotency_key=idempotency_key,
+            options=options,
+            playback=playback,
+        )
+        return self._cg_video_result(
+            "cg_video.generate",
+            engine,
+            job,
+        )
+
+    def cg_video_status(
+        self,
+        request_id: str,
+        *,
+        engine: str = "",
+    ) -> dict[str, Any]:
+        """Return one queued or completed CG-video request."""
+
+        return self._cg_video_result(
+            "cg_video.status",
+            engine,
+            self.cg_video.get(request_id),
+        )
+
+    def cg_video_media_path(self, artifact_id: str) -> Path:
+        """Resolve one completed CG-video artifact for HTTP delivery."""
+
+        return self.cg_video.media_path(artifact_id)
+
+    def _cg_video_result(
+        self,
+        operation: str,
+        engine: str,
+        job: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        payload = dict(job)
+        video = payload.get("video")
+        artifacts: list[dict[str, Any]] = []
+        if isinstance(video, Mapping) and video.get("artifact_id"):
+            artifact_id = str(video["artifact_id"])
+            public_url = (
+                f"{self.config.public_gateway_url.rstrip('/')}/api/media/"
+                f"cg-video/{artifact_id}"
+            )
+            payload["video"] = {
+                **{
+                    key: value
+                    for key, value in dict(video).items()
+                    if key != "path"
+                },
+                "url": public_url,
+            }
+            artifacts.append(dict(payload["video"]))
+        return serving_result(
+            operation,
+            engine=str(engine or ""),
+            ok=payload.get("status") != "failed",
+            payload=payload,
+            artifacts=artifacts,
+            errors=[str(payload["error"])] if payload.get("error") else [],
         )
 
     def list_engines(self) -> dict[str, Any]:

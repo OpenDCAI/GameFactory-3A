@@ -27,6 +27,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from ..config import BrowserServingConfig
+from ..cg_video import CgVideoError
 from ..contracts import (
     BrowserServingError,
     EngineCapabilityError,
@@ -135,6 +136,19 @@ class RuntimeEventPayload(BaseModel):
     entity_name: str = ""
 
 
+class CgVideoPayload(BaseModel):
+    game_id: str = Field(..., min_length=1)
+    task_id: str = Field(..., min_length=1)
+    run_id: str = "auto"
+    backend: str = ""
+    engine: str = ""
+    session_id: str = ""
+    trigger_id: str = ""
+    idempotency_key: str = ""
+    options: dict[str, Any] = Field(default_factory=dict)
+    playback: dict[str, Any] = Field(default_factory=dict)
+
+
 def _json_object(value: str, label: str) -> dict[str, Any]:
     if not str(value or "").strip():
         return {}
@@ -152,6 +166,8 @@ def _http_error(exc: Exception) -> HTTPException:
         return HTTPException(status_code=404, detail=str(exc))
     if isinstance(exc, EngineCapabilityError):
         return HTTPException(status_code=409, detail=str(exc))
+    if isinstance(exc, NotImplementedError):
+        return HTTPException(status_code=501, detail=str(exc))
     if isinstance(exc, FileNotFoundError):
         return HTTPException(status_code=404, detail=str(exc))
     if isinstance(exc, (KeyError, ValueError)):
@@ -374,6 +390,33 @@ def create_app(
         project_id: str = "",
     ) -> list[dict[str, Any]]:
         return service.list_worlds(engine, project_id=project_id)
+
+    @app.post("/api/cg-video", status_code=202)
+    def submit_cg_video(request: CgVideoPayload) -> dict[str, Any]:
+        return service.submit_cg_video(
+            game_id=request.game_id,
+            task_id=request.task_id,
+            run_id=request.run_id,
+            backend=request.backend,
+            trigger_id=request.trigger_id,
+            session_id=request.session_id,
+            engine=request.engine,
+            idempotency_key=request.idempotency_key,
+            options=request.options,
+            playback=request.playback,
+        )
+
+    @app.get("/api/cg-video/{request_id}")
+    def cg_video_status(
+        request_id: str,
+        engine: str = "",
+    ) -> dict[str, Any]:
+        return service.cg_video_status(request_id, engine=engine)
+
+    @app.get("/api/media/cg-video/{artifact_id}")
+    def cg_video_media(artifact_id: str) -> FileResponse:
+        path = service.cg_video_media_path(artifact_id)
+        return FileResponse(path, media_type="video/mp4")
 
     @app.post("/api/sessions")
     def create_session(request: SessionCreatePayload) -> dict[str, Any]:
@@ -705,7 +748,9 @@ def create_app(
         FileNotFoundError,
         KeyError,
         ValueError,
+        NotImplementedError,
         BrowserServingError,
+        CgVideoError,
     ):
         app.add_exception_handler(error_type, error_response)
 
