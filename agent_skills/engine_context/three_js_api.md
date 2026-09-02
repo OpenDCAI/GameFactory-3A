@@ -1064,6 +1064,9 @@ They are game-neutral.
   `remove`, `getState`, `dispose`. Widgets sharing an anchor stack in a
   column instead of overlapping. Every widget writes `data-a3game-*`
   attributes so end-to-end tests assert HUD state without screenshots.
+- `A3GameCinematicPlayer` - Requests a canonical CG-video task from the
+  Browser Serving gateway, waits for its media URL, and manages one temporary
+  HTML video element; gameplay owns the trigger and surrounding state.
 - `A3GameRuntimeChannel` - Browser side of the runtime control channel;
   `connect`, `disconnect`, `dispatch`, `getHistory`. It always installs
   `globalThis.__A3GAME_RUNTIME__`, which is how generated tests drive
