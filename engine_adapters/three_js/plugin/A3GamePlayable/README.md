@@ -29,6 +29,7 @@ import {
   A3GameMaterialPreset,
   A3GameRuntimeSubsystem,
   A3GameWorldSessionSubsystem,
+  A3GameCinematicPlayer,
   A3GameRuntimeEntityComponent,
   A3GameEntityFactory,
   A3GameControllableEntity,
@@ -52,6 +53,11 @@ import {
   A3GAME_RUNTIME_FORWARD_AXIS,
 } from '@a3game/playable';
 ```
+
+`A3GameCinematicPlayer` submits a canonical CG-video task to the configured
+Browser Serving gateway, waits for its artifact URL, and owns the temporary
+`<video>` element. Gameplay chooses when to trigger a clip and remains
+responsible for any game-state transition around playback.
 
 Deep imports into `src/` are not part of the contract. `three` is a peer
 dependency supplied by the host project.
