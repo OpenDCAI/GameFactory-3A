@@ -263,6 +263,23 @@ def _run_editor(args: argparse.Namespace) -> dict[str, Any]:
     )
 
 
+def _record_playtest(args: argparse.Namespace) -> dict[str, Any]:
+    client = _client(args)
+    action_plan = json.loads(args.actions) if args.actions else None
+    return client.playtest.record(
+        output_dir=args.output_dir,
+        map_path=args.map,
+        scenario=args.scenario or None,
+        action_plan=action_plan,
+        duration=args.duration,
+        fps=args.fps,
+        warmup=args.warmup,
+        timeout=args.timeout,
+        ffmpeg=args.ffmpeg or None,
+        dry_run=args.dry_run,
+    )
+
+
 def _add_client_arguments(
     parser: argparse.ArgumentParser,
 ) -> None:
@@ -368,6 +385,19 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
     )
     run.add_argument("--dry-run", action="store_true")
+
+    playtest = commands.add_parser("playtest")
+    _add_client_arguments(playtest)
+    playtest.add_argument("--output-dir", required=True)
+    playtest.add_argument("--map", default="")
+    playtest.add_argument("--scenario", default="")
+    playtest.add_argument("--actions", default="")
+    playtest.add_argument("--duration", type=float, default=12.0)
+    playtest.add_argument("--fps", type=int, default=20)
+    playtest.add_argument("--warmup", type=float, default=0.0)
+    playtest.add_argument("--ffmpeg", default="")
+    playtest.add_argument("--timeout", type=float, default=None)
+    playtest.add_argument("--dry-run", action="store_true")
     return parser
 
 
@@ -380,6 +410,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _emit(_import_asset(args))
         if args.command == "run":
             return _emit(_run_editor(args))
+        if args.command == "playtest":
+            return _emit(_record_playtest(args))
         raise AssertionError(args.command)
     except (
         FileExistsError,

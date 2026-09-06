@@ -35,6 +35,7 @@ outputs.
 | Mechanic generation | `<REPO_PATH>/agent_skills/code_gen/mechanic/game_generation.md` -> selected Engine API |
 | UI generation | `<REPO_PATH>/agent_skills/code_gen/ui/game_ui_generation.md` -> selected Engine API -> `<REPO_PATH>/agent_skills/engine_context/browser_serving_api.md` |
 | Engine assembly, build, test, or runtime | selected Engine API |
+| Playtest recording or gameplay evidence takes | selected Engine API (Playtest section) |
 | Gameplay-triggered audio, video CG, animation CG, or VFX | selected Engine API (Media Director section) |
 | Browser delivery | `<REPO_PATH>/agent_skills/engine_context/browser_serving_api.md` + selected Engine API |
 | VFX creation | `<REPO_PATH>/agent_skills/engine_context/create-vfx-effects/SKILL.md` + selected Engine API |
@@ -95,8 +96,8 @@ running before Browser Serving publishes a playable URL.
 ## Public API Boundary
 
 - For Client-backed target Engines, all host-side project, import, binding,
-  build, test, Editor, runtime, World, and session operations go through the
-  public Client named by the selected Engine API.
+  build, test, playtest, Editor, runtime, World, and session operations go
+  through the public Client named by the selected Engine API.
 - Generated native Engine code uses only the native public boundary documented
   by the selected Engine API. It does not call the host-side Python Client.
 - Exact capabilities and call signatures come from the selected API document.

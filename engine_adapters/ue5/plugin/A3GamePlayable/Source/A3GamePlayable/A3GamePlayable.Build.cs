@@ -10,7 +10,8 @@ public class A3GamePlayable : ModuleRules
         {
             "Core",
             "CoreUObject",
-            "Engine"
+            "Engine",
+            "MediaAssets"
         });
 
         PrivateDependencyModuleNames.AddRange(new[]
