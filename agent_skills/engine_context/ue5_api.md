@@ -293,3 +293,117 @@ dependencies or success criteria.
 This native C++ contract is intentionally separate from the host-side
 `UEClient` contract above. `UEClient` prepares and executes the project; it is
 not a dependency inside the generated Unreal module.
+
+## Playtest Recording
+
+- `ue.playtest.record(...)` launches one dedicated game process and records
+  the take in-engine: the compiled `A3GamePlayable` plugin's
+  `UA3GamePlaytestRecorderSubsystem` reads the `-A3Playtest*` command-line
+  arguments, captures PNG frames through the engine screenshot pipeline
+  once gameplay has begun (`HasBegunPlay`), writes the `play_started.json`
+  input gate, and exits the game when the take ends. Parameters:
+  `output_dir`, `map_path`, `scenario` or `action_plan`, `duration`, `fps`,
+  `warmup`, `timeout`, `ffmpeg`, and `dry_run`.
+- With a staged build (`Binaries/Win64/<Project>.exe` plus `Content/Paks`)
+  the packaged game runs directly; unstaged projects launch
+  `UnrealEditor.exe <project> <map> -game` instead. Plugin source changes
+  require rebuilding the matching target before recording.
+- Supported action names are `move`, `look`, `jump`, `attack`, `interact`,
+  `dash`, `pause`, `restart`, and `wait`. Every action has a positive integer
+  `duration_ms`; scenario plans must be non-empty and fit within `duration`.
+  On Windows the client injects the timeline as real keyboard events via
+  `SendInput` after the `play_started.json` marker; other platforms record
+  the trace only.
+- The output layout is shared with the other adapters: `frames/`,
+  `actions.jsonl`, `report.json`, optional `video.mp4` (requires FFmpeg on
+  PATH or `ffmpeg=`), plus `play_started.json` and `_editor_report.json`
+  (the in-game recorder report, surfaced as `native_report`). The report
+  schema is `gamefactory3a.ue5.playtest_report.v1` and includes `status`,
+  `frames`, `recorded_seconds`, `executed_actions`, `video`, and `warnings`.
+- Missing FFmpeg is non-fatal: frames, the action trace, and the report are
+  retained without the video.
+
+## UE5 Media Director: audio, video CG, animation CG, and VFX
+
+Use the public `UA3GameMediaSubsystem` in generated native gameplay code; it
+is the UE equivalent of the Unity/Godot `A3GameMediaDirector`. The
+cross-engine logical component name is `media_director`, while UE source
+follows the engine's class-file convention:
+
+```text
+A3GameMediaSubsystem.h
+class A3GAMEPLAYABLE_API UA3GameMediaSubsystem : public UWorldSubsystem
+```
+
+UE5 currently binds audio and video CG; animation CG and VFX bindings remain
+game-owned until the subsystem grows them. The Mechanic owns **when** a
+gameplay event occurs and supplies a stable snake_case event key such as
+`hit_confirmed` or `ultimate_cg`. The subsystem owns UE playback objects and
+media evidence. It must not own damage rules, attack timing, UI layout,
+Pipeline orchestration, Browser Play transport, or benchmark scoring.
+
+### Public operations
+
+| UE5 method | Purpose | Native binding |
+|---|---|---|
+| `RegisterAudio(eventKey, sourcePath)` | Register a local audio file and create its player and sound component | `UMediaPlayer` + `UMediaSoundComponent` |
+| `TriggerAudio(eventKey, triggerSource="gameplay")` | Play a registered audio event and record evidence | `UMediaPlayer::Play()` |
+| `RegisterCG(eventKey, videoUrl)` | Register a local or accessible video URL | `UMediaPlayer` |
+| `TriggerCG(eventKey, triggerSource="gameplay")` | Play a non-looping CG and acquire the gameplay pause lock | `UMediaPlayer::Play()` |
+| `StopCG(eventKey, triggerSource="gameplay")` | Stop the CG and release the pause lock | `UMediaPlayer::Pause()`/`Close()` |
+| `GetMediaPlayer(eventKey)` | Return the native player for a game-owned display surface | `UMediaPlayer` |
+| `GetEventLogJson()` | Return newline-delimited media runtime records | In-memory evidence |
+
+`RegisterMedia` and `TriggerMedia` remain compatibility aliases. Trigger
+operations record `playback_call_issued=false` when the binding is missing;
+do not treat a successful method return as proof that media was visible or
+audible in a running game. Video files registered through the legacy
+`RegisterMedia(..., false)` form are classified as audio and do not acquire
+the CG pause lock — use `RegisterCG` for MP4/MOV media.
+
+### Pause and completion contract
+
+`OnGameplayPauseChanged` is broadcast when an interruptive CG acquires or
+releases the combat-only pause lock; `IsGameplayPaused` exposes the current
+lock state.
+
+- On an accepted `TriggerCG`, the subsystem broadcasts
+  `OnGameplayPauseChanged(true)` and tracks the active video key.
+- Game-owned Mechanic code must disable combat actions and damage while the
+  lock is held. It must not use engine-global pause
+  (`APlayerController::SetPause`) merely to pause combat, because video and
+  audio must continue.
+- The subsystem releases the lock on normal video completion
+  (`OnEndReached`, recorded as `cg_finished`), `StopCG`, or world teardown,
+  then broadcasts `OnGameplayPauseChanged(false)`.
+- The subsystem provides the audio path and the `UMediaPlayer`; the video
+  picture still needs a game-owned `UMediaTexture`/UMG surface bound to
+  `GetMediaPlayer(eventKey)`.
+- The subsystem cannot infer the correct hit window, projectile release, or
+  animation transition; those remain game-owned and require native playtest
+  verification.
+
+### Runtime evidence
+
+Every event uses schema `gamefactory3a.media_runtime_event.v1` and fields
+equivalent to:
+
+```json
+{
+  "schema_version": "gamefactory3a.media_runtime_event.v1",
+  "seq": 1,
+  "t_monotonic_ms": 1234,
+  "event_type": "media_registered|audio_triggered|cg_triggered|media_stopped|cg_stopped|cg_finished",
+  "event_key": "ultimate_cg",
+  "trigger_source": "gameplay",
+  "playback_call_issued": true,
+  "asset_path": "Movies/ultimate.mp4"
+}
+```
+
+Each record is broadcast through `OnMediaEvent` and appended to the log
+returned by `GetEventLogJson()`. Keep the event log with the native playtest
+trace; visual/audio success still requires observing the running UE5
+project. UE game code should depend only on this public subsystem surface,
+never on adapter-private registries, transports, editor scripts, or
+generated-output paths.
