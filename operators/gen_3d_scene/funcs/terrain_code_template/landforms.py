@@ -6,30 +6,47 @@ The ground, one function per landform.
 Each returns a `Ground`: the terrain itself plus the few measurements the
 foreground needs to place anything sensibly on it. Those measurements have to
 come from here because they are properties of the shape — where a basin
-actually bottoms out, what level a street network was graded to. Re-deriving
-them in the foreground would mean two answers to the same question.
+actually bottoms out, what level a street network was graded to, where two
+roads cross. Re-deriving them in the foreground would mean two answers to the
+same question.
 
 Nothing here places a prop. A landform returns ground and facts about ground;
 `foreground.py` decides what stands on it.
 
-| function      | ground                       | what it reports          |
-|---------------|------------------------------|--------------------------|
-| `plains`      | level with a ripple          | reach                    |
-| `hills`       | rolling noise                | relief, reach            |
-| `basin`       | dished, off-centre low point | water spot, radii, level |
-| `canyon`      | meandering channel           | floor level, depth       |
-| `walled_town` | plateau with rough flanks    | plateau radius, rise     |
-| `city`        | graded streets, carved river | street network, river    |
+Three things are done to nearly every landform before it is handed on, and
+they are what separate one from a noise field:
+
+    warped noise    every relief shape reads `warped_noise`, so slopes run
+                    and hollows are not circles
+    terracing       worked ground is folded into treads, which is both what
+                    a farmed or built-on hillside looks like and what gives
+                    a greybox slope a set of lines to be read against — and
+                    what anything standing on it has to stand on
+    baking          the height is sampled onto the grid the surface is
+                    written from, so what the foreground measures and what
+                    `check_scene` validates is the ground the GLB carries
+                    rather than a formula the exported mesh only samples
+
+| function      | ground                          | what it reports         |
+|---------------|---------------------------------|-------------------------|
+| `plains`      | rippled, two roads crossing it  | roads, junction, reach  |
+| `hills`       | ridged and terraced             | relief, summit, terrace |
+| `basin`       | dished and terraced, low point  | water, radii, levels,   |
+|               | off centre                      | terrace step            |
+| `canyon`      | meandering channel              | floor, depth, rim       |
+| `walled_town` | terraced motte                  | plateau, rise, gates    |
+| `city`        | graded streets, carved river    | street network, river   |
 
 Usage:
     from operators.gen_3d_scene.funcs.terrain_code_template import landforms
 
-    ground = landforms.basin(size=96.0, depth=10.0)
+    ground = landforms.basin(size=96.0, depth=14.0)
     ground.terrain      # a `Terrain` for `write_scene`
     ground.marks        # {"water": (-3.5, 18.5), "surface": -8.4, ...}
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -55,47 +72,121 @@ class Ground:
 
 # ── open and rolling ─────────────────────────────────────────────────────────
 
-def plains(size: float = 80.0, ripple: float = 1.4, seed: int = 1) -> Ground:
-    """Open, near-level ground.
+#: Width of a country road, and the level the pair of them are graded to.
+TRACK_WIDTH = 6.5
+TRACK_LEVEL = 0.0
 
-    A ripple rather than a plane: under a metre of movement is enough for the
-    ground to read as a field while leaving anything still able to stand on
-    it.
+
+def plains(size: float = 116.0, ripple: float = 1.7, seed: int = 1) -> Ground:
+    """Open, near-level ground with two roads crossing it.
+
+    A ripple rather than a plane: a couple of metres of movement is enough
+    for the ground to read as a field while leaving anything still able to
+    stand on it.
+
+    The roads are cut here rather than left to the foreground because the
+    ground has to be graded to them, and because on open ground the junction
+    is the one position with a reason behind it. Everything a plain holds is
+    placed with respect to the crossing, so the crossing is a measurement and
+    not a decision — and it has to be measured, since both runs wander and
+    neither ends up where it was aimed.
+
+    The grid is fine enough to carry a road: graded across a coarse one, a
+    six-metre run falls between two grid lines and comes out as a dent.
     """
-    return Ground(te.flat(size, ripple=ripple, seed=seed), size,
-                  {"reach": size * 0.85})
+    lines = {
+        "trackx": te.winding_spots(7, span=size * 0.99, wander=size * 0.055,
+                                   along="x", seed=seed + 2,
+                                   centre=(0.0, -size * 0.07)),
+        "trackz": te.winding_spots(7, span=size * 0.99, wander=size * 0.045,
+                                   along="z", seed=seed + 5,
+                                   centre=(size * 0.05, 0.0)),
+    }
+    ways = {"roads": [way for line in lines.values()
+                      for way in te.ways_along(line)]}
+
+    terrain = te.flat(size, ripple=ripple, seed=seed, tiles=104)
+    terrain = te.graded(terrain, ways["roads"], TRACK_WIDTH, blend=9.0,
+                        level=TRACK_LEVEL)
+    terrain = te.baked(terrain)
+
+    return Ground(terrain, size, {
+        "reach": size * 0.86,
+        "track_width": TRACK_WIDTH,
+        "track_level": TRACK_LEVEL,
+        "junction": te.crossing(lines["trackx"], lines["trackz"]) or (0.0, 0.0),
+    }, ways, lines)
 
 
-def hills(size: float = 90.0, relief: float = 5.5, seed: int = 2) -> Ground:
-    """Rolling ground from layered noise.
+def hills(size: float = 100.0, relief: float = 9.5, seed: int = 2) -> Ground:
+    """Rolling ground with a ridge line, terraced where it is worked.
 
-    The wavelength is a sixth of the site, so several separate hills fit
-    across it; at the site's own scale the whole thing is one dome.
+    `crest` is what puts a summit on the high ground. Fractal noise on its
+    own gives dunes, whose tops are as round as their hollows and so have
+    nowhere to stand; folded towards ridges, the high ground has an edge —
+    which is what a beacon is set on and what a track along the tops follows.
+
+    The wavelength is under a third of the site, so several separate hills fit
+    across it. At the site's own scale the whole thing would be one dome.
     """
-    return Ground(
-        te.hills(size, amplitude=relief, wavelength=size * 0.17, seed=seed),
-        size, {"relief": relief, "reach": size * 0.80},
-    )
+    terrace = relief * 0.20
+    terrain = te.hills(size, amplitude=relief, wavelength=size * 0.30,
+                       crest=0.45, tiles=112, seed=seed)
+    # Lightly: the treads should read as worked ground on the flanks, not
+    # turn the landform into a ziggurat.
+    terrain = te.terraced(terrain, step=terrace, share=0.5)
+    terrain = te.baked(terrain)
+
+    # The summit and the hollow are reported as levels, not as a fraction of
+    # `relief`, because they are not the same number. Layered noise reaches
+    # nowhere near its nominal extremes — four octaves of it span about two
+    # thirds of the amplitude, and mixing two kinds narrows that again — so a
+    # threshold set at "four tenths of the relief" lands above the ninetieth
+    # percentile of the ground and selects nothing at all. What the
+    # foreground wants is a share of the fall that is actually there.
+    summit = te.highest_spot(terrain, samples=96)
+    hollow = te.lowest_spot(terrain, samples=96)
+    return Ground(terrain, size, {
+        "relief": relief,
+        "reach": size * 0.82,
+        "terrace": terrace,
+        "summit": summit,
+        "summit_level": te.ground_height(terrain, *summit),
+        "hollow": hollow,
+        "hollow_level": te.ground_height(terrain, *hollow),
+    })
 
 
 # ── cut and raised ───────────────────────────────────────────────────────────
 
-def basin(size: float = 96.0, depth: float = 10.0, seed: int = 3) -> Ground:
-    """Ground dishing to an off-centre low point, with a waterline measured.
+def basin(size: float = 88.0, depth: float = 22.0, seed: int = 3) -> Ground:
+    """Ground dishing to an off-centre low point, terraced, waterline measured.
 
     The low point is found by sampling rather than assumed to be the centre,
     because the noise moves it. The two radii are the same contour measured
     two ways: `pool_radius` runs past the waterline on every side so a water
     disc has its rim buried in the bank, and `shore_radius` is where the
     water is actually visible.
+
+    Terracing comes before either is measured, and before the low point is
+    found. A smooth dish has no level ground anywhere between the water and
+    the rim, which is what makes a settlement on one a slope of tilted boxes;
+    the treads are what the holdings stand on, and the risers are what the
+    stairs between them climb.
     """
-    terrain = te.bowl(size, depth, centre=(-size * 0.09, size * 0.07), seed=seed)
-    water = te.lowest_spot(terrain, samples=96)
+    terrace = depth * 0.18
+    terrain = te.bowl(size, depth, centre=(-size * 0.09, size * 0.07),
+                      tiles=112, seed=seed)
+    terrain = te.terraced(terrain, step=terrace, share=0.74, tread=0.64)
+    terrain = te.baked(terrain)
+
+    water = te.lowest_spot(terrain, samples=104)
     floor = te.ground_height(terrain, *water)
-    surface = floor + depth * 0.14
+    surface = floor + depth * 0.17
 
     return Ground(terrain, size, {
         "depth": depth,
+        "terrace": terrace,
         "water": water,
         "floor": floor,
         "surface": surface,
@@ -105,9 +196,9 @@ def basin(size: float = 96.0, depth: float = 10.0, seed: int = 3) -> Ground:
 
 
 def canyon(
-    size: float = 78.0,
-    depth: float = 14.0,
-    floor_width: float = 20.0,
+    size: float = 88.0,
+    depth: float = 17.0,
+    floor_width: float = 22.0,
     wall_run: float = 0.5,
     meander: float = 0.12,
     seed: int = 4,
@@ -121,36 +212,74 @@ def canyon(
     spends half the remaining distance climbing, and only a narrow rim is
     left level. `meander` is kept under that rim so the channel wanders
     without one wall running off the edge.
+
+    The rim level is reported because a crossing has to start there: what
+    makes a gorge read as a gorge is something spanning it, and the height
+    that matters for that is the one the walls reach, not the one the floor
+    sits at.
     """
-    return Ground(
-        te.canyon(size, depth, floor_width, meander=meander,
-                  rim_share=wall_run, seed=seed),
-        size, {
-            "depth": depth,
-            "floor_width": floor_width,
-            "floor": 0.0,
-            "reach": size * 0.88,
-        },
-    )
+    terrain = te.canyon(size, depth, floor_width, meander=meander,
+                        rim_share=wall_run, tiles=104, seed=seed)
+    terrain = te.baked(terrain)
+
+    return Ground(terrain, size, {
+        "depth": depth,
+        "floor_width": floor_width,
+        "floor": 0.0,
+        "rim": depth,
+        "reach": size * 0.88,
+    })
+
+
+#: How the rampart is cut up, and where its openings fall. Named here because
+#: both sides build to them: the ground reports the gates, and the foreground
+#: hangs a gatehouse and a street off every one.
+WALL_SEGMENTS = 26
+WALL_GATES = 4
+GATE_START = 40.0
 
 
 def walled_town(
-    size: float = 96.0,
-    rise: float = 7.0,
-    wall_radius: float = 22.0,
+    size: float = 106.0,
+    rise: float = 9.5,
+    wall_radius: float = 27.0,
     seed: int = 5,
 ) -> Ground:
-    """A plateau with rough flanks, level out to just past the wall line.
+    """A terraced motte with a level top, out to just past the wall line.
 
     The plateau ends outside where the wall will stand, leaving the rest of
     the site for the flanks — a mound whose top reaches the edge has no
-    visible slope.
+    visible slope. The flanks are terraced, which reads as the bank of a
+    motte and, more usefully, gives the approach something to climb in
+    stages instead of one unbroken ramp.
+
+    The approach is reported as a line rather than cut into the ground.
+    Grading it would level the bank into a shelf, and the point of a motte is
+    that getting up it takes effort; the foreground builds a flight of steps
+    along this line instead.
     """
-    plateau = wall_radius + 4.0
-    return Ground(
-        te.mound(size, rise, flat_radius=plateau, seed=seed), size,
-        {"rise": rise, "wall_radius": wall_radius, "plateau": plateau},
-    )
+    plateau = wall_radius + 5.0
+    terrain = te.mound(size, rise, flat_radius=plateau, tiles=112, seed=seed)
+    terrain = te.terraced(terrain, step=rise * 0.26, share=0.44)
+    terrain = te.baked(terrain)
+
+    gates = te.gate_spots(wall_radius, WALL_GATES, WALL_SEGMENTS,
+                          start_degrees=GATE_START)
+    head = gates[0][0]
+    bearing = max(math.hypot(*head), 1e-6)
+    foot = (head[0] / bearing * size * 0.37, head[1] / bearing * size * 0.37)
+
+    return Ground(terrain, size, {
+        "rise": rise,
+        "wall_radius": wall_radius,
+        "plateau": plateau,
+        "segments": WALL_SEGMENTS,
+        "gates": gates,
+        "gate_start": GATE_START,
+        "terrace": rise * 0.26,
+        "reach": size * 0.47,
+    }, {}, {"approach": te.spoke_lines(head, [foot], points=6, bend=0.14,
+                                       seed=seed)[0]})
 
 
 # ── built ────────────────────────────────────────────────────────────────────
@@ -208,10 +337,19 @@ def city(size: float = 260.0, seed: int = 6) -> Ground:
     }
 
     terrain = te.flat(size, ripple=1.2, seed=seed)
-    terrain = te.graded(terrain, ways["streets"], AVENUE, blend=10.0,
+    # Graded half again wider than the widest street. A slab rests on the
+    # lowest ground under its whole width, so an avenue graded to exactly its
+    # own width has its outer edge in the blend, picks up the fall there, and
+    # steps against the slab in front of it — which the level middle of the
+    # run would have hidden.
+    terrain = te.graded(terrain, ways["streets"], AVENUE * 1.55, blend=10.0,
                         level=STREET_LEVEL)
     terrain = te.carved(terrain, ways["river"], RIVER_WIDTH, RIVER_DEPTH,
                         banks=RIVER_BANKS, tiles=112)
+    # A district stacks three shaping passes and every height sample runs all
+    # of them; across several hundred props compared against each other that
+    # is the whole chain evaluated hundreds of thousands of times.
+    terrain = te.baked(terrain)
 
     return Ground(terrain, size, {
         "street_level": STREET_LEVEL,

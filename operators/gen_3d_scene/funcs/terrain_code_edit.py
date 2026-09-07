@@ -70,6 +70,9 @@ GREYBOX_MATERIALS: dict[str, dict[str, Any]] = {
     "prop": {"baseColor": [0.70, 0.58, 0.42, 1.0], "roughness": 0.75},
     "water": {"baseColor": [0.30, 0.48, 0.62, 0.65], "roughness": 0.15},
     "marker": {"baseColor": [0.85, 0.35, 0.30, 1.0], "roughness": 0.60},
+    # Growing things read as rock without it: a canopy and a boulder are both
+    # spheres, and in one grey they are the same object at two sizes.
+    "foliage": {"baseColor": [0.46, 0.53, 0.39, 1.0], "roughness": 0.92},
 }
 
 #: Material name -> asset id in `scene_assets.SCENE_ASSETS`. Read by
@@ -156,6 +159,73 @@ def fractal_noise(
     return max(-1.0, min(1.0, NOISE_GAIN * total / max(weight, 1e-6)))
 
 
+#: How far domain warping displaces a sample, as a share of the wavelength.
+#: Noise on its own is a field of round blobs, because no direction is
+#: favoured over any other; warping reads it at a position noise has already
+#: pushed around, so features stretch and fold the way weathered ground does.
+#: Past about half a wavelength the landform stops being legible.
+WARP_SHARE = 0.38
+
+
+def warped_noise(
+    x: float,
+    z: float,
+    wavelength: float,
+    seed: int = 0,
+    octaves: int = NOISE_OCTAVES,
+    warp: float = WARP_SHARE,
+) -> float:
+    """Fractal noise read at a position that noise itself has displaced.
+
+    The cheapest thing that makes relief look weathered rather than
+    generated: the same octaves, sampled off a warped grid, give slopes that
+    run and hollows that are not circles. `warp` at 0 is `fractal_noise`.
+    """
+    if warp <= 0.0:
+        return fractal_noise(x, z, wavelength, seed, octaves)
+    # Two octaves for the offset, because the displacement wants to be a
+    # broad drift. A detailed one shreds the landform instead of moving it.
+    reach = wavelength * warp
+    dx = reach * fractal_noise(x, z, wavelength * 1.6, seed + 613, octaves=2)
+    dz = reach * fractal_noise(x, z, wavelength * 1.6, seed + 977, octaves=2)
+    return fractal_noise(x + dx, z + dz, wavelength, seed, octaves)
+
+
+def ridged_noise(
+    x: float,
+    z: float,
+    wavelength: float,
+    seed: int = 0,
+    octaves: int = NOISE_OCTAVES,
+    warp: float = WARP_SHARE,
+) -> float:
+    """Layered noise folded about zero: narrow crests over broad hollows.
+
+    Fractal noise is symmetric, so its peaks are as round as its basins,
+    which is what makes noise terrain read as dunes whatever it was meant to
+    be. Folding each octave at zero and squaring what is left gives the other
+    profile — a ridge line with valleys either side, which is the shape
+    erosion leaves in rock.
+    """
+    if warp > 0.0:
+        reach = wavelength * warp
+        dx = reach * fractal_noise(x, z, wavelength * 1.6, seed + 613, octaves=2)
+        dz = reach * fractal_noise(x, z, wavelength * 1.6, seed + 977, octaves=2)
+        x, z = x + dx, z + dz
+
+    total = 0.0
+    weight = 0.0
+    amplitude = 1.0
+    scale = 1.0 / max(wavelength, 1e-6)
+    for octave in range(max(1, octaves)):
+        folded = 1.0 - abs(_smooth_noise(x * scale, z * scale, seed + octave * 977))
+        total += amplitude * folded * folded
+        weight += amplitude
+        amplitude *= 0.5
+        scale *= 2.17
+    return max(-1.0, min(1.0, 2.0 * total / max(weight, 1e-6) - 1.0))
+
+
 @dataclass(frozen=True)
 class Terrain:
     """Ground the props stand on.
@@ -177,20 +247,25 @@ def flat(
     material: str = "ground",
     ripple: float = 0.0,
     seed: int = 0,
+    tiles: int = 56,
 ) -> Terrain:
     """Level ground, optionally with `ripple` metres of undulation.
 
     A ripple is worth having on open ground: a perfectly level plane reads as
     a plane, and under a metre of movement is enough for it to read as a field
     while leaving anything still able to stand on it.
+
+    `tiles` is worth raising when something narrow is to be cut into the
+    ground afterwards. A road graded across a coarse grid falls between two
+    grid lines and comes out as a dent rather than as a level run.
     """
     if ripple <= 0.0:
         return Terrain(size=size, material=material)
 
     def height(x: float, z: float) -> float:
-        return ripple * fractal_noise(x, z, wavelength=size * 0.22, seed=seed)
+        return ripple * warped_noise(x, z, wavelength=size * 0.22, seed=seed)
 
-    return Terrain(size=size, tiles=56, height=height, material=material)
+    return Terrain(size=size, tiles=tiles, height=height, material=material)
 
 
 def hills(
@@ -199,6 +274,8 @@ def hills(
     wavelength: float = 24.0,
     tiles: int = 64,
     material: str = "ground",
+    crest: float = 0.0,
+    warp: float = WARP_SHARE,
     seed: int = 0,
 ) -> Terrain:
     """Rolling ground from layered noise.
@@ -206,10 +283,20 @@ def hills(
     Noise rather than crossed sine waves: two sines put every crest on a
     regular lattice, so the hills repeat at the wavelength and the layout
     filters built on them fall into rows.
+
+    `crest` mixes in ridged noise, which folds each octave about zero: at 0
+    the ground rolls like dunes, and towards 1 it takes the profile weather
+    leaves in rock — a ridge line with valleys either side. What the choice
+    decides is whether the high ground is a place, since a dune has no summit
+    to stand on and a ridge does.
     """
 
     def height(x: float, z: float) -> float:
-        return amplitude * fractal_noise(x, z, wavelength, seed)
+        rolling = warped_noise(x, z, wavelength, seed, warp=warp)
+        if crest <= 0.0:
+            return amplitude * rolling
+        sharp = ridged_noise(x, z, wavelength, seed, warp=warp)
+        return amplitude * (rolling * (1.0 - crest) + sharp * crest)
 
     return Terrain(size=size, tiles=tiles, height=height, material=material)
 
@@ -232,7 +319,7 @@ def slope(
     def height(x: float, z: float) -> float:
         along = z if axis == "z" else x
         ramp = rise * (along / max(size, 1e-6) + 0.5)
-        return ramp + rise * roughness * fractal_noise(
+        return ramp + rise * roughness * warped_noise(
             x, z, wavelength=size * 0.3, seed=seed
         )
 
@@ -268,7 +355,7 @@ def bowl(
         # The noise takes a share of the dish rather than being added on top,
         # so the basin does not end up deeper than `depth` says.
         broken = dish * (1.0 - roughness) + dish * roughness * (
-            0.5 + 0.5 * fractal_noise(x, z, wavelength=size * 0.28, seed=seed)
+            0.5 + 0.5 * warped_noise(x, z, wavelength=size * 0.28, seed=seed)
         )
         return depth * broken
 
@@ -302,7 +389,7 @@ def mound(
         # above the plateau it descends from.
         blend = 4.0 * fall * (1.0 - fall)
         return rise * fall - rise * roughness * blend * 0.5 * (
-            1.0 + fractal_noise(x, z, wavelength=size * 0.25, seed=seed)
+            1.0 + warped_noise(x, z, wavelength=size * 0.25, seed=seed)
         )
 
     return Terrain(size=size, tiles=tiles, height=height, material=material)
@@ -344,7 +431,7 @@ def canyon(
         # The noise takes a share of the wall rather than being added on top,
         # so `depth` stays the height the wall actually reaches.
         broken = eased * (1.0 - roughness) + eased * roughness * (
-            0.5 + 0.5 * fractal_noise(x, z, wavelength=size * 0.2, seed=seed + 31)
+            0.5 + 0.5 * warped_noise(x, z, wavelength=size * 0.2, seed=seed + 31)
         )
         return depth * broken
 
@@ -373,7 +460,7 @@ def flattened(
         eased = (near - width) / blend
         return level + (base(x, z) - level) * eased * eased * (3.0 - 2.0 * eased)
 
-    return replace(terrain, height=height)
+    return replace(terrain, height=_memoised(height))
 
 
 def levelled_at(
@@ -399,6 +486,81 @@ def levelled_at(
             return base(x, z)
         eased = (distance - radius) / blend
         return level + (base(x, z) - level) * eased * eased * (3.0 - 2.0 * eased)
+
+    return replace(terrain, height=_memoised(height))
+
+
+def baked(terrain: Terrain, tiles: int | None = None) -> Terrain:
+    """Sample a terrain once onto a grid and read it back by interpolation.
+
+    Terrain functions compose — a ripple, then graded streets, then a carved
+    river — and every sample runs the whole chain. `check_scene` compares
+    every prop against every other, so on a district that is the chain
+    evaluated hundreds of thousands of times.
+
+    Baking settles a disagreement as well as a cost. The grid is the one the
+    surface is written from, so afterwards a prop is validated against the
+    ground the GLB actually carries rather than against a formula the
+    exported mesh only samples — the two differ by up to half the relief
+    between one grid line and the next, which is exactly the gap a prop can
+    end up floating over.
+    """
+    if terrain.height is None:
+        return terrain
+
+    span = max(int(tiles or terrain.tiles), 2)
+    step = terrain.size / span
+    start = -terrain.size / 2.0
+    base = terrain.height
+    grid = [
+        [base(start + column * step, start + row * step)
+         for column in range(span + 1)]
+        for row in range(span + 1)
+    ]
+
+    def height(x: float, z: float) -> float:
+        # Clamped rather than extrapolated: a prop hanging over the edge is
+        # `check_scene`'s to report, and inventing ground that was never
+        # sampled would hide it.
+        u = min(max((x - start) / step, 0.0), span - 1e-9)
+        v = min(max((z - start) / step, 0.0), span - 1e-9)
+        column, row = int(u), int(v)
+        fx, fz = u - column, v - row
+        near = grid[row][column] + (grid[row][column + 1] - grid[row][column]) * fx
+        far = (grid[row + 1][column]
+               + (grid[row + 1][column + 1] - grid[row + 1][column]) * fx)
+        return near + (far - near) * fz
+
+    return replace(terrain, height=height, tiles=span)
+
+
+def terraced(
+    terrain: Terrain, step: float, share: float = 0.8, tread: float = 0.7
+) -> Terrain:
+    """Fold the ground into level treads a `step` apart.
+
+    Ground that is farmed or built on comes out in steps, and a greybox reads
+    those far better than a smooth slope: a tread is somewhere to stand,
+    which a gradient is not, and the risers give a hillside a set of lines to
+    be seen against.
+
+    `share` is how much of the height is quantised, so terracing can be
+    blended back towards the raw slope where it should still read as a hill.
+    `tread` is the share of each step that is level; the rest is the riser,
+    which is sloped rather than vertical because a heightfield cannot carry
+    an overhang and a face steeper than its own grid comes out as a smear.
+    """
+    base = terrain.height
+    if base is None or step <= 0.0:
+        return terrain
+    climb = max(1.0 - tread, 1e-6)
+
+    def height(x: float, z: float) -> float:
+        here = base(x, z)
+        level = math.floor(here / step)
+        up = here / step - level
+        folded = (level + max(up - tread, 0.0) / climb) * step
+        return here * (1.0 - share) + folded * share
 
     return replace(terrain, height=height)
 
@@ -614,6 +776,15 @@ def contour_radius(
     ``cover``   the longest reach — a disc that runs past the waterline on
                 every side, so its rim is buried in the rising bank instead
                 of standing up out of it as a visible wall. For water.
+
+    The two also march differently, because they are asking opposite
+    questions. ``inside`` stops a ray at its first crossing: the disc has to
+    stay under the contour the whole way out. ``cover`` keeps going, and
+    takes the *outermost* point still under it, because ground that rises
+    past the level and then dips below it again further out is water too —
+    stopping at the first crossing reports a radius whose rim is not buried
+    at all. Which is what a terraced or noisy bank does: it does not rise
+    monotonically, and a disc sized to its innermost crossing shows its wall.
     """
     if terrain.height is None:
         return 0.0
@@ -627,7 +798,9 @@ def contour_radius(
         for index in range(1, steps + 1):
             probe = (centre[0] + dx * index * step, centre[1] + dz * index * step)
             if ground_height(terrain, *probe) > level:
-                break
+                if fit != "cover":
+                    break
+                continue
             distance = index * step
         reach.append(distance)
     return max(reach) if fit == "cover" else min(reach)
@@ -641,6 +814,12 @@ def _memoised(fn: Callable[[float, float], float]) -> Callable[[float, float], f
     against every other, so the same handful of points is evaluated tens of
     thousands of times. Without this the cost is quadratic in props times the
     length of the chain.
+
+    It matters most for the passes that search rather than evaluate:
+    `levelled_at` finds the nearest of its pads and `graded` the nearest run
+    of a network, so an uncached sample is a scan of everything the pass was
+    given. A few hundred props share only a few thousand distinct sample
+    points between them, which is what makes caching them nearly free.
     """
     seen: dict[tuple[float, float], float] = {}
 
@@ -722,6 +901,51 @@ def winding_spots(
 def ways_along(spots: Sequence[Spot]) -> list[tuple[Spot, Spot]]:
     """Consecutive pairs of a polyline, as segments."""
     return [(spots[index], spots[index + 1]) for index in range(len(spots) - 1)]
+
+
+def spoke_lines(
+    centre: Spot,
+    ends: Sequence[Spot],
+    points: int = 5,
+    bend: float = 0.10,
+    seed: int = 0,
+) -> list[list[Spot]]:
+    """Polylines from a centre out to each end, each bowed off the straight.
+
+    A settlement's streets run between the places people go — the gates, the
+    square, the keep — so they are drawn from those rather than laid on a
+    grid. `bend` is how far a run bows off the direct line as a share of its
+    length; at 0 they are spokes on a wheel, which reads as a diagram of a
+    town rather than as one.
+    """
+    rng = random.Random(seed)
+    runs = []
+    for end in ends:
+        span = max(math.dist(centre, end), 1e-6)
+        across = ((end[1] - centre[1]) / span, -(end[0] - centre[0]) / span)
+        swing = span * bend * rng.uniform(-1.0, 1.0)
+        line = []
+        for step in range(max(points, 2)):
+            share = step / (max(points, 2) - 1)
+            # Nothing at either end and widest in the middle, so the run
+            # still arrives exactly where it was sent.
+            bow = swing * math.sin(math.pi * share)
+            line.append((
+                centre[0] + (end[0] - centre[0]) * share + across[0] * bow,
+                centre[1] + (end[1] - centre[1]) * share + across[1] * bow,
+            ))
+        runs.append(line)
+    return runs
+
+
+def facing(start: Spot, end: Spot) -> float:
+    """Yaw in degrees for something laid from `start` towards `end`.
+
+    The sign is not guessable — a prop's local x runs along its `size[0]`
+    under a left-handed turn about y — and getting it wrong lays a gatehouse
+    across its own gateway. Derived once here so nothing else has to.
+    """
+    return -math.degrees(math.atan2(end[1] - start[1], end[0] - start[0]))
 
 
 def graded(
@@ -1059,6 +1283,84 @@ def in_height_band(
         spot for spot in spots
         if lowest <= ground_height(terrain, *spot) <= highest
     ]
+
+
+def densified(spots: Sequence[Spot], step: float = 1.0) -> list[Spot]:
+    """A polyline resampled at roughly `step` metres, for measuring against."""
+    points: list[Spot] = []
+    for start, end in ways_along(spots):
+        span = math.dist(start, end)
+        count = max(int(span / max(step, 1e-6)), 1)
+        for index in range(count):
+            share = index / count
+            points.append((start[0] + (end[0] - start[0]) * share,
+                           start[1] + (end[1] - start[1]) * share))
+    if spots:
+        points.append(tuple(spots[-1]))  # type: ignore[arg-type]
+    return points
+
+
+def crossing(first: Sequence[Spot], second: Sequence[Spot]) -> Spot | None:
+    """Where two runs come closest, or None if either is empty.
+
+    A junction is somewhere. It is the one point on open ground that has a
+    reason to be built on, and it is not where either run was aimed, because
+    both of them wander — so it has to be measured rather than assumed.
+    """
+    if len(first) < 2 or len(second) < 2:
+        return None
+    along, across = densified(first), densified(second)
+    best = min(
+        ((math.dist(a, b), a, b) for a in along for b in across),
+        key=lambda found: found[0],
+    )
+    return ((best[1][0] + best[2][0]) / 2.0, (best[1][1] + best[2][1]) / 2.0)
+
+
+def chained(spots: Sequence[Spot], start: Spot | None = None) -> list[Spot]:
+    """Order spots into a run by always taking the nearest one left.
+
+    A track between places goes on to the next place, not to whichever came
+    next in the list — joined in list order a route doubles back across the
+    site several times, which reads as a scribble rather than as a way
+    through.
+    """
+    remaining = list(spots)
+    if not remaining:
+        return []
+    here = start if start is not None else remaining[0]
+    run = [] if start is not None else [here]
+    # Dropped whether it was named or taken from the front, so a spot that is
+    # both the start and a member of the run is not visited twice.
+    if here in remaining:
+        remaining.remove(here)
+    while remaining:
+        near = min(remaining, key=lambda spot: math.dist(spot, here))
+        remaining.remove(near)
+        run.append(near)
+        here = near
+    return run
+
+
+def highest_spot(terrain: Terrain, samples: int = 48) -> Spot:
+    """Where the terrain tops out, found by sampling.
+
+    The summit of noise relief is not where the landform was built around,
+    and a beacon set at the centre of a ridge system stands halfway down it.
+    """
+    if terrain.height is None:
+        return (0.0, 0.0)
+    step = terrain.size / samples
+    start = -terrain.size / 2.0 + step / 2.0
+    best = (0.0, 0.0)
+    best_height = float("-inf")
+    for row in range(samples):
+        for column in range(samples):
+            spot = (start + column * step, start + row * step)
+            here = ground_height(terrain, *spot)
+            if here > best_height:
+                best, best_height = spot, here
+    return best
 
 
 def lowest_spot(terrain: Terrain, samples: int = 48) -> Spot:
@@ -1447,17 +1749,27 @@ def ring_wall(
     material: str = "wall",
     group: str = "rampart",
     overlap: float = 1.08,
+    gates: int = 0,
+    gate_start: float = 45.0,
 ) -> list[Prop]:
-    """A closed wall of segments around a circle, each turned tangent.
+    """A wall of segments around a circle, each turned tangent.
 
     Segments are cut slightly long (`overlap`) so they meet on the outside of
     the curve rather than leaving a wedge at every joint, and `vary` steps the
     height along the run, which is what gives a rampart a parapet line instead
     of one unbroken top edge.
+
+    `gates` leaves that many segments out, spaced evenly from `gate_start`
+    degrees. An unbroken ring is a pen: nothing inside it can be reached, and
+    the streets have nowhere to run to. `gate_spots` reports where the
+    openings actually fall, so a gatehouse and the roads meet the same holes.
     """
     chord = 2.0 * math.pi * radius / max(segments, 1)
+    openings = _gate_indices(gates, segments, gate_start)
     props = []
     for index in range(segments):
+        if index in openings:
+            continue
         angle = 2.0 * math.pi * index / max(segments, 1)
         props.append(Prop(
             id=f"{prefix}-{index:02d}",
@@ -1531,6 +1843,253 @@ def columns(
             group=group,
         ))
     return props
+
+
+def _gate_indices(gates: int, segments: int, start_degrees: float) -> set[int]:
+    """Which wall segments an opening replaces."""
+    if gates <= 0 or segments <= 0:
+        return set()
+    return {
+        round((start_degrees + 360.0 * gate / gates) / 360.0 * segments)
+        % segments
+        for gate in range(gates)
+    }
+
+
+def gate_spots(
+    radius: float,
+    gates: int,
+    segments: int,
+    centre: Spot = (0.0, 0.0),
+    start_degrees: float = 45.0,
+) -> list[tuple[Spot, float]]:
+    """Position and facing of each opening `ring_wall` leaves, in order.
+
+    An opening lands on a segment centre, which is not quite the angle that
+    was asked for — a gatehouse set at the requested angle stands beside its
+    own gateway rather than in it. Returns ``(spot, yaw)``, the yaw being the
+    wall's tangent there, so a gate reads as part of the run.
+    """
+    spots = []
+    for index in sorted(_gate_indices(gates, segments, start_degrees)):
+        angle = 2.0 * math.pi * index / max(segments, 1)
+        spots.append((
+            (centre[0] + radius * math.cos(angle),
+             centre[1] + radius * math.sin(angle)),
+            -math.degrees(angle + math.pi / 2.0),
+        ))
+    return spots
+
+
+def arch(
+    terrain: Terrain,
+    prefix: str,
+    at: Spot,
+    span: float,
+    height: float,
+    yaw: float = 0.0,
+    pier: float = 1.8,
+    thickness: float = 1.5,
+    lintel: float = 1.3,
+    material: str = "wall",
+    group: str = "rampart",
+) -> list[Prop]:
+    """Two piers and a lintel over them — a gateway.
+
+    A gap in a wall is a hole. What reads as a way through is the frame
+    around it: the eye needs the opening announced, and a greybox has no
+    texture to announce it with.
+
+    The lintel is held at the piers' own tops rather than rested, because the
+    ground under an opening is the low ground the gateway was put there to
+    cross — rested, the beam would sit down in the gateway instead of over it.
+    """
+    along = (math.cos(math.radians(yaw)), -math.sin(math.radians(yaw)))
+    reach = (span + pier) / 2.0
+    piers = [
+        Prop(f"{prefix}-pier{index}", "box",
+             (at[0] + side * reach * along[0], at[1] + side * reach * along[1]),
+             (pier, height, thickness), yaw=yaw, material=material, group=group)
+        for index, side in enumerate((-1.0, 1.0))
+    ]
+    head = Prop(f"{prefix}-lintel", "box", at,
+                (span + pier * 2.0, lintel, thickness), yaw=yaw,
+                material=material, group=group)
+    top = max(ground_under(terrain, prop) for prop in piers) + height
+    return piers + pinned(terrain, [head], level=top - lintel * 0.35)
+
+
+def stairway(
+    terrain: Terrain,
+    prefix: str,
+    line: Sequence[Spot],
+    bottom: float,
+    top: float,
+    width: float = 3.2,
+    tread: float = 1.8,
+    material: str = "block",
+    group: str = "steps",
+) -> list[Prop]:
+    """A flight of level slabs climbing between two heights along a line.
+
+    `sloped` spreads a climb along a run of paving, which is a ramp. A stair
+    is the same run with each slab thick enough to close the rise to the next
+    one; thinner, the flight is a ladder of floating plates with daylight
+    between the treads. The thickness is taken from the climb rather than
+    given, so a flight that does not close cannot be built.
+
+    `line` is a polyline, so a flight can follow an approach that bends;
+    a straight one is the two-point case. Which matters on terraced ground,
+    where what a stair is for is crossing the risers, and the way up a bank
+    is rarely the shortest line across it.
+    """
+    tiles = path_tiles(line, tread)
+    if not tiles:
+        return []
+    rise = abs(top - bottom) / max(len(tiles) - 1, 1)
+    steps = paved(
+        prefix,
+        # Each tread laid slightly long, so consecutive slabs overlap at the
+        # nose instead of meeting exactly and gapping at every bend.
+        [(spot, yaw, length * 1.12) for spot, yaw, length in tiles],
+        width, thickness=rise + 0.3, material=material, group=group, sink=0.0,
+    )
+    return sloped(terrain, steps, bottom, top)
+
+
+def stepped_tower(
+    terrain: Terrain,
+    prefix: str,
+    at: Spot,
+    footprint: Spot,
+    height: float,
+    tiers: int = 3,
+    yaw: float = 0.0,
+    taper: float = 0.74,
+    material: str = "wall",
+    group: str = "",
+) -> list[Prop]:
+    """A tall structure as a stack of narrowing boxes.
+
+    One extruded box has the same outline at every height and from every
+    angle, which is what makes a greybox skyline read as a bar chart. Setting
+    each tier back gives the thing a profile, and the stack still stands
+    inside the footprint the layout reserved for it.
+
+    Pinned rather than rested: each tier is narrower than the one below, so
+    resting them would let an upper tier find higher ground under its smaller
+    base and lift clear of the tier it is meant to sit on.
+    """
+    tiers = max(int(tiers), 1)
+    storey = height / tiers
+    props = [
+        Prop(f"{prefix}-{index}", "box", at,
+             (footprint[0] * taper ** index, storey,
+              footprint[1] * taper ** index),
+             yaw=yaw + index * 5.0, material=material, group=group or prefix)
+        for index in range(tiers)
+    ]
+    base = ground_under(terrain, props[0])
+    for index, prop in enumerate(props):
+        prop.sink = ground_under(terrain, prop) - (base + index * storey)
+    return props
+
+
+def ruin(
+    prefix: str,
+    at: Spot,
+    width: float,
+    depth: float,
+    height: float,
+    yaw: float = 0.0,
+    thickness: float = 0.9,
+    standing: float = 0.62,
+    seed: int = 0,
+    material: str = "wall",
+    group: str = "",
+) -> list[Prop]:
+    """A rectangle of wall with pieces missing and the rest at broken heights.
+
+    What gives a site a past, for four runs of boxes. A complete building
+    reads as a building and a heap of blocks reads as debris; a wall line
+    with gaps in it is the one shape that says something used to stand here,
+    and it is the cheapest landmark a greybox has.
+    """
+    rng = random.Random(seed)
+    angle = math.radians(yaw)
+    along = (math.cos(angle), -math.sin(angle))
+    across = (math.sin(angle), math.cos(angle))
+
+    def corner(sx: float, sz: float) -> Spot:
+        return (
+            at[0] + along[0] * sx * width / 2.0 + across[0] * sz * depth / 2.0,
+            at[1] + along[1] * sx * width / 2.0 + across[1] * sz * depth / 2.0,
+        )
+
+    corners = [corner(-1, -1), corner(1, -1), corner(1, 1), corner(-1, 1)]
+    props: list[Prop] = []
+    for side in range(4):
+        spots, run_yaw, length = strip_spots(
+            corners[side], corners[(side + 1) % 4],
+            tile=max(thickness * 2.4, 1.8),
+        )
+        for index, spot in enumerate(spots):
+            if rng.random() > standing:
+                continue
+            props.append(Prop(
+                f"{prefix}-{side}{index:02d}", "box", spot,
+                (length * 1.06, height * rng.uniform(0.28, 1.0), thickness),
+                yaw=run_yaw, material=material, group=group or prefix,
+            ))
+    return props
+
+
+def bridge(
+    terrain: Terrain,
+    prefix: str,
+    start: Spot,
+    end: Spot,
+    level: float,
+    width: float = 3.8,
+    tile: float = 3.2,
+    thickness: float = 0.45,
+    clearance: float = 2.5,
+    side: float = 1.1,
+    material: str = "wall",
+    group: str = "bridge",
+) -> list[Prop]:
+    """A deck carried level from one point to another, on what it needs.
+
+    Rested, the slabs would follow the ground down into the gap they are
+    there to cross. `level` is the walking surface, and `clearance` is how far
+    the deck has to stand above the ground before a support is worth putting
+    under it — a pier a few centimetres long reads as a fault rather than as
+    structure. Supports go under every other slab, since one under each is a
+    palisade.
+    """
+    # `path_tiles` rather than `strip_spots`, because the two round
+    # differently and only one of them lands: `strip_spots` lays whole tiles
+    # of the size asked for and stops at the last one that fits, which on a
+    # span that does not divide evenly leaves the deck short of its own
+    # abutment by up to a tile — and a deck that stops short of the far bank
+    # ends in the air over the gap.
+    tiles = path_tiles([start, end], tile)
+    if not tiles:
+        return []
+    deck = pinned(
+        terrain,
+        paved(prefix, [(spot, yaw, length * 1.04) for spot, yaw, length in tiles],
+              width, thickness=thickness, material=material, group=group,
+              sink=0.0),
+        level=level - thickness,
+    )
+    footings = [
+        tile for tile in tiles
+        if level - ground_height(terrain, *tile[0]) > clearance
+    ][1::2]
+    return deck + columns(terrain, f"{prefix}pier", footings,
+                          top=level - thickness, side=side,
+                          material=material, group=group)
 
 
 def road_network(
@@ -1846,6 +2405,17 @@ def overlap(terrain: Terrain, first: Prop, second: Prop) -> tuple[float, float] 
     if vertical <= 0.0:
         return None
 
+    # The extents on the ground plane before the turned footprints. Props
+    # resting on the same ground nearly always overlap in height, so the
+    # vertical test rejects almost nothing and every pair on the site would
+    # otherwise pay for a separating-axis search — eight projections of eight
+    # corners — including pairs tens of metres apart. Rejecting here changes
+    # no answer: separating axes exist for boxes that do not meet, and the
+    # search would find one.
+    if (high_a[0] <= low_b[0] or high_b[0] <= low_a[0]
+            or high_a[2] <= low_b[2] or high_b[2] <= low_a[2]):
+        return None
+
     plane = _plane_overlap(
         ground_corners(terrain, first), ground_corners(terrain, second)
     )
@@ -1864,6 +2434,16 @@ def check_scene(scene: Scene, tolerance: float = 0.01) -> list[str]:
     problems: list[str] = []
     half = scene.terrain.size / 2.0
 
+    # Measured once. Every prop's extents are wanted twice — for the terrain
+    # bound below and for the pair search after it — and each measurement
+    # reads the ground under the whole footprint, so re-deriving them per
+    # comparison is the same nine samples run once per pair rather than once
+    # per prop.
+    extents = {
+        prop.id: bounds(scene.terrain, prop) for prop in scene.props
+        if all(value > 0 for value in prop.size)
+    }
+
     seen: set[str] = set()
     for prop in scene.props:
         if prop.id in seen:
@@ -1874,7 +2454,7 @@ def check_scene(scene: Scene, tolerance: float = 0.01) -> list[str]:
             problems.append(f"{prop.id}: size {prop.size} must be positive in every axis")
             continue
 
-        low, high = bounds(scene.terrain, prop)
+        low, high = extents[prop.id]
         if min(low[0], low[2]) < -half or max(high[0], high[2]) > half:
             problems.append(
                 f"{prop.id}: spans x {low[0]:.1f}..{high[0]:.1f}, "
@@ -1896,6 +2476,14 @@ def check_scene(scene: Scene, tolerance: float = 0.01) -> list[str]:
     for index, prop in enumerate(scene.props):
         for other in scene.props[index + 1:]:
             if prop.group and prop.group == other.group:
+                continue
+            reach, other_reach = extents.get(prop.id), extents.get(other.id)
+            if reach is None or other_reach is None:
+                continue
+            if (reach[1][0] <= other_reach[0][0]
+                    or other_reach[1][0] <= reach[0][0]
+                    or reach[1][2] <= other_reach[0][2]
+                    or other_reach[1][2] <= reach[0][2]):
                 continue
             depths = overlap(scene.terrain, prop, other)
             if depths and min(depths) > tolerance:

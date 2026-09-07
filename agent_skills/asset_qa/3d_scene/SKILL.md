@@ -129,20 +129,32 @@ Two stages, in this order:
 2. **Detail.** Swap individual primitives for generated meshes and stage ground
    textures, keeping the placement the greybox already proved.
 
-Four concerns are separate values, so any one can be changed without the others:
+Five concerns are separate values, so any one can be changed without the others:
 
 | concern | functions in `<REPO_PATH>/operators/gen_3d_scene/funcs/terrain_code_edit.py` |
 |---|---|
-| terrain | `flat` `hills` `slope` `bowl` `mound` `canyon`, reshaped by `flattened` `levelled_at` `graded` `carved` |
-| layout | `grid_spots` `ring_spots` `line_spots` `scatter_spots` `clustered_spots` `winding_spots` `arc_spots` `blocks_spots` `channel_spots`, filtered by `clear_circle` `clear_of` `clear_of_ways` `in_height_band` `on_high_ground` `on_low_ground` `on_slope` `fits` |
+| terrain | `flat` `hills` `slope` `bowl` `mound` `canyon`, reshaped by `flattened` `levelled_at` `graded` `carved` `terraced`, and settled by `baked` |
+| layout | `grid_spots` `ring_spots` `line_spots` `scatter_spots` `clustered_spots` `winding_spots` `arc_spots` `blocks_spots` `channel_spots` `spoke_lines`, filtered by `clear_circle` `clear_of` `clear_of_ways` `in_height_band` `on_high_ground` `on_low_ground` `on_slope` `fits`, measured by `crossing` `chained` `densified` `facing` `highest_spot` `lowest_spot` `contour_radius` |
+| structures | `ring_wall` + `gate_spots` `arch` `stairway` `stepped_tower` `ruin` `bridge` `columns` `road_network` `interchange` `water_along` |
 | sizing | `uniform_sizes` `varied_sizes` `graded_sizes` `tiered_heights` `stepped_sizes` |
 | materials | `GREYBOX_MATERIALS` `swap_material` `MATERIAL_TEXTURES` |
 
 Relief is written as one welded `heightfield`, not a box per tile: a grid of
 boxes is a staircase with a vertical wall at every tile edge, which is what
-makes a slope read as blocky. Ground shapes are driven by `fractal_noise`
+makes a slope read as blocky. Ground shapes are driven by `warped_noise`
 rather than by sine waves, since crossed sines put every crest on a regular
-lattice and the layout filters built on them then fall into rows.
+lattice and the layout filters built on them then fall into rows; warping
+then reads the noise off a grid noise has itself displaced, which is what
+gives slopes that run and hollows that are not circles. `ridged_noise` folds
+each octave at zero for the opposite profile — narrow crests over broad
+hollows — and is what puts a summit on high ground that a beacon can stand
+on; `hills(crest=...)` mixes the two.
+
+Every landform ends with `baked`: the height is sampled once onto the grid
+the surface is written from and read back by interpolation. That is a cost
+(a composed terrain is otherwise re-evaluated per sample) and a correctness
+point (a prop is then validated against the ground the GLB carries, not
+against a formula the exported mesh only samples).
 
 ### The Two Stages Of A Template
 
@@ -168,17 +180,32 @@ Landforms are classified by **landform, not by level name**, because the
 terrain dictates the distribution — a settlement in a basin gathers on the
 terraces, the same settlement on a ridge follows the high ground.
 
-| landform | ground | distribution |
-|---|---|---|
-| `plains` | level with a ripple | sparse scatter, no structure |
-| `hills` | rolling noise | split by height: towers on ridges, dwellings in hollows |
-| `basin` | dished, off-centre low point | hamlets on the terraces, shore, track to water |
-| `canyon` | meandering channel | chain along the floor, debris on the walls |
-| `walled_town` | plateau with rough flanks | rampart on the rim, radial spokes inside |
-| `city` | graded streets, carved river | paving, stacked interchange, crowded quarters |
+| landform | ground | circulation | landmark | the rest |
+|---|---|---|---|---|
+| `plains` | rippled, two roads crossing it | the two roads | watchtower | way-station, field walls, copses |
+| `hills` | ridged and terraced | cairns between the tops and the hollows | beacons | farmsteads with yards, scrub |
+| `basin` | dished and terraced | a flight down the bank | the lake hall | hamlets on the treads, shore, jetty |
+| `canyon` | meandering channel | trail, switchback stair | the rim bridge | camp, talus, standing water |
+| `walled_town` | terraced motte | gates, streets, approach steps | the keep | blocks, market square, camp outside |
+| `city` | graded streets, carved river | streets, bridges, interchange | interchange and tower core | quarters, frontage, park |
 
 Start from the nearest landform and override, rather than writing a scene from
 nothing.
+
+Four things separate a site that reads as a level from a scatter of blocks,
+and every scene here owes all four. They are worth checking against by eye
+before anything is generated, because no amount of detail added later
+supplies one that is missing:
+
+- **circulation** — a way through, whether that is paving, a stair, a bridge
+  or a line of cairns. Without one, whatever is placed is furniture.
+- **a landmark** — one thing taller and more distinct than the rest. A
+  greybox has no texture and no lighting, so a silhouette is the only thing
+  that can anchor a view or give the site a scale.
+- **hierarchy** — three sizes at least. A site of one-storey boxes has no
+  foreground and no background whatever the layout does.
+- **enclosure** — something dividing the ground, so the open parts read as
+  chosen rather than as leftover: walls, hedges, blocks, terraces.
 
 Typical chain:
 
