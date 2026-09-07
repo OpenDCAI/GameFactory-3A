@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Terrain Whitebox Studies</title>
+  <link rel="icon" href="data:,">
+  <style>
+    * { box-sizing: border-box; letter-spacing: 0; }
+    body { margin: 0; height: 100dvh; display: flex; flex-direction: column; color: #26302e; background: #e9eeeb; font: 14px system-ui, sans-serif; }
+    header { min-height: 70px; padding: 12px 24px; display: flex; align-items: center; gap: 24px; border-bottom: 1px solid #c7d0ca; background: #f8faf8; }
+    h1 { margin: 0; font-size: 19px; font-weight: 650; }
+    nav { display: flex; gap: 15px; align-items: center; flex-wrap: wrap; margin-left: auto; }
+    label { display: flex; gap: 6px; align-items: center; }
+    select, button, a { font: inherit; color: inherit; }
+    select, button { padding: 7px 10px; background: #fff; border: 1px solid #b4c0b8; border-radius: 4px; }
+    button { cursor: pointer; }
+    button:focus-visible, select:focus-visible, a:focus-visible { outline: 2px solid #148575; outline-offset: 3px; }
+    main { flex: 1; min-height: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    main.single { grid-template-columns: minmax(0, 1fr); }
+    section { position: relative; min-width: 0; min-height: 0; overflow: hidden; }
+    section + section { border-left: 1px solid #b8c4bc; }
+    canvas { width: 100%; height: 100%; display: block; touch-action: none; }
+    .caption { position: absolute; left: 22px; top: 18px; pointer-events: none; }
+    h2 { font-size: 22px; margin: 0 0 5px; font-weight: 550; }
+    .version { font-size: 12px; color: #58645c; }
+    .status { position: absolute; bottom: 16px; left: 22px; font-size: 12px; color: #53635a; }
+    .download { position: absolute; bottom: 16px; right: 22px; font-size: 12px; }
+    body.capture header { display: none; }
+    body.capture main { height: 100dvh; }
+    body.capture .download { display: none; }
+    @media (max-width: 760px) {
+      header { padding: 10px 12px; gap: 8px; flex-wrap: wrap; }
+      h1 { font-size: 17px; }
+      nav { margin-left: 0; gap: 8px; }
+      nav label { font-size: 12px; }
+      select, button { padding: 5px 6px; }
+      main { grid-template-columns: minmax(0, 1fr); grid-template-rows: repeat(2, minmax(0, 1fr)); }
+      main.single { grid-template-rows: minmax(0, 1fr); }
+      section + section { border-left: 0; border-top: 1px solid #b8c4bc; }
+      .caption { left: 12px; top: 10px; } h2 { font-size: 17px; }
+      .status { bottom: 8px; left: 12px; } .download { bottom: 8px; right: 12px; }
+    }
+  </style>
+  <script type="importmap">{"imports":{"three":"./vendor/three.module.js","three/addons/":"./vendor/"}}</script>
+</head>
+<body>
+  <header>
+    <h1>Terrain Whitebox Studies</h1>
+    <nav aria-label="Scene controls">
+      <label>Scene <select id="scene" aria-label="Scene"><option value="plains">Crossroads</option><option value="hills">Ridge farms</option><option value="basin">Lakeside terraces</option><option value="canyon">Stratified gorge</option><option value="walled_town">Hill citadel</option><option value="city">River district</option></select></label>
+      <label>Version <select id="variant" aria-label="Version"><option value="both">Comparison</option><option value="opus">Opus baseline</option><option value="gpt6">GPT-6 revision</option></select></label>
+      <label><input id="rotate" type="checkbox">Rotate</label>
+      <label><input id="wireframe" type="checkbox">Wireframe</label>
+      <label><input id="clay" type="checkbox">White clay</label>
+      <button id="reset" type="button">Reset view</button>
+    </nav>
+  </header>
+  <main></main>
+  <script type="module" src="./viewer.js"></script>
+</body>
+</html>

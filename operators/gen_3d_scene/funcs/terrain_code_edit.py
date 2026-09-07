@@ -64,11 +64,13 @@ TALLEST_STRUCTURE = 120.0
 #: Greybox palette. Distinct enough to tell surfaces apart, flat enough that
 #: nobody mistakes the result for finished art.
 GREYBOX_MATERIALS: dict[str, dict[str, Any]] = {
-    "ground": {"baseColor": [0.55, 0.56, 0.52, 1.0], "roughness": 0.95},
-    "block": {"baseColor": [0.72, 0.72, 0.74, 1.0], "roughness": 0.80},
-    "wall": {"baseColor": [0.62, 0.60, 0.58, 1.0], "roughness": 0.85},
-    "prop": {"baseColor": [0.70, 0.58, 0.42, 1.0], "roughness": 0.75},
-    "water": {"baseColor": [0.30, 0.48, 0.62, 0.65], "roughness": 0.15},
+    "ground": {"baseColor": [0.49, 0.52, 0.50, 1.0], "roughness": 0.95},
+    "block": {"baseColor": [0.82, 0.84, 0.84, 1.0], "roughness": 0.85},
+    "wall": {"baseColor": [0.76, 0.78, 0.77, 1.0], "roughness": 0.90},
+    "prop": {"baseColor": [0.60, 0.64, 0.63, 1.0], "roughness": 0.90},
+    "water": {"baseColor": [0.23, 0.48, 0.51, 1.0], "roughness": 0.28},
+    "roof": {"baseColor": [0.38, 0.43, 0.45, 1.0], "roughness": 0.92},
+    "route": {"baseColor": [0.34, 0.38, 0.39, 1.0], "roughness": 0.95},
     "marker": {"baseColor": [0.85, 0.35, 0.30, 1.0], "roughness": 0.60},
     # Growing things read as rock without it: a canopy and a boulder are both
     # spheres, and in one grey they are the same object at two sizes.
@@ -803,7 +805,11 @@ def contour_radius(
                 continue
             distance = index * step
         reach.append(distance)
-    return max(reach) if fit == "cover" else min(reach)
+    if fit == "cover":
+        # The last wet sample is inside the contour. Include the next radial
+        # interval so a covering disc reaches dry ground at its perimeter.
+        return min(limit, max(reach) + step) if max(reach) > 0.0 else 0.0
+    return min(reach)
 
 
 def _memoised(fn: Callable[[float, float], float]) -> Callable[[float, float], float]:
@@ -1633,6 +1639,8 @@ class Prop:
     source: str | None = None
     sink: float = 0.0
     group: str = ""
+    profile: tuple[Spot, ...] | None = None
+    segments: int = 16
 
 
 @dataclass
@@ -2264,6 +2272,69 @@ def ground_under(terrain: Terrain, prop: Prop) -> float:
     )
 
 
+def building(terrain: Terrain, envelope: Prop, roof: str = "gable") -> list[Prop]:
+    """Articulate a fitted box without expanding its collision envelope.
+
+    All levels refer to the original footing, including on sloping ground.
+    The original id belongs to the main volume so detail-stage replacement
+    can still address it. Roof profiles use the writer's convex extrude.
+    """
+    if roof not in ("gable", "flat"):
+        raise ValueError(f"unknown roof style: {roof}")
+    if envelope.kind != "box" or envelope.source:
+        return [envelope]
+    width, height, depth = envelope.size
+    if min(width, height, depth) <= 0:
+        raise ValueError("a building envelope must have positive dimensions")
+    base = ground_under(terrain, envelope) - envelope.sink
+    group = envelope.group or envelope.id
+
+    def volume(id, size, bottom, material, kind="box", profile=None):
+        prop = replace(envelope, id=id, size=size, kind=kind, material=material,
+                       group=group, profile=profile)
+        return replace(prop, sink=ground_under(terrain, prop) - bottom)
+
+    plinth = min(0.45, height * 0.12)
+    cap = height * (0.30 if roof == "gable" else 0.12)
+    body = volume(envelope.id, (width * 0.92, height - plinth - cap, depth * 0.92),
+                  base + plinth, envelope.material)
+    foundation = volume(f"plinth-{envelope.id}", (width, plinth, depth), base, "wall")
+    roofline = volume(f"roof-{envelope.id}", (width, cap, depth),
+                     base + height - cap, "roof",
+                     kind="extrude" if roof == "gable" else "box",
+                     profile=((-0.5, -0.5), (0.5, -0.5), (0.0, 0.5))
+                     if roof == "gable" else None)
+    return [foundation, body, roofline]
+
+
+def battlement(terrain: Terrain, envelope: Prop, merlons: int = 3) -> list[Prop]:
+    """Cut a crenellated silhouette into the top of a fitted curtain wall."""
+    if merlons < 1:
+        raise ValueError("a battlement needs at least one merlon")
+    width, height, depth = envelope.size
+    crest = min(0.9, height * 0.2)
+    base = ground_under(terrain, envelope) - envelope.sink
+    wall = replace(envelope, size=(width, height - crest, depth))
+    result = [wall]
+    angle = math.radians(envelope.yaw)
+    for index in range(merlons):
+        offset = width * ((index + 0.5) / merlons - 0.5)
+        block = replace(envelope, id=f"merlon-{envelope.id}-{index}",
+                        at=(envelope.at[0] + offset * math.cos(angle),
+                            envelope.at[1] - offset * math.sin(angle)),
+                        size=(width / merlons * 0.52, crest, depth))
+        result.append(replace(block, sink=ground_under(terrain, block) - (base + height - crest)))
+    return result
+
+
+def street_bearing(at: Spot, ways: Sequence[tuple[Spot, Spot]]) -> float:
+    """Align a frontage with its nearest street segment."""
+    if not ways:
+        return 0.0
+    start, end = min(ways, key=lambda way: _distance_to_way(at, *way))
+    return facing(start, end)
+
+
 def prop_part(terrain: Terrain, prop: Prop) -> dict[str, Any]:
     """Spec part for one prop, resting on the terrain."""
     x, z = prop.at
@@ -2279,6 +2350,10 @@ def prop_part(terrain: Terrain, prop: Prop) -> dict[str, Any]:
         part["rotation"] = (0.0, float(prop.yaw), 0.0)
     if prop.source:
         part["source"] = prop.source
+    if prop.profile is not None and not prop.source:
+        part["profile"] = prop.profile
+    if prop.segments != 16 and not prop.source:
+        part["segments"] = prop.segments
     return part
 
 

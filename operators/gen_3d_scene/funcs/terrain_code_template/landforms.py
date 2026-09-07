@@ -126,12 +126,12 @@ def hills(size: float = 100.0, relief: float = 9.5, seed: int = 2) -> Ground:
     nowhere to stand; folded towards ridges, the high ground has an edge —
     which is what a beacon is set on and what a track along the tops follows.
 
-    The wavelength is under a third of the site, so several separate hills fit
-    across it. At the site's own scale the whole thing would be one dome.
+    Broad rolling masses carry the beacons; the finer octaves supply surface
+    detail without competing with the ridge silhouette.
     """
     terrace = relief * 0.20
-    terrain = te.hills(size, amplitude=relief, wavelength=size * 0.30,
-                       crest=0.45, tiles=112, seed=seed)
+    terrain = te.hills(size, amplitude=relief, wavelength=size * 0.44,
+                       crest=0.22, tiles=112, seed=seed)
     # Lightly: the treads should read as worked ground on the flanks, not
     # turn the landform into a ziggurat.
     terrain = te.terraced(terrain, step=terrace, share=0.5)
@@ -159,7 +159,7 @@ def hills(size: float = 100.0, relief: float = 9.5, seed: int = 2) -> Ground:
 
 # ── cut and raised ───────────────────────────────────────────────────────────
 
-def basin(size: float = 88.0, depth: float = 22.0, seed: int = 3) -> Ground:
+def basin(size: float = 88.0, depth: float = 18.0, seed: int = 3) -> Ground:
     """Ground dishing to an off-centre low point, terraced, waterline measured.
 
     The low point is found by sampling rather than assumed to be the centre,
@@ -182,7 +182,7 @@ def basin(size: float = 88.0, depth: float = 22.0, seed: int = 3) -> Ground:
 
     water = te.lowest_spot(terrain, samples=104)
     floor = te.ground_height(terrain, *water)
-    surface = floor + depth * 0.17
+    surface = floor + depth * 0.23
 
     return Ground(terrain, size, {
         "depth": depth,
@@ -202,6 +202,7 @@ def canyon(
     wall_run: float = 0.5,
     meander: float = 0.12,
     seed: int = 4,
+    strata: float = 0.65,
 ) -> Ground:
     """A meandering channel between walls that rise away from it.
 
@@ -220,6 +221,11 @@ def canyon(
     """
     terrain = te.canyon(size, depth, floor_width, meander=meander,
                         rim_share=wall_run, tiles=104, seed=seed)
+    if not 0.0 <= strata <= 1.0:
+        raise ValueError("strata must be between zero and one")
+    # Broad geological benches preserve the floor while breaking up the
+    # continuous ramps on the walls. Sample only after folding the profile.
+    terrain = te.terraced(terrain, step=depth / 5.0, share=strata, tread=0.55)
     terrain = te.baked(terrain)
 
     return Ground(terrain, size, {
@@ -228,6 +234,7 @@ def canyon(
         "floor": 0.0,
         "rim": depth,
         "reach": size * 0.88,
+        "strata": strata,
     })
 
 

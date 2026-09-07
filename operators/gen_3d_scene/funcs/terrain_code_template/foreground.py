@@ -70,6 +70,7 @@ from __future__ import annotations
 
 import math
 import random
+from dataclasses import replace
 
 from .. import terrain_code_edit as te
 from .landforms import Ground, TRACK_WIDTH
@@ -78,6 +79,26 @@ Built = tuple[te.Terrain, list[te.Prop]]
 
 #: Paving tile length. Short enough to follow a bend without gapping.
 PAVER = 5.0
+
+
+def _architecture(terrain: te.Terrain, props: list[te.Prop], urban: bool = False) -> list[te.Prop]:
+    """Give occupied volumes a roofline while retaining the fitted envelopes."""
+    built = []
+    for prop in props:
+        if prop.id.startswith(("house-", "shed-", "shop-", "tower-", "hall-",
+                               "keep-", "watchtower-", "beacon")) and prop.kind == "box":
+            flat = urban or prop.id.startswith(("keep-", "watchtower-", "beacon"))
+            built.extend(te.building(terrain, prop, roof="flat" if flat else "gable"))
+        elif prop.id.startswith("tent-"):
+            built.append(replace(prop, kind="extrude",
+                                 profile=((-0.5, -0.5), (0.5, -0.5), (0.0, 0.5))))
+        elif prop.id.startswith("wall-") and prop.group == "rampart":
+            built.extend(te.battlement(terrain, prop))
+        elif prop.kind == "sphere":
+            built.append(replace(prop, segments=8))
+        else:
+            built.append(prop)
+    return built
 
 
 def _trees(
@@ -167,7 +188,7 @@ def plains(
 
     # Cut before anything is measured against the terrain: a station standing
     # on a ripple rests on its lowest corner with the rest clear of the ground.
-    terrain = te.levelled_at(terrain, plots[:4], radius=7.0, blend=6.0)
+    terrain = te.baked(te.levelled_at(terrain, plots[:4], radius=7.0, blend=6.0))
 
     candidates: list[te.Prop] = []
     if plots:
@@ -216,7 +237,8 @@ def plains(
         (3.0, 2.3, 3.0), spread=0.45, buried=0.3, seed=seed,
     ), standing + wood + paving, margin=0.6)
 
-    return terrain, paving + built + hedges + wood + rocks
+    paving = [replace(prop, material="route") for prop in paving]
+    return terrain, _architecture(terrain, paving + built + hedges + wood + rocks)
 
 
 def _field_walls(ground: Ground, seed: int) -> list[te.Prop]:
@@ -306,7 +328,7 @@ def hills(
     # Buildable ground under everything, cut before a single prop is measured
     # against the terrain — a farmstead on a hillside otherwise stands on its
     # lowest corner with the rest of its base clear of the slope.
-    terrain = te.levelled_at(terrain, tops + steadings, radius=5.4, blend=6.5)
+    terrain = te.baked(te.levelled_at(terrain, tops + steadings, radius=5.4, blend=6.5))
 
     watch: list[te.Prop] = []
     for index, spot in enumerate(tops):
@@ -343,7 +365,7 @@ def hills(
         seed=seed + 5,
     ), standing, margin=0.5)
 
-    return terrain, standing + bushes
+    return terrain, _architecture(terrain, standing + bushes)
 
 
 def _farmstead(
@@ -439,27 +461,33 @@ def basin(ground: Ground, hamlets: int = 6, seed: int = 3) -> Built:
     inland = (head[0] + outward[0] * 8.0, head[1] + outward[1] * 8.0)
 
     # Every cut to the ground happens before a single prop is measured.
-    terrain = te.levelled_at(
+    terrain = te.baked(te.levelled_at(
         terrain, [spot for spot, _origin in plots] + [inland],
         radius=4.4, blend=4.5,
-    )
+    ))
 
     # The disc's rim is buried in the bank, so the visible edge is the
     # waterline rather than a cylinder wall.
+    # Pads can change the shoreline. Re-measure the final terrain and allow
+    # for the inscribed polygon used by the cylinder writer.
+    pool_radius = te.contour_radius(terrain, water, surface, fit="cover", rays=96, steps=120)
+    pool_radius /= math.cos(math.pi / 16)
     pool = [
         te.Prop("pool", "cylinder", water,
-                (ground.marks["pool_radius"] * 2.0,
+                (pool_radius * 2.0,
                  surface - te.ground_height(terrain, *water) + 0.6,
-                 ground.marks["pool_radius"] * 2.0),
+                 pool_radius * 2.0),
                 material="water", sink=0.6, group="shore"),
     ]
     # A flight rather than a run of slabs. The bank is terraced, so a path
     # resting on it drops a whole riser between one slab and the next, and
     # crossing the risers is the entire job.
+    descent = abs(te.ground_height(terrain, *head) - (surface + 0.15))
+    tread = min(0.75, math.dist(head, toe) / (math.ceil(descent / 0.22) + 2))
     path = te.stairway(
         terrain, "path", [head, toe],
         bottom=te.ground_height(terrain, *head), top=surface + 0.15,
-        width=3.0, tread=2.2, group="shore",
+        width=3.0, tread=max(tread, 0.1), group="shore",
     )
     hall = te.stepped_tower(
         terrain, "hall", inland, (11.5, 8.5), HALL, tiers=3,
@@ -546,7 +574,7 @@ def basin(ground: Ground, hamlets: int = 6, seed: int = 3) -> Built:
         stone.group = "shore"
     stones = te.fit_all(terrain, stones, standing + reeds, margin=0.4)
 
-    return terrain, standing + reeds + stones
+    return terrain, _architecture(terrain, standing + reeds + stones)
 
 
 # ── canyon ───────────────────────────────────────────────────────────────────
@@ -652,7 +680,7 @@ def canyon(
                 material="water", sink=0.4),
     ] if wet else []
 
-    return terrain, structure + pitched + rocks + pool
+    return terrain, _architecture(terrain, structure + pitched + rocks + pool)
 
 
 def _rim_reach(
@@ -859,7 +887,7 @@ def walled_town(
              4.4 * rng.uniform(0.8, 1.25)),
             # Turned to face the square, then let off it, so the blocks have
             # a grain without every roofline agreeing.
-            yaw=te.facing(spot, (0.0, 0.0)) + rng.uniform(-32.0, 32.0),
+            yaw=te.street_bearing(spot, ways) + rng.uniform(-8.0, 8.0),
             material="wall" if storeys > 1 else "prop",
         ))
     built = te.fit_all(terrain, dwellings, rampart + paving + keep + well,
@@ -875,7 +903,8 @@ def walled_town(
     )
     outside = _outside_the_wall(terrain, ground, rampart + steps, seed)
 
-    return terrain, (rampart + paving + keep + well + built + steps + outside)
+    paving = [replace(prop, material="route") for prop in paving]
+    return terrain, _architecture(terrain, rampart + paving + keep + well + built + steps + outside)
 
 
 def _outside_the_wall(
@@ -959,7 +988,7 @@ SETBACK_ABOVE = 26.0
 def city(
     ground: Ground,
     quarters: int = 10,
-    core_height: float = 46.0,
+    core_height: float = 58.0,
     edge_height: float = 10.0,
     seed: int = 6,
 ) -> Built:
@@ -1041,7 +1070,7 @@ def city(
                 (rng.uniform(9.0, 11.0),
                  max(5.0, tier * rng.uniform(0.55, 1.45)),
                  rng.uniform(9.0, 11.0)),
-                yaw=rng.uniform(-6.0, 6.0), material="wall",
+                yaw=te.street_bearing(spot, streets) + rng.uniform(-3.0, 3.0), material="wall",
             )
             for slot, spot in enumerate(off_the_park(in_the_blocks(
                 te.clustered_spots(1, 9, size * 0.84, spread=12.0,
@@ -1067,7 +1096,7 @@ def city(
             (rng.uniform(5.0, 9.0),
              rng.uniform(3.5, 9.0) if low else rng.uniform(1.6, 3.6),
              rng.uniform(5.0, 8.0)),
-            yaw=rng.uniform(0.0, 90.0), material="prop",
+            yaw=te.street_bearing(spot, streets) + rng.uniform(-5.0, 5.0), material="prop",
         ))
     filler = te.fit_all(terrain, clutter, buildings + infrastructure,
                         margin=1.0)
@@ -1093,8 +1122,9 @@ def city(
             tall=6.0,
         )
 
-    return terrain, (paving + bridges + water + decks + supports
-                     + buildings + filler + lamps + green)
+    paving = [replace(prop, material="route") for prop in paving]
+    return terrain, _architecture(terrain, paving + bridges + water + decks + supports
+                                 + buildings + filler + lamps + green, urban=True)
 
 
 def _with_setbacks(

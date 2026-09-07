@@ -18,7 +18,6 @@ from __future__ import annotations
 import json
 import math
 import struct
-import subprocess
 import sys
 import tempfile
 import unittest
@@ -27,7 +26,7 @@ from pathlib import Path
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO_ROOT))
 
-from models.common.glb_writer import rotated_bounds  # noqa: E402
+from models.common.glb_writer import build_part, rotated_bounds, write_spec_glb  # noqa: E402
 from operators.gen_3d_scene.funcs import terrain_code_edit as te  # noqa: E402
 from operators.gen_3d_scene.funcs.terrain_code_template import (  # noqa: E402
     STAGES,
@@ -38,7 +37,6 @@ from operators.gen_3d_scene.funcs.terrain_code_template import (  # noqa: E402
 )
 
 OUT_DIR = _REPO_ROOT / "test_data" / "outputs" / "_test_3d_scene_code"
-VIEWER_LIB = _REPO_ROOT / "test_data" / "outputs" / "_viewer_lib"
 
 
 def glb_json(path: Path) -> dict:
@@ -2635,12 +2633,17 @@ class TestSceneWriting(unittest.TestCase):
 class TestSceneDetail(unittest.TestCase):
     """Stage 2: meshes and materials replacing greybox stand-ins."""
 
-    MESH = (_REPO_ROOT / "test_data" / "outputs" / "game_knight_demo" / "default"
-            / "assets" / "3d_object" / "knight_hybrid_001" / "model.glb")
+    @classmethod
+    def setUpClass(cls):
+        cls.directory = tempfile.TemporaryDirectory()
+        cls.MESH = Path(cls.directory.name) / "detail.glb"
+        write_spec_glb({"subject": "detail-fixture", "parts": [
+            {"id": "body", "kind": "box", "at": [0, 0, 0], "size": [1, 2, 0.6]}
+        ]}, cls.MESH)
 
-    def setUp(self):
-        if not self.MESH.is_file():
-            self.skipTest(f"no generated mesh at {self.MESH}")
+    @classmethod
+    def tearDownClass(cls):
+        cls.directory.cleanup()
 
     def test_detail_swap_keeps_the_position(self):
         scene = TEMPLATES["plains"]()
@@ -2696,64 +2699,90 @@ class TestSceneDetail(unittest.TestCase):
 
 # ── video ────────────────────────────────────────────────────────────────────
 
+class TestArchitecture(unittest.TestCase):
+    def test_battlements_keep_the_curtain_wall_envelope(self):
+        terrain = te.slope(40.0)
+        wall = te.Prop("wall", at=(1.0, 2.0), size=(8.0, 5.0, 1.2), yaw=37.0,
+                       group="rampart")
+        parts = te.battlement(terrain, wall)
+        low, high = te.bounds(terrain, wall)
+        self.assertEqual(te.check_scene(te.Scene("wall", terrain, parts)), [])
+        self.assertEqual(len(parts), 4)
+        for part in parts:
+            vertices, _normals, _indices = build_part(te.prop_part(terrain, part))
+            for vertex in vertices:
+                for axis in range(3):
+                    self.assertGreaterEqual(vertex[axis], low[axis] - 1e-7)
+                    self.assertLessEqual(vertex[axis], high[axis] + 1e-7)
+        self.assertAlmostEqual(te.bounds(terrain, parts[0])[1][1],
+                               te.bounds(terrain, parts[1])[0][1])
+
+    def test_roofs_export_as_closed_positive_volume_inside_the_fitted_envelope(self):
+        terrain = te.slope(40.0, rise=5.0)
+        for yaw in (0.0, 37.0, 90.0):
+            envelope = te.Prop("house", at=(2.0, 3.0), size=(6.0, 5.0, 8.0), yaw=yaw)
+            low, high = te.bounds(terrain, envelope)
+            for style in ("gable", "flat"):
+                parts = te.building(terrain, envelope, roof=style)
+                self.assertEqual(te.check_scene(te.Scene("house", terrain, parts)), [])
+                self.assertEqual(len([p for p in parts if p.id == "house"]), 1)
+                for prop in parts:
+                    positions, _normals, indices = build_part(te.prop_part(terrain, prop))
+                    for vertex in positions:
+                        for axis in range(3):
+                            self.assertGreaterEqual(vertex[axis], low[axis] - 1e-7)
+                            self.assertLessEqual(vertex[axis], high[axis] + 1e-7)
+                    volume = 0.0
+                    for a, b, c in zip(indices[::3], indices[1::3], indices[2::3]):
+                        x, y, z = positions[a], positions[b], positions[c]
+                        volume += (x[0] * (y[1] * z[2] - y[2] * z[1])
+                                   - x[1] * (y[0] * z[2] - y[2] * z[0])
+                                   + x[2] * (y[0] * z[1] - y[1] * z[0])) / 6.0
+                    self.assertGreater(volume, 0.0)
+                self.assertAlmostEqual(te.bounds(terrain, parts[-1])[1][1], high[1])
+                self.assertAlmostEqual(te.bounds(terrain, parts[0])[1][1],
+                                       te.bounds(terrain, parts[1])[0][1])
+                self.assertAlmostEqual(te.bounds(terrain, parts[1])[1][1],
+                                       te.bounds(terrain, parts[2])[0][1])
+
+    def test_scene_seed_reaches_both_stages_and_population_can_override_it(self):
+        from unittest.mock import Mock, patch
+        with patch.dict(STAGES, {"plains": (landforms.plains, Mock(wraps=foreground.plains))}):
+            populate = STAGES["plains"][1]
+            build_scene("plains", seed=11)
+            self.assertEqual(populate.call_args.kwargs["seed"], 11)
+            build_scene("plains", seed=11, foreground_args={"seed": 9})
+            self.assertEqual(populate.call_args.kwargs["seed"], 9)
+
+    def test_street_bearing_uses_the_nearest_segment(self):
+        ways = [((-10.0, 0.0), (10.0, 0.0)), ((20.0, -10.0), (20.0, 10.0))]
+        self.assertAlmostEqual(te.street_bearing((0.0, 1.0), ways), te.facing(*ways[0]))
+        self.assertAlmostEqual(te.street_bearing((19.0, 0.0), ways), te.facing(*ways[1]))
+
+    def test_canyon_strata_change_walls_but_keep_the_floor(self):
+        smooth = landforms.canyon(strata=0.0)
+        layered = landforms.canyon(strata=0.8)
+        samples = [(x, z) for x in range(-35, 36, 5) for z in range(-35, 36, 5)]
+        differences = [abs(te.ground_height(smooth.terrain, *p) -
+                           te.ground_height(layered.terrain, *p)) for p in samples]
+        self.assertGreater(max(differences), 0.5)
+        for point in te.channel_spots(smooth.terrain, 12):
+            self.assertAlmostEqual(te.ground_height(layered.terrain, *point), 0.0, delta=0.1)
+        with self.assertRaises(ValueError):
+            landforms.canyon(strata=1.1)
+
 def record_videos(out_dir: Path = OUT_DIR, frames: int = 150) -> int:
-    """Write every template as a GLB and record a turntable of each.
+    """Export and record all six scenes on Windows, macOS or Linux.
 
-    Needs the compiled `turntable` helper in `test_data/outputs/_viewer_lib`
-    and a local HTTP server rooted at `test_data/outputs`.
+    Install playwright and Pillow, plus ffmpeg on PATH. Windows uses Edge;
+    on other systems install Chromium with `python -m playwright install`.
     """
-    turntable = VIEWER_LIB / "turntable"
-    if not turntable.is_file():
-        print(f"no turntable helper at {turntable.relative_to(_REPO_ROOT)}")
-        print("build it with:  cd test_data/outputs/_viewer_lib && "
-              "swiftc -O -o turntable turntable.swift")
+    from scripts.terrain_whitebox_demo import export_scenes
+    from scripts.render_terrain_whitebox import render
+
+    if export_scenes(_REPO_ROOT, out_dir, "gpt6"):
         return 1
-
-    out_dir.mkdir(parents=True, exist_ok=True)
-    videos = out_dir / "videos"
-    videos.mkdir(exist_ok=True)
-
-    outputs_root = _REPO_ROOT / "test_data" / "outputs"
-    relative = out_dir.relative_to(outputs_root)
-
-    server = subprocess.Popen(
-        [sys.executable, "-m", "http.server", "8765", "--bind", "127.0.0.1"],
-        cwd=outputs_root, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
-    try:
-        import time
-
-        time.sleep(2)
-        for name, build in TEMPLATES.items():
-            scene = build()
-            problems = te.check_scene(scene)
-            te.write_scene(scene, out_dir / f"{name}.glb")
-            summary = te.scene_summary(scene)
-
-            page = (
-                "http://127.0.0.1:8765/_viewer_lib/scene_recorder.html"
-                f"?model=../{relative}/{name}.glb"
-                f"&label={name}"
-                f"&note={summary['props']}+props+%C2%B7+"
-                f"{len(problems)}+problem(s)"
-                f"&frames={frames}"
-            )
-            subprocess.run(
-                [str(turntable), "--url", page,
-                 "--out", str(videos / f"{name}.mp4"),
-                 "--frames", str(frames), "--fps", "30"],
-                check=False,
-            )
-            written = videos / f"{name}.mp4"
-            size = written.stat().st_size if written.is_file() else 0
-            print(f"{name:<12} {summary['props']:>3} props  "
-                  f"{len(problems)} problem(s)  {size / 1024:>7.0f} KB")
-    finally:
-        server.terminate()
-        server.wait(timeout=5)
-
-    print(f"\nvideos: {videos.relative_to(_REPO_ROOT)}")
-    return 0
+    return render(out_dir, variants=("gpt6",), frames=frames)
 
 
 if __name__ == "__main__":
