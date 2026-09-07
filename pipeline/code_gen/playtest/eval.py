@@ -24,7 +24,7 @@ def evaluate_report(
     *,
     max_console_errors: int = 0,
 ) -> dict[str, Any]:
-    """Score recording integrity and browser/runtime errors from a fresh report."""
+    """Score recording integrity and runtime errors from a fresh report."""
     path = Path(report_path).expanduser().resolve(strict=False)
     errors: list[str] = []
     report: dict[str, Any] = {}
@@ -39,6 +39,7 @@ def evaluate_report(
         except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
             errors.append(f"Invalid playtest report: {exc}")
 
+    engine = str(report.get("engine") or "").strip().lower()
     actions = report.get("actions", [])
     executed = report.get("executed_actions", [])
     page_errors = report.get("page_errors", [])
@@ -69,6 +70,7 @@ def evaluate_report(
         "no_failed_actions": not failed_actions,
         "no_page_errors": not page_errors,
         "console_error_budget": len(console_errors) <= max_console_errors,
+        "no_crash": not str(report.get("crash") or "").strip(),
     }
     for name, passed in checks.items():
         if not passed:
@@ -83,7 +85,7 @@ def evaluate_report(
         "status": "passed" if not errors else "failed",
         "engine": report.get("engine"),
         "report_path": str(path),
-        "scope": "browser_playtest_recording",
+        "scope": "blender_playtest_recording" if engine == "blender" else "browser_playtest_recording",
         "authoritative_validation": False,
         "score": 1.0 if not errors else 0.0,
         "checks": checks,

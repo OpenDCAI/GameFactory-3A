@@ -1,13 +1,13 @@
 """Record one generated game playtest.
 
 The engine switch lives here so a second engine can be added without leaking
-its recording implementation into the three.js adapter. Everything about *how*
-a browser is driven belongs to `engine_adapters/<engine>/playtest/`.
+its recording implementation into an adapter. Everything about *how* a take
+is captured belongs to `engine_adapters/<engine>/playtest/`.
 
-Recording on a headless box needs three things the game itself does not carry:
-a Playwright install, a browser, and the shared libraries Chromium is missing
-from this image. `--recorder-root` supplies all three from one conventional
-layout, so the usual invocation names a project and a URL and nothing else.
+Recording a three.js game on a headless box needs three things the game
+itself does not carry: a Playwright install, a browser, and the shared
+libraries Chromium is missing from this image. `--recorder-root` supplies
+all three from one conventional layout.
 """
 
 from __future__ import annotations
@@ -25,12 +25,8 @@ if str(REPO_ROOT) not in sys.path:
 
 from engine_adapters.three_js import ThreeClient
 
-SUPPORTED_ENGINES = ("three_js",)
+SUPPORTED_ENGINES = ("three_js", "blender")
 
-#: Layout of a recorder root: a Node project with Playwright installed, the
-#: browsers it downloaded, and a conda prefix holding Chromium's missing
-#: libraries. Kept as data because the same three paths are needed by any engine
-#: that drives a browser.
 _RECORDER_LAYOUT = {
     "playwright_root": ".",
     "browsers_path": "browsers",
@@ -69,15 +65,20 @@ def record_playtest(
     browser_executable: str | Path | None = None,
     browsers_path: str | Path | None = None,
     library_path: str | Path | None = None,
+    blender: str | Path | None = None,
+    spec: str | Path | None = None,
     ffmpeg: str | Path | None = None,
     duration: float = 12.0,
     fps: int = 20,
     width: int = 640,
     height: int = 360,
+    samples: int = 8,
+    device: str = "CPU",
     timeout: float = 900.0,
     dry_run: bool = False,
+    no_render: bool = False,
 ) -> dict[str, Any]:
-    """Dispatch one recording to the engine adapter that owns the browser."""
+    """Dispatch one recording to the engine adapter that owns the take."""
     name = str(engine).strip().lower()
     if name not in SUPPORTED_ENGINES:
         return {
@@ -87,29 +88,48 @@ def record_playtest(
             "errors": [f"Unsupported engine {engine!r}; supported: {', '.join(SUPPORTED_ENGINES)}"],
         }
 
-    # Explicit arguments win over the recorder root, so one part of a layout can
-    # be overridden without abandoning the rest of it.
-    derived = resolve_recorder_root(recorder_root)
     project_path = Path(project).expanduser().resolve(strict=False)
-    result = ThreeClient(project_path=project_path).playtest.record(
-        output_dir=output_dir or default_output_dir(project_path),
-        url=url,
-        action_plan=action_plan,
-        hold=hold,
-        warmup=warmup,
-        look=look,
-        playwright_root=playwright_root or derived.get("playwright_root"),
-        browser_executable=browser_executable,
-        browsers_path=browsers_path or derived.get("browsers_path"),
-        library_path=library_path or derived.get("library_path"),
-        ffmpeg=ffmpeg,
-        duration=duration,
-        fps=fps,
-        width=width,
-        height=height,
-        timeout=timeout,
-        dry_run=dry_run,
-    )
+    out = output_dir or default_output_dir(project_path)
+    if name == "blender":
+        from engine_adapters.blender import BlenderClient
+
+        result = BlenderClient(project_path=project_path, blender_root=blender).playtest.record(
+            output_dir=out,
+            action_plan=action_plan,
+            blender=blender,
+            ffmpeg=ffmpeg,
+            spec=spec,
+            duration=duration,
+            fps=fps,
+            width=width,
+            height=height,
+            samples=samples,
+            device=device,
+            timeout=timeout,
+            dry_run=dry_run,
+            no_render=no_render,
+        )
+    else:
+        derived = resolve_recorder_root(recorder_root)
+        result = ThreeClient(project_path=project_path).playtest.record(
+            output_dir=out,
+            url=url,
+            action_plan=action_plan,
+            hold=hold,
+            warmup=warmup,
+            look=look,
+            playwright_root=playwright_root or derived.get("playwright_root"),
+            browser_executable=browser_executable,
+            browsers_path=browsers_path or derived.get("browsers_path"),
+            library_path=library_path or derived.get("library_path"),
+            ffmpeg=ffmpeg,
+            duration=duration,
+            fps=fps,
+            width=width,
+            height=height,
+            timeout=timeout,
+            dry_run=dry_run,
+        )
     result["engine"] = name
     return result
 
@@ -117,7 +137,7 @@ def record_playtest(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Discover and record a generated game playtest.")
     parser.add_argument("--engine", choices=SUPPORTED_ENGINES, default="three_js")
-    parser.add_argument("--project", required=True, help="Game project directory or its package.json")
+    parser.add_argument("--project", required=True, help="Game project directory")
     parser.add_argument("--url", default="", help="Running dev server; defaults to the adapter's dev-server URL")
     parser.add_argument("--out-dir", default="", help="Defaults to <project>/.a3game/playtest/<timestamp>")
     parser.add_argument("--action-plan", default="", help="JSON array or {warmup?,hold?,look?,actions:[...]}; overrides discovery")
@@ -129,6 +149,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--browser-executable", default="", help="Chromium binary to use")
     parser.add_argument("--browsers-path", default="", help="PLAYWRIGHT_BROWSERS_PATH for the recorder")
     parser.add_argument("--library-path", default="", help="Prepended to LD_LIBRARY_PATH for Chromium's missing libraries")
+    parser.add_argument("--blender", default="", help="Blender executable, or a Python with bpy")
+    parser.add_argument("--spec", default="", help="Blender mechanic spec JSON")
+    parser.add_argument("--samples", type=int, default=8, help="Blender Cycles samples")
+    parser.add_argument("--device", default="CPU", help="Blender Cycles device")
+    parser.add_argument("--no-render", action="store_true", help="Blender: skip Cycles; ticks still fill the report")
     parser.add_argument("--ffmpeg", default="", help="ffmpeg binary used to encode the take")
     parser.add_argument("--duration", type=float, default=12.0, help="Seconds of video to record")
     parser.add_argument("--fps", type=int, default=20, help="Simulation and video frame rate")
@@ -155,13 +180,18 @@ def main(argv: list[str] | None = None) -> int:
         browser_executable=args.browser_executable or None,
         browsers_path=args.browsers_path or None,
         library_path=args.library_path or None,
+        blender=args.blender or None,
+        spec=args.spec or None,
         ffmpeg=args.ffmpeg or None,
         duration=args.duration,
         fps=args.fps,
         width=args.width,
         height=args.height,
+        samples=args.samples,
+        device=args.device,
         timeout=args.timeout,
         dry_run=args.dry_run,
+        no_render=args.no_render,
     )
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0 if result.get("ok") else 1
