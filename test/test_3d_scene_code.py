@@ -11,13 +11,22 @@ are wrong on disk.
 
 Run from repo root:
     python test/test_3d_scene_code.py
-    python test/test_3d_scene_code.py --video      # also record turntables
+    python test/test_3d_scene_code.py --export
+    python test/test_3d_scene_code.py --export --source ../terrain-opus --variant opus
+    python test/test_3d_scene_code.py --render --variants gpt6 --frames 0
+    python test/test_3d_scene_code.py --video      # export and record turntables
+
+Demo helpers and viewer assets live in test/terrain_code_test. --export and
+--render forward their options to the respective helper (--help lists them).
+--video accepts --output and --frames. Rendering requires playwright, Pillow,
+ffmpeg for videos, and Edge on Windows or Playwright Chromium elsewhere.
 """
 from __future__ import annotations
 
 import json
 import math
 import struct
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -2777,16 +2786,40 @@ def record_videos(out_dir: Path = OUT_DIR, frames: int = 150) -> int:
     Install playwright and Pillow, plus ffmpeg on PATH. Windows uses Edge;
     on other systems install Chromium with `python -m playwright install`.
     """
-    from scripts.terrain_whitebox_demo import export_scenes
-    from scripts.render_terrain_whitebox import render
+    from test.terrain_code_test.terrain_whitebox_demo import export_scenes
+    from test.terrain_code_test.render_terrain_whitebox import render
 
     if export_scenes(_REPO_ROOT, out_dir, "gpt6"):
         return 1
     return render(out_dir, variants=("gpt6",), frames=frames)
 
 
+def run_demo(argv: list[str]) -> int:
+    """Dispatch demo commands while keeping optional dependencies lazy."""
+    mode, *options = argv
+    if mode == "--export":
+        # Use a fresh interpreter: this test module has already imported the
+        # current templates, but --source may request a different checkout.
+        helper = Path(__file__).resolve().parent / "terrain_code_test" / "terrain_whitebox_demo.py"
+        return subprocess.call([sys.executable, str(helper), *options])
+    if mode == "--render":
+        from test.terrain_code_test.render_terrain_whitebox import main
+
+        return main(options)
+    if mode == "--video":
+        import argparse
+
+        parser = argparse.ArgumentParser(description=record_videos.__doc__)
+        parser.add_argument("--output", type=Path, default=OUT_DIR)
+        parser.add_argument("--frames", type=int, default=150)
+        args = parser.parse_args(options)
+        if args.frames < 0:
+            parser.error("--frames must be nonnegative")
+        return record_videos(args.output, args.frames)
+    raise ValueError(f"unknown demo command: {mode}")
+
+
 if __name__ == "__main__":
-    if "--video" in sys.argv:
-        sys.argv.remove("--video")
-        raise SystemExit(record_videos())
+    if len(sys.argv) > 1 and sys.argv[1] in ("--export", "--render", "--video"):
+        raise SystemExit(run_demo(sys.argv[1:]))
     unittest.main(verbosity=2)

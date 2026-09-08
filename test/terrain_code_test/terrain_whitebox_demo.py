@@ -1,7 +1,7 @@
 """Export reproducible whitebox GLBs and a validation manifest.
 
-Run once with --source pointing to the baseline checkout and --variant opus,
-then once without --source and --variant gpt6. Both use the same defaults.
+Called through test/test_3d_scene_code.py --export. Use --source and --variant
+opus for a baseline checkout, or --variant gpt6 for the current checkout.
 """
 from __future__ import annotations
 
@@ -43,7 +43,7 @@ def export_scenes(source: Path, output: Path, variant: str, seed: int | None = N
 
 
 def main():
-    root = Path(__file__).resolve().parents[1]
+    root = Path(__file__).resolve().parents[2]
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, default=root)
     parser.add_argument("--output", type=Path, default=root / "test_data/outputs/terrain_whitebox")

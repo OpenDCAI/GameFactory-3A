@@ -19,7 +19,8 @@ import sys
 import threading
 import urllib.request
 
-ROOT = Path(__file__).resolve().parents[1]
+ASSET_DIR = Path(__file__).resolve().parent
+ROOT = ASSET_DIR.parents[1]
 NAMES = ("plains", "hills", "basin", "canyon", "walled_town", "city")
 
 
@@ -27,7 +28,7 @@ def prepare(output: Path):
     output.mkdir(parents=True, exist_ok=True)
     for source, target in (("terrain_whitebox_viewer.html", "index.html"),
                            ("terrain_whitebox_viewer.js", "viewer.js")):
-        shutil.copyfile(ROOT / "test" / source, output / target)
+        shutil.copyfile(ASSET_DIR / source, output / target)
     base = "https://cdn.jsdelivr.net/npm/three@0.170.0/"
     files = {"LICENSE": "LICENSE", "build/three.module.js": "three.module.js",
              "examples/jsm/loaders/GLTFLoader.js": "loaders/GLTFLoader.js",
@@ -189,14 +190,14 @@ def render(output: Path, names=NAMES, variants=("opus", "gpt6"), frames=120):
     return 0
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=ROOT / "test_data/outputs/terrain_whitebox")
     parser.add_argument("--frames", type=int, default=120)
     parser.add_argument("--scenes", nargs="+", choices=NAMES, default=list(NAMES))
     parser.add_argument("--variants", nargs="+", choices=("opus", "gpt6"), default=["opus", "gpt6"])
     parser.add_argument("--prepare-only", action="store_true")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if args.frames < 0:
         parser.error("--frames must be nonnegative")
     if args.prepare_only:
