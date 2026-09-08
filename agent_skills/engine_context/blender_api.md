@@ -421,22 +421,19 @@ can watch. It is evidence, not an authoritative benchmark — `checks` in a
 later evaluation report say the recording is intact, and `game_state` is
 what says the game responded.
 
-```python
-from engine_adapters.blender import BlenderClient
+```bash
+python -m pipeline.code_gen.playtest.run \
+    --engine blender \
+    --project test_data/outputs/<game>/<run>/mechanic/<task> \
+    --duration 10 --fps 20 \
+    --no-render
 
-BlenderClient(project_path="test_data/outputs/<game>/<run>/mechanic/<task>").playtest.record(
-    output_dir="<out_dir>",
-    duration=10,
-    fps=20,
-    width=640,
-    height=360,
-    no_render=True,   # drop for video.mp4 (Cycles; minutes, not seconds)
-)
+python -m pipeline.code_gen.playtest.eval --report <out_dir>/report.json
 ```
 
-The engine switch will live in `pipeline/code_gen/playtest/run.py` when a
-second engine is wired there. Until then the blender adapter is callable
-on its own; add a branch in `run.py` rather than anything to this adapter.
+`run.py` records and scores nothing; `eval.py` reads a written report and
+records nothing. `--no-render` skips Cycles; drop it for `video.mp4`.
+The adapter `blender.playtest.record` is still callable directly.
 
 ### This Is Not Screen Recording
 

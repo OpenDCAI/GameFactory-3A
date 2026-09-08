@@ -1,3 +1,3 @@
-"""Engine-routed browser game playtest pipeline."""
+"""Engine-routed game playtest pipeline."""
 
 __all__ = []
