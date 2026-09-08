@@ -78,6 +78,9 @@ a manifest with the git revision, source hash, geometry checks and file sizes.
 
 ## Deliverables
 
+[Six GPT-6 videos: individual MP4 links](VIDEOS.md). No ZIP download is needed.
+These are release attachments, not GitHub issue `user-attachments` embeds.
+
 The demo bundle contains both versions' six GLBs, twelve PNGs, twelve MP4s,
 the comparison sheet, offline viewer dependencies and validation manifests.
 Code and review artifacts are kept in DongYu2005's fork. `ISSUE_56.md` is prepared
