@@ -57,10 +57,17 @@ def build_scene(
     Bare keyword arguments go to the landform, since size and relief are what
     a caller usually wants to change. `foreground_args` reaches the second
     stage, and `ground_args` is there for a parameter whose name collides.
+    An explicit scene seed also seeds the foreground unless overridden there.
     """
     make_ground, populate = STAGES[name]
-    ground = make_ground(**{**(ground_args or {}), **kwargs})
-    terrain, props = populate(ground, **(foreground_args or {}))
+    parameters = {**(ground_args or {}), **kwargs}
+    population = dict(foreground_args or {})
+    # A scene seed controls both stages; an explicit population seed can
+    # still reroll the settlement independently of the landform.
+    if "seed" in parameters:
+        population.setdefault("seed", parameters["seed"])
+    ground = make_ground(**parameters)
+    terrain, props = populate(ground, **population)
     return te.Scene(name=name, terrain=terrain, props=props)
 
 

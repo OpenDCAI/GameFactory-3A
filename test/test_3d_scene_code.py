@@ -11,7 +11,15 @@ are wrong on disk.
 
 Run from repo root:
     python test/test_3d_scene_code.py
-    python test/test_3d_scene_code.py --video      # also record turntables
+    python test/test_3d_scene_code.py --export
+    python test/test_3d_scene_code.py --export --source ../terrain-opus --variant opus
+    python test/test_3d_scene_code.py --render --variants gpt6 --frames 0
+    python test/test_3d_scene_code.py --video      # export and record turntables
+
+Demo helpers and viewer assets live in test/terrain_code_test. --export and
+--render forward their options to the respective helper (--help lists them).
+--video accepts --output and --frames. Rendering requires playwright, Pillow,
+ffmpeg for videos, and Edge on Windows or Playwright Chromium elsewhere.
 """
 from __future__ import annotations
 
@@ -27,7 +35,7 @@ from pathlib import Path
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO_ROOT))
 
-from models.common.glb_writer import rotated_bounds  # noqa: E402
+from models.common.glb_writer import build_part, rotated_bounds, write_spec_glb  # noqa: E402
 from operators.gen_3d_scene.funcs import terrain_code_edit as te  # noqa: E402
 from operators.gen_3d_scene.funcs.terrain_code_template import (  # noqa: E402
     STAGES,
@@ -38,7 +46,6 @@ from operators.gen_3d_scene.funcs.terrain_code_template import (  # noqa: E402
 )
 
 OUT_DIR = _REPO_ROOT / "test_data" / "outputs" / "_test_3d_scene_code"
-VIEWER_LIB = _REPO_ROOT / "test_data" / "outputs" / "_viewer_lib"
 
 
 def glb_json(path: Path) -> dict:
@@ -275,6 +282,169 @@ class TestTerrainShapes(unittest.TestCase):
         self.assertEqual(len(parts), 1)
         self.assertEqual(parts[0]["kind"], "box")
 
+
+    # ── warped and ridged relief ─────────────────────────────────────────
+
+    def test_terrain_warped_noise_stays_in_range(self):
+        for x in range(-40, 41, 7):
+            for z in range(-40, 41, 7):
+                value = te.warped_noise(x * 1.3, z * 1.3, 22.0, seed=4)
+                self.assertGreaterEqual(value, -1.0)
+                self.assertLessEqual(value, 1.0)
+
+    def test_terrain_warp_of_zero_is_plain_fractal_noise(self):
+        """The parameter has to be able to turn the thing off."""
+        for x in range(-20, 21, 6):
+            for z in range(-20, 21, 6):
+                self.assertAlmostEqual(
+                    te.warped_noise(float(x), float(z), 20.0, seed=2, warp=0.0),
+                    te.fractal_noise(float(x), float(z), 20.0, seed=2),
+                    places=9,
+                )
+
+    def test_terrain_warping_displaces_the_field_without_damping_it(self):
+        """Warping moves features about; it must not average them away."""
+        points = [(x * 1.7, z * 1.7)
+                  for x in range(-24, 25) for z in range(-24, 25)]
+        plain = [te.fractal_noise(x, z, 22.0, seed=4) for x, z in points]
+        warped = [te.warped_noise(x, z, 22.0, seed=4) for x, z in points]
+
+        def spread(values):
+            mean = sum(values) / len(values)
+            return (sum((v - mean) ** 2 for v in values) / len(values)) ** 0.5
+
+        self.assertGreater(spread(warped), spread(plain) * 0.75)
+        moved = sum(1 for a, b in zip(plain, warped) if abs(a - b) > 0.15)
+        self.assertGreater(moved, len(points) * 0.4)
+
+    def test_terrain_ridged_noise_has_narrow_crests_over_broad_hollows(self):
+        """Symmetric noise reads as dunes whatever the landform was meant to be.
+
+        The whole point of folding each octave at zero is that the result is
+        not symmetric: a ridge line takes up little ground and the valleys
+        either side take up a lot. Measured as area, since that is what the
+        difference actually is.
+        """
+        values = [te.ridged_noise(x * 1.4, z * 1.4, 20.0, seed=7)
+                  for x in range(-30, 31) for z in range(-30, 31)]
+        self.assertGreaterEqual(min(values), -1.0)
+        self.assertLessEqual(max(values), 1.0)
+
+        low, high = min(values), max(values)
+        crest = sum(1 for v in values if v > high - (high - low) * 0.2)
+        hollow = sum(1 for v in values if v < low + (high - low) * 0.2)
+        self.assertLess(crest, hollow)
+
+    def test_terrain_hills_crest_changes_the_ground_it_is_given(self):
+        rolling = te.hills(90.0, amplitude=9.0, wavelength=27.0, crest=0.0,
+                           seed=5)
+        ridged = te.hills(90.0, amplitude=9.0, wavelength=27.0, crest=0.9,
+                          seed=5)
+        differing = 0
+        for x in range(-40, 41, 5):
+            for z in range(-40, 41, 5):
+                here = te.ground_height(rolling, float(x), float(z))
+                there = te.ground_height(ridged, float(x), float(z))
+                self.assertLessEqual(abs(here), 9.0 + 1e-9)
+                self.assertLessEqual(abs(there), 9.0 + 1e-9)
+                differing += abs(here - there) > 0.5
+        self.assertGreater(differing, 100)
+
+    # ── baking ───────────────────────────────────────────────────────────
+
+    @staticmethod
+    def written_height(terrain, x, z):
+        """Where the exported surface actually is, read off its own grid."""
+        grid = te.height_grid(terrain)
+        step = terrain.size / terrain.tiles
+        start = -terrain.size / 2.0
+        u = min(max((x - start) / step, 0.0), terrain.tiles - 1e-9)
+        v = min(max((z - start) / step, 0.0), terrain.tiles - 1e-9)
+        column, row = int(u), int(v)
+        fx, fz = u - column, v - row
+        near = grid[row][column] + (grid[row][column + 1] - grid[row][column]) * fx
+        far = (grid[row + 1][column]
+               + (grid[row + 1][column + 1] - grid[row + 1][column]) * fx)
+        return near + (far - near) * fz
+
+    def test_terrain_baked_closes_the_gap_to_the_written_surface(self):
+        """The gap is what a prop validated against a formula floats over.
+
+        A terrain function is a formula; the GLB carries the grid it was
+        sampled on. Between two grid lines the two disagree by up to half the
+        relief there, which is exactly the height a prop can end up resting
+        at on one and hanging over on the other.
+        """
+        raw = te.hills(80.0, amplitude=7.0, wavelength=18.0, tiles=40, seed=3)
+        cooked = te.baked(raw)
+        step = raw.size / raw.tiles
+        start = -raw.size / 2.0 + step / 2.0
+
+        worst_raw = worst_cooked = 0.0
+        for row in range(0, raw.tiles, 3):
+            for column in range(0, raw.tiles, 3):
+                x, z = start + column * step, start + row * step
+                surface = self.written_height(raw, x, z)
+                worst_raw = max(worst_raw,
+                                abs(te.ground_height(raw, x, z) - surface))
+                worst_cooked = max(worst_cooked,
+                                   abs(te.ground_height(cooked, x, z) - surface))
+        self.assertGreater(worst_raw, 0.05)
+        self.assertLess(worst_cooked, 1e-9)
+
+    def test_terrain_baked_keeps_the_grid_it_was_sampled_on(self):
+        raw = te.bowl(70.0, depth=9.0, tiles=48, seed=2)
+        cooked = te.baked(raw)
+        self.assertEqual(cooked.tiles, raw.tiles)
+        self.assertEqual(cooked.size, raw.size)
+        for baked_row, raw_row in zip(te.height_grid(cooked),
+                                      te.height_grid(raw)):
+            for baked, formula in zip(baked_row, raw_row):
+                self.assertAlmostEqual(baked, formula, places=9)
+
+    def test_terrain_baked_leaves_level_ground_alone(self):
+        level = te.flat(40.0)
+        self.assertIs(te.baked(level), level)
+
+    def test_terrain_baked_clamps_rather_than_inventing_ground(self):
+        """Off the site there is no sample, and guessing would hide a fault."""
+        cooked = te.baked(te.hills(60.0, amplitude=4.0, tiles=32, seed=1))
+        edge = te.ground_height(cooked, 29.9999, 0.0)
+        self.assertAlmostEqual(te.ground_height(cooked, 60.0, 0.0), edge,
+                               places=3)
+        self.assertAlmostEqual(te.ground_height(cooked, -60.0, 0.0),
+                               te.ground_height(cooked, -30.0, 0.0), places=6)
+
+    # ── terracing ────────────────────────────────────────────────────────
+
+    def test_terrain_terraced_cuts_level_treads(self):
+        """A tread is somewhere to stand, which a gradient is not."""
+        ramp = te.slope(60.0, rise=12.0, roughness=0.0, tiles=64)
+        stepped = te.terraced(ramp, step=1.5, share=1.0, tread=0.7)
+        heights = [te.ground_height(stepped, 0.0, z * 0.25)
+                   for z in range(-100, 101)]
+
+        rises = [abs(after - before)
+                 for before, after in zip(heights, heights[1:])]
+        self.assertGreater(sum(1 for rise in rises if rise < 1e-9),
+                           len(rises) * 0.5)
+        # And it is still a climb.
+        self.assertGreater(heights[-1] - heights[0], 8.0)
+
+    def test_terrain_terraced_keeps_the_shape_it_folds(self):
+        """Terracing is a fold, not a replacement: the landform survives it."""
+        dish = te.bowl(70.0, depth=10.0, seed=2)
+        stepped = te.terraced(dish, step=1.6, share=0.7)
+        for x, z in ((0.0, 0.0), (12.0, -8.0), (-20.0, 15.0), (25.0, 25.0)):
+            self.assertLess(
+                abs(te.ground_height(stepped, x, z)
+                    - te.ground_height(dish, x, z)), 1.2)
+        self.assertLess(te.ground_height(stepped, 0.0, 0.0),
+                        te.ground_height(stepped, 30.0, 30.0))
+
+    def test_terrain_terraced_leaves_level_ground_alone(self):
+        level = te.flat(40.0)
+        self.assertIs(te.terraced(level, step=1.0), level)
 
 # ── layout ───────────────────────────────────────────────────────────────────
 
@@ -913,6 +1083,255 @@ class TestLayoutHelpers(unittest.TestCase):
         self.assertTrue(te.fits(ground, joined, placed, margin=1.5))
 
 
+    # ── measurements taken off a layout ──────────────────────────────────
+
+    def test_layout_crossing_finds_where_two_runs_meet(self):
+        """Both runs wander, so the junction is not where either was aimed."""
+        along = te.winding_spots(7, span=100.0, wander=6.0, along="x", seed=2)
+        across = te.winding_spots(7, span=100.0, wander=5.0, along="z", seed=5)
+        meet = te.crossing(along, across)
+
+        self.assertIsNotNone(meet)
+        self.assertLess(te.way_distance(meet, te.ways_along(along)), 1.0)
+        self.assertLess(te.way_distance(meet, te.ways_along(across)), 1.0)
+
+    def test_layout_crossing_reports_nothing_for_a_run_that_is_not_one(self):
+        self.assertIsNone(te.crossing([], [(0.0, 0.0), (1.0, 1.0)]))
+        self.assertIsNone(te.crossing([(0.0, 0.0)], [(0.0, 0.0), (1.0, 1.0)]))
+
+    def test_layout_chained_takes_the_nearest_next(self):
+        run = te.chained([(0.0, 0.0), (30.0, 0.0), (5.0, 2.0), (12.0, 1.0)],
+                         start=(0.0, 0.0))
+        self.assertEqual(run, [(5.0, 2.0), (12.0, 1.0), (30.0, 0.0)])
+
+    def test_layout_chained_does_not_double_back(self):
+        """Joined in list order a route crosses the site several times."""
+        spots = te.scatter_spots(14, 80.0, seed=3, min_gap=6.0)
+
+        def length(run):
+            return sum(math.dist(a, b) for a, b in zip(run, run[1:]))
+
+        self.assertLess(length(te.chained(spots)), length(spots))
+
+    def test_layout_chained_keeps_every_spot_once(self):
+        spots = te.scatter_spots(9, 60.0, seed=8, min_gap=5.0)
+        self.assertEqual(sorted(te.chained(spots)), sorted(spots))
+
+    def test_layout_highest_spot_finds_the_summit(self):
+        terrain = te.mound(60.0, rise=8.0, flat_radius=4.0, roughness=0.0)
+        top = te.highest_spot(terrain, samples=48)
+        self.assertAlmostEqual(te.ground_height(terrain, *top), 8.0, places=3)
+
+    def test_layout_highest_spot_on_flat_ground_is_the_origin(self):
+        self.assertEqual(te.highest_spot(te.flat(40.0)), (0.0, 0.0))
+
+    def test_layout_densified_resamples_without_moving_the_line(self):
+        line = te.winding_spots(5, span=60.0, wander=8.0, seed=1)
+        dense = te.densified(line, step=2.0)
+
+        self.assertGreater(len(dense), len(line) * 3)
+        ways = te.ways_along(line)
+        for spot in dense:
+            self.assertLess(te.way_distance(spot, ways), 1e-6)
+
+    def test_layout_facing_turns_a_prop_down_its_own_line(self):
+        """The sign is not guessable, and getting it wrong turns a gate sideways."""
+        ground = te.Terrain(size=80.0)
+        for start, end in (((0.0, 0.0), (10.0, 0.0)),
+                           ((0.0, 0.0), (0.0, 10.0)),
+                           ((3.0, -2.0), (-5.0, 7.0))):
+            with self.subTest(line=(start, end)):
+                laid = te.Prop(
+                    "run", "box",
+                    ((start[0] + end[0]) / 2.0, (start[1] + end[1]) / 2.0),
+                    (math.dist(start, end), 1.0, 0.5),
+                    yaw=te.facing(start, end),
+                )
+                corners = te.ground_corners(ground, laid)
+                for target in (start, end):
+                    self.assertLess(
+                        min(math.dist(target, corner) for corner in corners),
+                        0.6,
+                    )
+
+    def test_layout_spoke_lines_arrive_where_they_were_sent(self):
+        ends = te.ring_spots(4, 25.0)
+        runs = te.spoke_lines((0.0, 0.0), ends, points=8, bend=0.2, seed=3)
+
+        self.assertEqual(len(runs), 4)
+        for run, end in zip(runs, ends):
+            self.assertAlmostEqual(math.dist(run[0], (0.0, 0.0)), 0.0, places=6)
+            self.assertAlmostEqual(math.dist(run[-1], end), 0.0, places=6)
+
+    def test_layout_spoke_lines_are_not_spokes(self):
+        """A wheel of straight runs reads as a diagram of a town, not one."""
+        ends = te.ring_spots(4, 25.0)
+
+        def bow(run):
+            direct = te.ways_along([run[0], run[-1]])
+            return max(te.way_distance(spot, direct) for spot in run)
+
+        # Without a bend they are spokes, exactly.
+        for run in te.spoke_lines((0.0, 0.0), ends, points=9, bend=0.0):
+            self.assertLess(bow(run), 1e-9)
+
+        # With one they are not — as a set. `bend` bounds the bow rather than
+        # setting it, so a single run coming out nearly straight is the
+        # parameter working, and only the whole wheel can be judged.
+        bowed = [bow(run) for run in
+                 te.spoke_lines((0.0, 0.0), ends, points=9, bend=0.2, seed=3)]
+        self.assertGreater(max(bowed), 25.0 * 0.05)
+        self.assertGreater(sum(1 for value in bowed if value > 0.4),
+                           len(bowed) / 2)
+
+    def test_layout_contour_radius_cover_leaves_no_water_outside_it(self):
+        """A terraced bank rises and dips, so the first crossing is not the last.
+
+        Sized to the innermost crossing, a water disc has ground below the
+        waterline outside its own rim — which is the cylinder wall standing in
+        the open that `cover` exists to avoid.
+        """
+        terrain = te.baked(te.terraced(
+            te.bowl(80.0, depth=14.0, seed=4), step=2.4, share=0.75))
+        water = te.lowest_spot(terrain, samples=80)
+        level = te.ground_height(terrain, *water) + 3.0
+
+        radius = te.contour_radius(terrain, water, level, fit="cover", steps=60)
+        step = terrain.size / 2.0 / 60
+        for ray in range(24):
+            angle = 2.0 * math.pi * ray / 24
+            for out in range(1, 5):
+                probe = (water[0] + (radius + out * step) * math.cos(angle),
+                         water[1] + (radius + out * step) * math.sin(angle))
+                self.assertGreater(te.ground_height(terrain, *probe), level)
+
+        self.assertGreater(
+            radius, te.contour_radius(terrain, water, level, steps=60)
+        )
+
+    # ── structures ───────────────────────────────────────────────────────
+
+    def test_layout_ring_wall_leaves_the_gates_it_is_asked_for(self):
+        closed = te.ring_wall("w", 20.0, 24, height=4.0)
+        gated = te.ring_wall("w", 20.0, 24, height=4.0, gates=4)
+        self.assertEqual(len(closed), 24)
+        self.assertEqual(len(gated), 20)
+
+    def test_layout_gate_spots_land_in_the_openings(self):
+        """Set at the angle asked for, a gatehouse stands beside its own gate."""
+        segments, gates, radius = 26, 4, 24.0
+        wall = te.ring_wall("w", radius, segments, height=4.0, gates=gates,
+                            gate_start=40.0)
+        openings = te.gate_spots(radius, gates, segments, start_degrees=40.0)
+
+        self.assertEqual(len(openings), gates)
+        chord = 2.0 * math.pi * radius / segments
+        for spot, _yaw in openings:
+            self.assertGreater(min(math.dist(spot, p.at) for p in wall),
+                               chord * 0.9)
+            self.assertAlmostEqual(math.hypot(*spot), radius, places=6)
+
+    def test_layout_gate_spots_face_along_the_wall(self):
+        for spot, yaw in te.gate_spots(20.0, 3, 24, start_degrees=0.0):
+            radial = math.degrees(math.atan2(spot[1], spot[0]))
+            self.assertAlmostEqual((yaw + radial) % 180.0, 90.0, places=6)
+
+    def test_layout_arch_frames_an_opening_and_leaves_it_open(self):
+        ground = te.flat(60.0)
+        parts = te.arch(ground, "gate", (0.0, 0.0), span=6.0, height=5.0)
+        piers = [p for p in parts if "-pier" in p.id]
+        lintel = next(p for p in parts if p.id.endswith("lintel"))
+
+        self.assertEqual(len(piers), 2)
+        for pier in piers:
+            self.assertGreater(abs(pier.at[0]), 3.0)
+        low, high = te.bounds(ground, lintel)
+        self.assertGreater(low[1], 3.0)
+        self.assertGreater(high[1], low[1])
+
+    def test_layout_stairway_closes_every_step(self):
+        """Thinner than the rise, a flight is a ladder of floating plates."""
+        terrain = te.hills(60.0, amplitude=4.0, wavelength=20.0, seed=6)
+        flight = te.stairway(terrain, "steps", [(-18.0, -6.0), (14.0, 9.0)],
+                             bottom=0.0, top=9.0)
+
+        self.assertGreater(len(flight), 5)
+        bases = [te.bounds(terrain, step)[0][1] for step in flight]
+        thickness = min(step.size[1] for step in flight)
+        for before, after in zip(bases, bases[1:]):
+            self.assertLess(abs(after - before), thickness)
+        self.assertAlmostEqual(min(bases), 0.0, places=6)
+        self.assertAlmostEqual(max(bases), 9.0, places=6)
+
+    def test_layout_stairway_follows_a_line_that_bends(self):
+        terrain = te.flat(60.0)
+        bent = [(-20.0, -10.0), (0.0, -2.0), (6.0, 12.0)]
+        flight = te.stairway(terrain, "steps", bent, bottom=0.0, top=6.0)
+
+        self.assertGreater(len({round(step.yaw, 1) for step in flight}), 1)
+        ways = te.ways_along(bent)
+        for step in flight:
+            self.assertLess(te.way_distance(step.at, ways), 0.5)
+
+    def test_layout_stepped_tower_stacks_without_a_gap_or_a_float(self):
+        terrain = te.hills(60.0, amplitude=5.0, wavelength=18.0, seed=2)
+        tiers = te.stepped_tower(terrain, "keep", (6.0, -4.0), (9.0, 8.0),
+                                 18.0, tiers=3)
+
+        self.assertEqual(len(tiers), 3)
+        for lower, upper in zip(tiers, tiers[1:]):
+            self.assertAlmostEqual(te.bounds(terrain, upper)[0][1],
+                                   te.bounds(terrain, lower)[1][1], places=6)
+
+        widths = [tier.size[0] for tier in tiers]
+        self.assertEqual(widths, sorted(widths, reverse=True))
+        self.assertLessEqual(widths[0], 9.0)
+        self.assertAlmostEqual(te.bounds(terrain, tiers[0])[0][1],
+                               te.ground_under(terrain, tiers[0]), places=6)
+
+    def test_layout_stepped_tower_reaches_the_height_it_was_given(self):
+        terrain = te.flat(60.0)
+        tiers = te.stepped_tower(terrain, "keep", (0.0, 0.0), (8.0, 8.0),
+                                 20.0, tiers=4)
+        self.assertAlmostEqual(te.bounds(terrain, tiers[-1])[1][1], 20.0,
+                               places=6)
+
+    def test_layout_ruin_is_a_wall_line_with_pieces_missing(self):
+        parts = te.ruin("remains", (0.0, 0.0), 14.0, 9.0, 4.0, seed=3,
+                        standing=0.6)
+        self.assertGreater(len(parts), 6)
+
+        # On the rectangle's own edges, not scattered inside it.
+        for part in parts:
+            self.assertAlmostEqual(
+                max(abs(part.at[0]) / 7.0, abs(part.at[1]) / 4.5), 1.0,
+                delta=0.08,
+            )
+        self.assertGreater(len({round(p.size[1], 2) for p in parts}), 3)
+        self.assertLess(
+            len(parts),
+            len(te.ruin("whole", (0.0, 0.0), 14.0, 9.0, 4.0, seed=3,
+                        standing=1.0)),
+        )
+
+    def test_layout_bridge_holds_its_level_over_what_it_crosses(self):
+        terrain = te.canyon(80.0, depth=14.0, floor_width=20.0, seed=1)
+        built = te.bridge(terrain, "span", (-32.0, 0.0), (32.0, 0.0), level=14.0)
+        deck = [p for p in built if p.id.startswith("span-")]
+        piers = [p for p in built if p.id.startswith("spanpier")]
+
+        self.assertGreater(len(deck), 8)
+        tops = [te.bounds(terrain, slab)[1][1] for slab in deck]
+        self.assertLess(max(tops) - min(tops), 1e-6)
+        self.assertAlmostEqual(max(tops), 14.0, places=6)
+
+        self.assertTrue(piers)
+        for pier in piers:
+            self.assertGreater(14.0 - te.ground_height(terrain, *pier.at), 2.5)
+            low, high = te.bounds(terrain, pier)
+            self.assertLess(low[1], 14.0)
+            self.assertGreater(high[1], 13.0)
+
 # ── geometry ─────────────────────────────────────────────────────────────────
 
 class TestSceneGeometry(unittest.TestCase):
@@ -1234,9 +1653,9 @@ class TestStages(unittest.TestCase):
 
     def test_stages_foreground_parameters_reach_the_foreground(self):
         sparse = build_scene("plains", foreground_args={"boulders": 3,
-                                                        "thickets": 2})
-        dense = build_scene("plains", foreground_args={"boulders": 12,
-                                                       "thickets": 8})
+                                                        "copses": 2})
+        dense = build_scene("plains", foreground_args={"boulders": 14,
+                                                       "copses": 7})
         self.assertLess(len(sparse.props), len(dense.props))
 
     def test_stages_a_landform_takes_a_different_foreground(self):
@@ -1338,36 +1757,26 @@ class TestTemplates(unittest.TestCase):
     def test_template_flat_landforms_differ_by_layout(self):
         """`plains` and `city` are both near-level, so their layouts must diverge.
 
-        Compared by whether the ground carries a network: a district's paving
-        is a long chain of touching slabs, while a plain has nothing laid on
-        it at all. Spacing does not separate them, since a city holds both
-        touching paving and wide-open blocks.
+        Both are crossed by paved runs now, so carrying a network no longer
+        separates them. What does is how much of the site is given over to
+        what stands on it: a district fills the blocks its streets leave, and
+        a plain leaves its fields open, which is an order of magnitude of
+        built ground between them.
         """
-        city = TEMPLATES["city"]()
-        plains = TEMPLATES["plains"]()
+        def built_share(scene):
+            # Walls and blockwork over two metres: scenery is not building,
+            # and by footprint alone a copse of wide canopies outweighs a
+            # tower block.
+            standing = sum(
+                prop.size[0] * prop.size[1] * prop.size[2]
+                for prop in scene.props
+                if prop.size[1] > 2.0 and prop.material in ("wall", "block")
+            )
+            return standing / scene.terrain.size ** 2
 
-        paved = [p for p in city.props if p.id.startswith("road")]
-        self.assertGreater(len(paved), 100)
-
-        # Each slab has a neighbour it meets, which is what a run is.
-        touching = 0
-        for prop in paved:
-            gap = min(math.dist(prop.at, other.at)
-                      for other in paved if other is not prop)
-            if gap < prop.size[0] * 1.2:
-                touching += 1
-        self.assertGreater(touching, len(paved) * 0.9)
-
-        # Nothing in the plains is laid in a run. Trunk and canopy share a
-        # spot on purpose, so pairs in one group do not count.
-        for prop in plains.props:
-            others = [
-                other for other in plains.props
-                if other is not prop
-                and not (prop.group and prop.group == other.group)
-            ]
-            self.assertGreater(min(math.dist(prop.at, o.at) for o in others),
-                               1.0)
+        city = built_share(TEMPLATES["city"]())
+        plains = built_share(TEMPLATES["plains"]())
+        self.assertGreater(city, plains * 6.0, f"{city:.4f} vs {plains:.4f}")
 
     def test_template_city_is_built_to_streets(self):
         """Buildings on a plane are objects; a district needs roads."""
@@ -1713,19 +2122,6 @@ class TestTemplates(unittest.TestCase):
                 f"{prop.id} stands in the roadway",
             )
 
-    def test_template_hills_layout_follows_elevation(self):
-        """Towers take the ridges and dwellings the hollows, or the split is fake."""
-        scene = TEMPLATES["hills"]()
-        ground = scene.terrain
-
-        towers = [p for p in scene.props if p.id.startswith("tower")]
-        huts = [p for p in scene.props if p.id.startswith("hut")]
-        self.assertTrue(towers and huts)
-
-        highest_hut = max(te.ground_height(ground, *p.at) for p in huts)
-        lowest_tower = min(te.ground_height(ground, *p.at) for p in towers)
-        self.assertGreater(lowest_tower, highest_hut)
-
     def test_template_hills_structures_stand_on_level_pads(self):
         """A building on a hillside needs ground cut for it, not a tilted base."""
         scene = TEMPLATES["hills"]()
@@ -1923,6 +2319,286 @@ class TestTemplates(unittest.TestCase):
         self.assertGreater(len({round(p.size[1], 2) for p in wall}), 1)
 
 
+    # ── what makes a site read as a level rather than as furniture ───────
+
+    #: The run each landform is crossed by, and the share of the site it has
+    #: to cover. A way is not always paving: on the hills it is a line of
+    #: cairns, and in the basin a flight of steps down a bank.
+    WAYS = {
+        "plains": (("trackx", "trackz"), 0.70),
+        "hills": (("cairn",), 0.45),
+        "basin": (("path",), 0.06),
+        "canyon": (("span", "climb0"), 0.20),
+        "walled_town": (("street0", "approach"), 0.06),
+        "city": (("roadx00", "roadz00"), 0.70),
+    }
+
+    def reach_above_ground(self, scene, prop):
+        """How far a prop stands over the ground it is on."""
+        return (te.bounds(scene.terrain, prop)[1][1]
+                - te.ground_height(scene.terrain, *prop.at))
+
+    def test_template_every_scene_can_be_crossed(self):
+        """A site with nothing laid across it is furniture, not a level."""
+        for name, (prefixes, share) in self.WAYS.items():
+            scene = TEMPLATES[name]()
+            for prefix in prefixes:
+                run = [p for p in scene.props
+                       if p.id.rsplit("-", 1)[0] == prefix]
+                with self.subTest(template=name, way=prefix):
+                    self.assertGreaterEqual(len(run), 5)
+                    span = max(math.dist(a.at, b.at) for a in run for b in run)
+                    self.assertGreater(span, scene.terrain.size * share)
+
+    def test_template_every_scene_has_a_landmark(self):
+        """Somewhere for the eye to go, and something to read the site by.
+
+        A greybox has no texture and no lighting, so the only thing that can
+        anchor a view is a silhouette. Measured against the median rather
+        than an absolute, because a scene of small things is allowed — what
+        is not allowed is a scene where everything is the same size.
+        """
+        for name, build in TEMPLATES.items():
+            with self.subTest(template=name):
+                scene = build()
+                reach = sorted(self.reach_above_ground(scene, prop)
+                               for prop in scene.props)
+                middle = reach[len(reach) // 2]
+                self.assertGreater(reach[-1], max(middle, 1.0) * 4.0)
+                self.assertGreater(reach[-1], te.HUMAN_HEIGHT * 5.0)
+
+    def test_template_every_scene_holds_three_scales(self):
+        """One storey everywhere leaves a site with no foreground and no back."""
+        for name, build in TEMPLATES.items():
+            with self.subTest(template=name):
+                scene = build()
+                bands = {"low": 0, "middle": 0, "high": 0}
+                for prop in scene.props:
+                    reach = self.reach_above_ground(scene, prop)
+                    bands["low" if reach < 2.0
+                          else "middle" if reach < 8.0
+                          else "high"] += 1
+                self.assertTrue(all(bands.values()), f"{name}: {bands}")
+                self.assertGreater(bands["middle"], 4, f"{name}: {bands}")
+
+    def test_template_every_scene_reads_at_more_than_one_material(self):
+        """Everything in one grey is one object at several sizes."""
+        for name, build in TEMPLATES.items():
+            with self.subTest(template=name):
+                materials = {p.material for p in build().props}
+                self.assertGreaterEqual(len(materials), 3, materials)
+
+    def test_template_landform_ground_is_the_ground_that_gets_written(self):
+        """Baked, so nothing is placed against a surface the GLB does not have."""
+        for name, make_ground in landforms.LANDFORMS.items():
+            with self.subTest(landform=name):
+                ground = make_ground()
+                terrain = ground.terrain
+                grid = te.height_grid(terrain)
+                step = terrain.size / terrain.tiles
+                start = -terrain.size / 2.0
+                for row in range(0, terrain.tiles + 1, 9):
+                    for column in range(0, terrain.tiles + 1, 9):
+                        self.assertAlmostEqual(
+                            te.ground_height(terrain, start + column * step,
+                                             start + row * step),
+                            grid[row][column], places=6,
+                        )
+
+    # ── the scenes that were rebuilt around a way in ─────────────────────
+
+    def test_template_walled_town_can_be_entered(self):
+        """A ring with no way through it is a pen, not a defence."""
+        scene = TEMPLATES["walled_town"]()
+        gates = landforms.walled_town().marks["gates"]
+        self.assertEqual(len(gates), 4)
+
+        curtain = [p for p in scene.props if p.id.startswith("wall-")]
+        piers = [p for p in scene.props if "-pier" in p.id]
+        for spot, _yaw in gates:
+            self.assertGreater(min(math.dist(spot, p.at) for p in curtain), 4.0)
+            self.assertLess(min(math.dist(spot, p.at) for p in piers), 5.0)
+
+    def test_template_walled_town_streets_run_from_the_gates_to_the_square(self):
+        scene = TEMPLATES["walled_town"]()
+        for index in range(len(landforms.walled_town().marks["gates"])):
+            run = [p for p in scene.props
+                   if p.id.startswith(f"street{index}-")]
+            with self.subTest(gate=index):
+                self.assertGreater(len(run), 4)
+                radii = sorted(math.hypot(*p.at) for p in run)
+                self.assertLess(radii[0], 12.0)
+                self.assertGreater(radii[-1], 20.0)
+
+    def test_template_walled_town_leaves_its_market_square_empty(self):
+        """Solid from the gate to the keep, nothing in a town reads as public."""
+        scene = TEMPLATES["walled_town"]()
+        inside = [
+            p for p in scene.props
+            if math.hypot(*p.at) < 8.0 and not p.id.startswith("street")
+        ]
+        self.assertEqual([p.id for p in inside], ["well"])
+
+    def test_template_walled_town_is_not_a_model_on_a_tray(self):
+        """Three quarters of the site is outside the wall, and it is used."""
+        scene = TEMPLATES["walled_town"]()
+        radius = landforms.walled_town().marks["wall_radius"]
+        outside = [p for p in scene.props if math.hypot(*p.at) > radius + 6.0]
+
+        self.assertGreater(len(outside), 25)
+        kinds = {p.id.rsplit("-", 1)[0].rstrip("0123456789") for p in outside}
+        self.assertGreater(len(kinds), 2, kinds)
+
+    def test_template_canyon_can_be_crossed(self):
+        """What makes a gorge read as a gorge is something spanning it."""
+        scene = TEMPLATES["canyon"]()
+        deck = [p for p in scene.props if p.id.startswith("span-")]
+        self.assertGreater(len(deck), 8)
+
+        tops = [te.bounds(scene.terrain, slab)[1][1] for slab in deck]
+        self.assertLess(max(tops) - min(tops), 0.01)
+
+        floor = min(te.ground_height(scene.terrain, *s.at) for s in deck)
+        self.assertGreater(min(tops) - floor, 8.0)
+
+        # Landing on rock at both ends rather than stopping over the drop.
+        ends = sorted(deck, key=lambda p: p.at[0])
+        for end in (ends[0], ends[-1]):
+            self.assertLess(
+                min(tops) - te.ground_height(scene.terrain, *end.at), 3.0
+            )
+
+    def test_template_canyon_the_crossing_can_be_reached(self):
+        """A bridge with no way onto it is two structures sharing a frame."""
+        scene = TEMPLATES["canyon"]()
+        deck = [te.bounds(scene.terrain, p)[0][1] for p in scene.props
+                if p.id.startswith("span-")]
+        climb = [p for p in scene.props
+                 if p.id.startswith(("climb0-", "climb1-"))]
+
+        self.assertGreater(len(climb), 8)
+        levels = [te.bounds(scene.terrain, step)[0][1] for step in climb]
+        self.assertLess(min(levels), 1.5)
+        self.assertGreater(max(levels), min(deck) - 2.0)
+
+    def test_template_basin_has_a_hall_that_reads_as_one(self):
+        scene = TEMPLATES["basin"]()
+        hall = [p for p in scene.props if p.id.startswith("hall-")]
+        self.assertGreater(len(hall), 1, "the hall is a single extrusion")
+
+        standing = (max(te.bounds(scene.terrain, p)[1][1] for p in hall)
+                    - min(te.bounds(scene.terrain, p)[0][1] for p in hall))
+        houses = [p for p in scene.props if p.id.startswith("house-")]
+        self.assertGreater(standing, max(p.size[1] for p in houses) * 2.0)
+
+    def test_template_basin_the_water_can_be_reached(self):
+        """Terraced ground has risers, which is what the flight is for."""
+        scene = TEMPLATES["basin"]()
+        path = [p for p in scene.props if p.id.startswith("path-")]
+        pool = next(p for p in scene.props if p.id == "pool")
+        surface = te.bounds(scene.terrain, pool)[1][1]
+
+        self.assertGreater(len(path), 3)
+        bases = [te.bounds(scene.terrain, step)[0][1] for step in path]
+        self.assertGreater(max(bases) - min(bases), 1.0)
+        self.assertLess(min(bases) - surface, 1.5)
+
+        # And a landing out over the water at the foot of it.
+        jetty = [p for p in scene.props if p.id.startswith("jetty-")]
+        self.assertTrue(jetty)
+        self.assertLess(min(math.dist(p.at, pool.at) for p in jetty),
+                        min(math.dist(p.at, pool.at) for p in path))
+
+    def test_template_hills_beacons_stand_apart_on_the_high_ground(self):
+        """Two beacons a few metres apart stack into one silhouette."""
+        scene = TEMPLATES["hills"]()
+        beacons = [p for p in scene.props if p.id.startswith("beacon")]
+        self.assertGreater(len(beacons), 3)
+
+        spots = sorted({p.at for p in beacons})
+        self.assertGreaterEqual(len(spots), 2)
+        for index, here in enumerate(spots):
+            for there in spots[index + 1:]:
+                self.assertGreater(math.dist(here, there), 15.0)
+
+        farms = [p for p in scene.props if p.id.startswith("house-")]
+        self.assertTrue(farms)
+        self.assertGreater(
+            min(te.ground_height(scene.terrain, *p.at) for p in beacons),
+            max(te.ground_height(scene.terrain, *p.at) for p in farms),
+        )
+
+    def test_template_hills_farmsteads_enclose_a_yard(self):
+        """One box on a hillside is a box; a holding encloses something."""
+        scene = TEMPLATES["hills"]()
+        yards = {}
+        for prop in scene.props:
+            if prop.id.startswith("yard-"):
+                yards.setdefault(prop.id.split("-")[1], []).append(prop)
+        self.assertGreater(len(yards), 2)
+
+        for name, wall in yards.items():
+            with self.subTest(yard=name):
+                self.assertGreater(len(wall), 5)
+                house = next(p for p in scene.props if p.id == f"house-{name}")
+                inside = max(math.dist(house.at, p.at) for p in wall)
+                self.assertLess(inside, 12.0)
+
+    def test_template_plains_is_built_to_its_crossroads(self):
+        """On open ground the junction is the one position with a reason."""
+        scene = TEMPLATES["plains"]()
+        ground = landforms.plains()
+        junction = ground.marks["junction"]
+
+        self.assertLess(te.way_distance(junction, ground.ways["roads"]), 1.5)
+        station = [p for p in scene.props
+                   if p.id.startswith(("watchtower-", "station-", "shed-"))]
+        self.assertTrue(station)
+        for prop in station:
+            self.assertLess(math.dist(prop.at, junction),
+                            scene.terrain.size * 0.3)
+
+    def test_template_plains_fields_open_onto_the_road(self):
+        """A wall run across a carriageway is a fault, not enclosure."""
+        scene = TEMPLATES["plains"]()
+        ground = landforms.plains()
+        hedges = [p for p in scene.props if p.id.startswith("hedge-")]
+
+        self.assertGreater(len(hedges), 40)
+        for hedge in hedges:
+            self.assertGreater(
+                te.way_distance(hedge.at, ground.ways["roads"]),
+                ground.marks["track_width"],
+            )
+
+    def test_template_city_leaves_a_block_unbuilt(self):
+        """A district built wall to wall has nothing that reads as public."""
+        scene = TEMPLATES["city"]()
+        green = [p for p in scene.props if p.id.startswith("canopy-")]
+        self.assertGreater(len(green), 5)
+
+        spread = max(math.dist(a.at, b.at) for a in green for b in green)
+        self.assertLess(spread, scene.terrain.size * 0.3)
+
+        middle = (sum(p.at[0] for p in green) / len(green),
+                  sum(p.at[1] for p in green) / len(green))
+        towers = [p for p in scene.props if p.id.startswith("tower-")]
+        self.assertGreater(min(math.dist(middle, p.at) for p in towers), 10.0)
+
+    def test_template_city_tall_towers_are_built_with_setbacks(self):
+        """Plain extrusions of different heights are a bar chart."""
+        scene = TEMPLATES["city"]()
+        stacks: dict[str, list] = {}
+        for prop in scene.props:
+            if prop.id.startswith("tower-") and prop.group:
+                stacks.setdefault(prop.group, []).append(prop)
+
+        tiered = [tiers for tiers in stacks.values() if len(tiers) > 1]
+        self.assertGreater(len(tiered), 2)
+        for tiers in tiered:
+            widths = [tier.size[0] for tier in tiers]
+            self.assertEqual(widths, sorted(widths, reverse=True))
+
 # ── writing ──────────────────────────────────────────────────────────────────
 
 class TestSceneWriting(unittest.TestCase):
@@ -1966,12 +2642,17 @@ class TestSceneWriting(unittest.TestCase):
 class TestSceneDetail(unittest.TestCase):
     """Stage 2: meshes and materials replacing greybox stand-ins."""
 
-    MESH = (_REPO_ROOT / "test_data" / "outputs" / "game_knight_demo" / "default"
-            / "assets" / "3d_object" / "knight_hybrid_001" / "model.glb")
+    @classmethod
+    def setUpClass(cls):
+        cls.directory = tempfile.TemporaryDirectory()
+        cls.MESH = Path(cls.directory.name) / "detail.glb"
+        write_spec_glb({"subject": "detail-fixture", "parts": [
+            {"id": "body", "kind": "box", "at": [0, 0, 0], "size": [1, 2, 0.6]}
+        ]}, cls.MESH)
 
-    def setUp(self):
-        if not self.MESH.is_file():
-            self.skipTest(f"no generated mesh at {self.MESH}")
+    @classmethod
+    def tearDownClass(cls):
+        cls.directory.cleanup()
 
     def test_detail_swap_keeps_the_position(self):
         scene = TEMPLATES["plains"]()
@@ -2027,68 +2708,118 @@ class TestSceneDetail(unittest.TestCase):
 
 # ── video ────────────────────────────────────────────────────────────────────
 
+class TestArchitecture(unittest.TestCase):
+    def test_battlements_keep_the_curtain_wall_envelope(self):
+        terrain = te.slope(40.0)
+        wall = te.Prop("wall", at=(1.0, 2.0), size=(8.0, 5.0, 1.2), yaw=37.0,
+                       group="rampart")
+        parts = te.battlement(terrain, wall)
+        low, high = te.bounds(terrain, wall)
+        self.assertEqual(te.check_scene(te.Scene("wall", terrain, parts)), [])
+        self.assertEqual(len(parts), 4)
+        for part in parts:
+            vertices, _normals, _indices = build_part(te.prop_part(terrain, part))
+            for vertex in vertices:
+                for axis in range(3):
+                    self.assertGreaterEqual(vertex[axis], low[axis] - 1e-7)
+                    self.assertLessEqual(vertex[axis], high[axis] + 1e-7)
+        self.assertAlmostEqual(te.bounds(terrain, parts[0])[1][1],
+                               te.bounds(terrain, parts[1])[0][1])
+
+    def test_roofs_export_as_closed_positive_volume_inside_the_fitted_envelope(self):
+        terrain = te.slope(40.0, rise=5.0)
+        for yaw in (0.0, 37.0, 90.0):
+            envelope = te.Prop("house", at=(2.0, 3.0), size=(6.0, 5.0, 8.0), yaw=yaw)
+            low, high = te.bounds(terrain, envelope)
+            for style in ("gable", "flat"):
+                parts = te.building(terrain, envelope, roof=style)
+                self.assertEqual(te.check_scene(te.Scene("house", terrain, parts)), [])
+                self.assertEqual(len([p for p in parts if p.id == "house"]), 1)
+                for prop in parts:
+                    positions, _normals, indices = build_part(te.prop_part(terrain, prop))
+                    for vertex in positions:
+                        for axis in range(3):
+                            self.assertGreaterEqual(vertex[axis], low[axis] - 1e-7)
+                            self.assertLessEqual(vertex[axis], high[axis] + 1e-7)
+                    volume = 0.0
+                    for a, b, c in zip(indices[::3], indices[1::3], indices[2::3]):
+                        x, y, z = positions[a], positions[b], positions[c]
+                        volume += (x[0] * (y[1] * z[2] - y[2] * z[1])
+                                   - x[1] * (y[0] * z[2] - y[2] * z[0])
+                                   + x[2] * (y[0] * z[1] - y[1] * z[0])) / 6.0
+                    self.assertGreater(volume, 0.0)
+                self.assertAlmostEqual(te.bounds(terrain, parts[-1])[1][1], high[1])
+                self.assertAlmostEqual(te.bounds(terrain, parts[0])[1][1],
+                                       te.bounds(terrain, parts[1])[0][1])
+                self.assertAlmostEqual(te.bounds(terrain, parts[1])[1][1],
+                                       te.bounds(terrain, parts[2])[0][1])
+
+    def test_scene_seed_reaches_both_stages_and_population_can_override_it(self):
+        from unittest.mock import Mock, patch
+        with patch.dict(STAGES, {"plains": (landforms.plains, Mock(wraps=foreground.plains))}):
+            populate = STAGES["plains"][1]
+            build_scene("plains", seed=11)
+            self.assertEqual(populate.call_args.kwargs["seed"], 11)
+            build_scene("plains", seed=11, foreground_args={"seed": 9})
+            self.assertEqual(populate.call_args.kwargs["seed"], 9)
+
+    def test_street_bearing_uses_the_nearest_segment(self):
+        ways = [((-10.0, 0.0), (10.0, 0.0)), ((20.0, -10.0), (20.0, 10.0))]
+        self.assertAlmostEqual(te.street_bearing((0.0, 1.0), ways), te.facing(*ways[0]))
+        self.assertAlmostEqual(te.street_bearing((19.0, 0.0), ways), te.facing(*ways[1]))
+
+    def test_canyon_strata_change_walls_but_keep_the_floor(self):
+        smooth = landforms.canyon(strata=0.0)
+        layered = landforms.canyon(strata=0.8)
+        samples = [(x, z) for x in range(-35, 36, 5) for z in range(-35, 36, 5)]
+        differences = [abs(te.ground_height(smooth.terrain, *p) -
+                           te.ground_height(layered.terrain, *p)) for p in samples]
+        self.assertGreater(max(differences), 0.5)
+        for point in te.channel_spots(smooth.terrain, 12):
+            self.assertAlmostEqual(te.ground_height(layered.terrain, *point), 0.0, delta=0.1)
+        with self.assertRaises(ValueError):
+            landforms.canyon(strata=1.1)
+
 def record_videos(out_dir: Path = OUT_DIR, frames: int = 150) -> int:
-    """Write every template as a GLB and record a turntable of each.
+    """Export and record all six scenes on Windows, macOS or Linux.
 
-    Needs the compiled `turntable` helper in `test_data/outputs/_viewer_lib`
-    and a local HTTP server rooted at `test_data/outputs`.
+    Install playwright and Pillow, plus ffmpeg on PATH. Windows uses Edge;
+    on other systems install Chromium with `python -m playwright install`.
     """
-    turntable = VIEWER_LIB / "turntable"
-    if not turntable.is_file():
-        print(f"no turntable helper at {turntable.relative_to(_REPO_ROOT)}")
-        print("build it with:  cd test_data/outputs/_viewer_lib && "
-              "swiftc -O -o turntable turntable.swift")
+    from test.terrain_code_test.terrain_whitebox_demo import export_scenes
+    from test.terrain_code_test.render_terrain_whitebox import render
+
+    if export_scenes(_REPO_ROOT, out_dir, "gpt6"):
         return 1
+    return render(out_dir, variants=("gpt6",), frames=frames)
 
-    out_dir.mkdir(parents=True, exist_ok=True)
-    videos = out_dir / "videos"
-    videos.mkdir(exist_ok=True)
 
-    outputs_root = _REPO_ROOT / "test_data" / "outputs"
-    relative = out_dir.relative_to(outputs_root)
+def run_demo(argv: list[str]) -> int:
+    """Dispatch demo commands while keeping optional dependencies lazy."""
+    mode, *options = argv
+    if mode == "--export":
+        # Use a fresh interpreter: this test module has already imported the
+        # current templates, but --source may request a different checkout.
+        helper = Path(__file__).resolve().parent / "terrain_code_test" / "terrain_whitebox_demo.py"
+        return subprocess.call([sys.executable, str(helper), *options])
+    if mode == "--render":
+        from test.terrain_code_test.render_terrain_whitebox import main
 
-    server = subprocess.Popen(
-        [sys.executable, "-m", "http.server", "8765", "--bind", "127.0.0.1"],
-        cwd=outputs_root, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
-    try:
-        import time
+        return main(options)
+    if mode == "--video":
+        import argparse
 
-        time.sleep(2)
-        for name, build in TEMPLATES.items():
-            scene = build()
-            problems = te.check_scene(scene)
-            te.write_scene(scene, out_dir / f"{name}.glb")
-            summary = te.scene_summary(scene)
-
-            page = (
-                "http://127.0.0.1:8765/_viewer_lib/scene_recorder.html"
-                f"?model=../{relative}/{name}.glb"
-                f"&label={name}"
-                f"&note={summary['props']}+props+%C2%B7+"
-                f"{len(problems)}+problem(s)"
-                f"&frames={frames}"
-            )
-            subprocess.run(
-                [str(turntable), "--url", page,
-                 "--out", str(videos / f"{name}.mp4"),
-                 "--frames", str(frames), "--fps", "30"],
-                check=False,
-            )
-            written = videos / f"{name}.mp4"
-            size = written.stat().st_size if written.is_file() else 0
-            print(f"{name:<12} {summary['props']:>3} props  "
-                  f"{len(problems)} problem(s)  {size / 1024:>7.0f} KB")
-    finally:
-        server.terminate()
-        server.wait(timeout=5)
-
-    print(f"\nvideos: {videos.relative_to(_REPO_ROOT)}")
-    return 0
+        parser = argparse.ArgumentParser(description=record_videos.__doc__)
+        parser.add_argument("--output", type=Path, default=OUT_DIR)
+        parser.add_argument("--frames", type=int, default=150)
+        args = parser.parse_args(options)
+        if args.frames < 0:
+            parser.error("--frames must be nonnegative")
+        return record_videos(args.output, args.frames)
+    raise ValueError(f"unknown demo command: {mode}")
 
 
 if __name__ == "__main__":
-    if "--video" in sys.argv:
-        sys.argv.remove("--video")
-        raise SystemExit(record_videos())
+    if len(sys.argv) > 1 and sys.argv[1] in ("--export", "--render", "--video"):
+        raise SystemExit(run_demo(sys.argv[1:]))
     unittest.main(verbosity=2)
