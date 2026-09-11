@@ -343,22 +343,20 @@ export async function startExplorer(options = {}) {
   });
   input.pipeToSession(session, host, { controllerId: joined.controllerId });
 
+  runtime.onWorldBeginPlay();
   const unsubscribe = host.onTick((delta) => {
-    // The camera runs after the runtime has ticked the explorer and before
-    // the HUD reads state, so the yaw the character moved with and the yaw
-    // the player sees are the same one.
-    followCamera.look(input.lookDelta?.x ?? 0, input.lookDelta?.y ?? 0);
-    followCamera.update(delta);
     arrows.update(delta);
     actor?.update?.(delta);
-
+  });
+  const unsubscribeRender = host.onRender((delta) => {
+    followCamera.look(input.lookDelta?.x ?? 0, input.lookDelta?.y ?? 0);
+    followCamera.update(delta);
     const state = explorer.getState();
     hud.setValue('stamina', state.staminaRatio);
     hud.setValue('draw', state.drawRatio);
     hud.setValue('arrows', `Arrows ${arrows.countActive()}`);
   });
 
-  runtime.onWorldBeginPlay();
   host.start();
 
   const context = {
@@ -372,6 +370,7 @@ export async function startExplorer(options = {}) {
     localEntityId: joined.entityId,
     dispose() {
       unsubscribe();
+      unsubscribeRender();
       input.disable();
       arrows.dispose();
       world.dispose();

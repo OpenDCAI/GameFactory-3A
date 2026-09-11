@@ -9,7 +9,9 @@
  */
 
 import * as THREE from 'three';
-import { createTilingTexture } from './visual-kit.js';
+import { createTilingTexture, createWaterSurface } from './visual-kit.js';
+import { disposeObject3D } from './runtime-host.js';
+import { RectAreaLightUniformsLib } from 'three/addons/lights/RectAreaLightUniformsLib.js';
 
 const LIGHT_FACTORIES = {
   AmbientLight: (spec) =>
@@ -71,9 +73,29 @@ export class A3GameSceneLoader {
     this.entityObjects = new Map();
     /** @type {THREE.Object3D[]} */
     this.collisionTargets = [];
+    this.terrainTargets = [];
     /** @type {object[]} */
     this.spawnPoints = [];
     this.warnings = [];
+    this.waterSurfaces = new Map();
+    this.ownedObjects = new Set();
+  }
+
+  #addOwned(object, rootName) {
+    this.ownedObjects.add(object);
+    return this.host.add(object, rootName);
+  }
+
+  dispose() {
+    for (const object of this.ownedObjects) {
+      this.host.remove?.(object);
+      disposeObject3D(object);
+    }
+    this.ownedObjects.clear();
+    this.waterSurfaces.clear();
+    this.entityObjects.clear();
+    this.collisionTargets = [];
+    this.terrainTargets = [];
   }
 
   /**
@@ -98,10 +120,12 @@ export class A3GameSceneLoader {
    * @param {object} sceneGraph
    */
   async buildWorld(sceneGraph) {
+    this.dispose();
     this.sceneGraph = sceneGraph;
     this.warnings = [];
     this.entityObjects.clear();
     this.collisionTargets = [];
+    this.terrainTargets = [];
     this.spawnPoints = (sceneGraph.spawn_points ?? []).map((item) => ({
       name: String(item.name ?? ''),
       position: { ...item.position },
@@ -112,6 +136,7 @@ export class A3GameSceneLoader {
     this.#applyCamera(sceneGraph.camera ?? {});
     this.#applyLights(sceneGraph.lights ?? []);
     await this.#applyEntities(sceneGraph.entities ?? []);
+    await this.#applyWater(sceneGraph.environment?.water ?? []);
 
     return {
       worldId: String(sceneGraph.world_id ?? ''),
@@ -159,9 +184,10 @@ export class A3GameSceneLoader {
    * with drifting clouds behind the action.
    */
   async #applyEnvironment(environment) {
+    this.host.setWind?.(environment.wind ?? { velocity: [0, 0, 0], gustStrength: 0 }, true);
     const artifactId = String(environment.environment_artifact_id ?? '');
     const backgroundId = String(environment.background_artifact_id ?? '');
-    const sun = environment.sun ?? null;
+    const sun = environment.sun && Object.keys(environment.sun).length ? environment.sun : null;
 
     const preset = String(environment.preset ?? '').toLowerCase();
     if (preset) {
@@ -177,9 +203,11 @@ export class A3GameSceneLoader {
 
     let environmentTexture;
     if (artifactId) {
-      const loaded = await this.assets
-        .loadArtifact(artifactId)
-        .catch(() => null);
+      const loaded = await this.assets.applyEnvironment(this.host, artifactId, {
+        background: false,
+        rotationDegrees: environment.environment_rotation_degrees ?? 0,
+        environmentIntensity: environment.environment_intensity,
+      });
       environmentTexture = loaded?.texture;
       if (!environmentTexture) {
         this.warnings.push(
@@ -212,6 +240,8 @@ export class A3GameSceneLoader {
       environmentIntensity: environment.environment_intensity,
       backgroundIntensity: environment.background_intensity,
       backgroundBlurriness: environment.background_blurriness,
+      environmentRotationDegrees: artifactId ? environment.environment_rotation_degrees : undefined,
+      backgroundRotationDegrees: environment.background_rotation_degrees,
       sunPosition: sun ?? undefined,
       toneMapping: environment.tone_mapping,
       toneMappingExposure: environment.tone_mapping_exposure,
@@ -229,7 +259,7 @@ export class A3GameSceneLoader {
     let mesh;
     if (ground.artifact_id) {
       const instance = await this.assets
-        .instantiate(ground.artifact_id)
+        .tryInstantiate(ground.artifact_id)
         .catch(() => null);
       mesh = instance?.object;
     }
@@ -282,8 +312,58 @@ export class A3GameSceneLoader {
     }
     mesh.name = 'A3GameGround';
     mesh.receiveShadow = true;
-    this.host.add(mesh, 'environment');
+    this.#addOwned(mesh, 'environment');
     this.collisionTargets.push(mesh);
+    this.terrainTargets.push(mesh);
+  }
+
+  async #applyWater(surfaces) {
+    const ray = new THREE.Raycaster();
+    const down = new THREE.Vector3(0, -1, 0);
+    const finite = (value, fallback = 0) => Number.isFinite(Number(value)) ? Number(value) : fallback;
+    for (const spec of surfaces) {
+      if (!spec.water_id || this.waterSurfaces.has(spec.water_id)) {
+        throw new Error('Each water surface needs a unique water_id');
+      }
+      const position = new THREE.Vector3(finite(spec.position?.x), finite(spec.position?.y), finite(spec.position?.z));
+      const options = { ...spec.options, size: spec.size ?? spec.options?.size, position };
+      const ids = spec.terrain_entity_ids ?? options.terrain_entity_ids;
+      if (ids !== undefined && !Array.isArray(ids)) throw new TypeError('terrain_entity_ids must be an array');
+      const marked = [...this.entityObjects.values()].filter(object => object.userData.a3gameWorldEntity?.parameters.waterTerrain === true);
+      const targets = ids !== undefined ? ids.map(id => {
+        const object = this.getEntityObject(id);
+        if (!object) throw new Error(`Missing water terrain entity: ${id}`);
+        return object;
+      }) : marked.length ? marked : this.terrainTargets;
+      const bounds = new THREE.Box3();
+      if (spec.normal_artifact_id) {
+        options.normalMap = await this.assets.tryLoadTexture(spec.normal_artifact_id, { srgb: false });
+        if (!options.normalMap) throw new Error(`Missing water normal: ${spec.normal_artifact_id}`);
+      }
+      if (targets.length) {
+        options.refreshTerrain = () => {
+          bounds.makeEmpty();
+          for (const object of targets) {
+            object.updateWorldMatrix(true, true);
+            bounds.union(new THREE.Box3().setFromObject(object));
+          }
+        };
+        options.terrainHeight = (x, z) => {
+          if (bounds.isEmpty()) return NaN;
+          const top = Math.max(bounds.max.y, position.y) + 1;
+          ray.set(new THREE.Vector3(x, top, z), down);
+          ray.far = Math.max(1, top - bounds.min.y + 1);
+          const hit = ray.intersectObjects(targets, true)[0];
+          return hit ? hit.point.y : NaN;
+        };
+      }
+      const water = createWaterSurface(options);
+      water.name = spec.water_id;
+      this.#addOwned(water, 'environment');
+      water.userData.refreshDepth();
+      water.userData.attachToHost(this.host);
+      this.waterSurfaces.set(spec.water_id, water);
+    }
   }
 
   #applyCamera(camera) {
@@ -323,14 +403,21 @@ export class A3GameSceneLoader {
   }
 
   #applyLights(lights) {
+    let sunAssigned = false;
     for (const spec of lights) {
       const factory = LIGHT_FACTORIES[spec.type];
       if (!factory) {
         this.warnings.push(`Unsupported light type: ${spec.type}`);
         continue;
       }
+      if (spec.type === 'RectAreaLight') RectAreaLightUniformsLib.init();
       const light = factory(spec);
       light.name = spec.light_id ?? spec.type;
+      if (light.isDirectionalLight) {
+        light.userData.a3gameSun = spec.options?.sync_environment ?? !sunAssigned;
+        if (light.userData.a3gameSun) sunAssigned = true;
+        if (!spec.position) light.position.copy(this.host.getSunPosition?.(100) ?? new THREE.Vector3(0, 100, 0));
+      }
       if (spec.position) {
         light.position.set(
           spec.position.x,
@@ -344,8 +431,8 @@ export class A3GameSceneLoader {
           spec.target.y,
           spec.target.z,
         );
-        this.host.add(light.target, 'lights');
       }
+      if (light.target) this.#addOwned(light.target, 'lights');
       if (spec.cast_shadow && 'castShadow' in light) {
         light.castShadow = true;
         const shadow = light.shadow;
@@ -365,7 +452,7 @@ export class A3GameSceneLoader {
           }
         }
       }
-      this.host.add(light, 'lights');
+      this.#addOwned(light, 'lights');
     }
   }
 
@@ -424,7 +511,7 @@ export class A3GameSceneLoader {
         animations: instance.animations,
         behaviors: spec.behaviors ?? [],
       };
-      this.host.add(object, 'environment');
+      this.#addOwned(object, 'environment');
       this.entityObjects.set(spec.entity_id, object);
       if (spec.collision) this.collisionTargets.push(object);
     }

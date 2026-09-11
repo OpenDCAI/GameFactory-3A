@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from ..assets import ThreeAssetsClient
+from ..assets._internal.artifacts import ArtifactRecord
 from ..assets._internal.inspectors import classify_suffix
 from ..config import ThreeClientConfig
 from ..contracts import ThreeOperationResult
@@ -206,12 +207,27 @@ class ThreeBindingsClient:
             / BINDINGS_RELATIVE_ROOT
             / f"{asset_id}.json"
         )
+        binding_url = "/" + f"{BINDINGS_RELATIVE_ROOT}/{asset_id}.json"
         try:
             binding_path.parent.mkdir(parents=True, exist_ok=True)
             binding_path.write_text(
                 json.dumps(binding, indent=2, sort_keys=True) + "\n",
                 encoding="utf-8",
             )
+            updates = []
+            for record in registry.list():
+                metadata = dict(record.metadata or {})
+                previous = list(metadata.get("material_bindings") or [])
+                bindings = [url for url in previous if url != binding_url]
+                if record.backend_path in target_paths:
+                    bindings.append(binding_url)
+                if bindings != previous:
+                    metadata["material_bindings"] = bindings
+                    updates.append(ArtifactRecord.from_dict(
+                        {**record.to_dict(), "metadata": metadata}
+                    ))
+            registry.upsert_many(updates)
+            self._assets._service.write_manifest()
         except Exception as exc:
             return ThreeOperationResult.failure(
                 "bindings.bind_pbr_material",

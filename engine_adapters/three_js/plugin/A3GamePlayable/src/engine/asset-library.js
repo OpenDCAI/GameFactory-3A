@@ -49,6 +49,9 @@ export class A3GameAssetLibrary {
     this.byType = new Map();
     /** @type {Map<string, Promise<object>>} */
     this.cache = new Map();
+    this.resources = new Set();
+    this.releasedResources = new WeakSet();
+    this.instanceResources = new WeakMap();
 
     this.textureLoader = new THREE.TextureLoader();
     this.hdrLoader = new HDRLoader();
@@ -171,7 +174,17 @@ export class A3GameAssetLibrary {
     if (this.cache.has(entry.artifact_id)) {
       return this.cache.get(entry.artifact_id);
     }
-    const promise = this.#loadEntry(entry).catch((error) => {
+    const promise = this.#loadEntry(entry).then((loaded) => {
+      this.#own(loaded.texture);
+      this.#ownObjectResources(loaded.object);
+      if (loaded.object) {
+        loaded.object.userData.a3Asset = {
+          url: entry.url, representation: entry.representation,
+          artifact_id: entry.artifact_id,
+        };
+      }
+      return loaded;
+    }).catch((error) => {
       this.cache.delete(entry.artifact_id);
       throw error;
     });
@@ -184,6 +197,9 @@ export class A3GameAssetLibrary {
    *
    * Skinned hierarchies are cloned with `SkeletonUtils.clone` so each
    * instance keeps its own bones and can play its own animations.
+   * Materials are instance-local; geometry and original textures stay
+   * shared. `object.userData.dispose()` releases local materials and binding
+   * textures; shared caches remain valid until `library.dispose()`.
    *
    * @param {string} reference
    * @returns {Promise<{object: THREE.Object3D, animations: THREE.AnimationClip[], entry: object}>}
@@ -195,11 +211,52 @@ export class A3GameAssetLibrary {
         `Asset ${reference} is not an instantiable mesh artifact`,
       );
     }
-    const skinned = Boolean(loaded.entry?.capabilities?.skinned);
+    this.#ownObjectResources(loaded.object);
+    let skinned = Boolean(loaded.entry?.capabilities?.skinned);
+    loaded.object.traverse((child) => { skinned ||= Boolean(child.isSkinnedMesh); });
     const object = skinned
       ? cloneSkinned(loaded.object)
       : loaded.object.clone(true);
     object.name = object.name || loaded.entry.asset_id;
+    object.userData.a3Asset = {
+      url: loaded.entry.url,
+      representation: loaded.entry.representation,
+      artifact_id: loaded.entry.artifact_id,
+    };
+    const owner = { root: object, resources: new Set(), disposed: false };
+    this.instanceResources.set(object, owner);
+    object.userData.dispose = () => {
+      if (owner.disposed) return;
+      owner.disposed = true;
+      for (const resource of owner.resources) {
+        if (this.resources.has(resource)) resource.dispose();
+      }
+      owner.resources.clear();
+    };
+    const materials = new Map();
+    object.traverse((child) => {
+      if (!child.material) return;
+      const cloneMaterial = (material) => {
+        if (!material) return material;
+        if (!materials.has(material)) {
+          const cloned = this.#own(material.clone());
+          materials.set(material, cloned);
+          owner.resources.add(cloned);
+        }
+        return materials.get(material);
+      };
+      child.material = Array.isArray(child.material)
+        ? child.material.map(cloneMaterial)
+        : cloneMaterial(child.material);
+    });
+    try {
+      for (const url of loaded.entry.material_bindings ?? []) {
+        await this.applyMaterialBinding(object, url);
+      }
+    } catch (error) {
+      object.userData.dispose();
+      throw error;
+    }
     return {
       object,
       animations: (loaded.animations ?? []).map((clip) => clip.clone()),
@@ -290,6 +347,10 @@ export class A3GameAssetLibrary {
 
   /**
    * Apply an adapter-written PBR material binding to an object subtree.
+   * Targets identify staged asset URLs, not mesh/material names. An
+   * explicit target list must match at least one library-loaded mesh.
+   * Replacement materials and textures are owned by this library; the
+   * caller retains ownership of any external materials being replaced.
    *
    * @param {THREE.Object3D} object
    * @param {string} bindingUrl for example `/assets/bindings/<id>.json`
@@ -303,35 +364,140 @@ export class A3GameAssetLibrary {
       );
     }
     const binding = await response.json();
-    const textures = {};
-    for (const [slot, url] of Object.entries(binding.textures ?? {})) {
-      const texture = await this.textureLoader.loadAsync(url);
-      texture.colorSpace =
-        slot === 'map' || slot === 'emissiveMap'
-          ? THREE.SRGBColorSpace
-          : THREE.NoColorSpace;
-      textures[slot] = texture;
+    const types = {
+      MeshStandardMaterial: THREE.MeshStandardMaterial,
+      MeshPhysicalMaterial: THREE.MeshPhysicalMaterial,
+      MeshBasicMaterial: THREE.MeshBasicMaterial,
+      MeshLambertMaterial: THREE.MeshLambertMaterial,
+      MeshPhongMaterial: THREE.MeshPhongMaterial,
+      MeshMatcapMaterial: THREE.MeshMatcapMaterial,
+      MeshToonMaterial: THREE.MeshToonMaterial,
+    };
+    const MaterialType = types[binding.material_type];
+    if (binding.material_type && !Object.hasOwn(types, binding.material_type)) {
+      throw new Error(`Unsupported binding material_type: ${binding.material_type}`);
     }
+    if (binding.targets !== undefined && !Array.isArray(binding.targets)) {
+      throw new TypeError('Material binding targets must be asset URL arrays');
+    }
+    const meshes = [];
     object.traverse((child) => {
-      if (!child.isMesh) return;
-      const materials = Array.isArray(child.material)
-        ? child.material
-        : [child.material];
-      for (const material of materials) {
-        if (!material) continue;
-        Object.assign(material, textures);
-        for (const [key, value] of Object.entries(binding.scalars ?? {})) {
-          if (key in material) material[key] = Number(value);
-        }
-        for (const [key, value] of Object.entries(binding.colors ?? {})) {
-          if (material[key]?.isColor) material[key].set(value);
-        }
-        for (const [key, value] of Object.entries(binding.flags ?? {})) {
-          if (key in material) material[key] = value;
-        }
-        material.needsUpdate = true;
-      }
+      if (!child.isMesh || !child.material) return;
+      let source = child;
+      while (source && !source.userData?.a3Asset) source = source.parent;
+      const asset = source?.userData.a3Asset;
+      if (binding.targets && !binding.targets.includes(asset?.url)) return;
+      const gltf = /gltf|glb/i.test(asset?.representation ?? '') ||
+        /\.(glb|gltf)(?:[?#]|$)/i.test(asset?.url ?? '');
+      const owner = this.instanceResources.get(source);
+      if (owner?.disposed) throw new Error('Cannot bind a disposed asset instance');
+      meshes.push({ child, flipY: !gltf, owner });
     });
+    if (!meshes.length) {
+      throw new Error(`Material binding ${bindingUrl} matched no target asset meshes`);
+    }
+    const allocated = new Set();
+    const textureSets = new Map();
+    const replacements = [];
+    const number = (value, key) => {
+      if (value === null || value === '' || typeof value === 'boolean' ||
+          !['number', 'string'].includes(typeof value) || !Number.isFinite(Number(value))) {
+        throw new TypeError(`Invalid material number for ${key}`);
+      }
+      return Number(value);
+    };
+    try {
+      for (const { child, flipY, owner } of meshes) {
+        if (!textureSets.has(owner)) textureSets.set(owner, new Map());
+        const instanceTextures = textureSets.get(owner);
+        if (!instanceTextures.has(flipY)) {
+          const textures = {};
+          for (const [slot, url] of Object.entries(binding.textures ?? {})) {
+            const texture = await this.textureLoader.loadAsync(url);
+            allocated.add(texture);
+            texture.colorSpace = ['map', 'emissiveMap', 'sheenColorMap', 'specularColorMap'].includes(slot)
+              ? THREE.SRGBColorSpace : THREE.NoColorSpace;
+            texture.flipY = flipY;
+            texture.needsUpdate = true;
+            textures[slot] = texture;
+          }
+          instanceTextures.set(flipY, textures);
+        }
+        const materials = [child.material].flat().map((original) => {
+          if (!original) return original;
+          const material = MaterialType && original.type !== binding.material_type
+            ? new MaterialType() : original.clone();
+          allocated.add(material);
+          if (material.type !== original.type) {
+            THREE.Material.prototype.copy.call(material, original);
+            for (const key of Object.keys(material)) {
+              if (!(key in original) || key.startsWith('is') ||
+                  ['id', 'uuid', 'type', 'defines', 'version', 'userData'].includes(key)) continue;
+              const value = original[key];
+              if (material[key]?.isColor || material[key]?.isVector2) material[key].copy(value);
+              else if (value === null || value?.isTexture || typeof value !== 'object') material[key] = value;
+            }
+          }
+          for (const [key, texture] of Object.entries(instanceTextures.get(flipY))) {
+            if (!(key in material)) throw new TypeError(`${material.type} does not support ${key}`);
+            material[key] = texture;
+          }
+          for (const [key, value] of Object.entries({ ...binding.scalars, ...binding.vectors })) {
+            if (material[key]?.isVector2) {
+              const pair = Array.isArray(value) ? value
+                : value && typeof value === 'object' ? [value.x, value.y] : [value, value];
+              if (pair.length !== 2) throw new TypeError(`Invalid material vector for ${key}`);
+              material[key].set(number(pair[0], key), number(pair[1], key));
+            } else {
+              if (typeof material[key] !== 'number') throw new TypeError(`${material.type} does not support scalar ${key}`);
+              material[key] = number(value, key);
+            }
+          }
+          for (const [key, value] of Object.entries(binding.colors ?? {})) {
+            if (!material[key]?.isColor) throw new TypeError(`${material.type} does not support color ${key}`);
+            if (Array.isArray(value)) {
+              if (value.length !== 3) throw new TypeError(`Invalid material color for ${key}`);
+              material[key].setRGB(...value.map((v) => number(v, key)), THREE.SRGBColorSpace);
+            } else material[key].set(value);
+          }
+          for (const [key, value] of Object.entries(binding.flags ?? {})) {
+            if (!['transparent', 'side', 'flatShading', 'wireframe', 'depthWrite', 'vertexColors'].includes(key) || !(key in material)) {
+              throw new TypeError(`${material.type} does not support flag ${key}`);
+            }
+            material[key] = key === 'side' && typeof value === 'string'
+              ? ({ FrontSide: THREE.FrontSide, BackSide: THREE.BackSide, DoubleSide: THREE.DoubleSide })[value]
+              : value;
+            if (key === 'side' ? ![0, 1, 2].includes(material[key]) : typeof value !== 'boolean') {
+              throw new TypeError(`Invalid material flag ${key}`);
+            }
+          }
+          material.needsUpdate = true;
+          return material;
+        });
+        replacements.push({ child, owner, material: Array.isArray(child.material) ? materials : materials[0] });
+      }
+      if (meshes.some(({ owner }) => owner?.disposed)) {
+        throw new Error('Asset instance was disposed while binding loaded');
+      }
+    } catch (error) {
+      for (const resource of allocated) resource.dispose();
+      throw error;
+    }
+    for (const resource of allocated) this.#own(resource);
+    const owners = new Set();
+    for (const { child, material, owner } of replacements) {
+      child.material = material;
+      if (!owner) continue;
+      owners.add(owner);
+      for (const item of [material].flat()) {
+        if (!item) continue;
+        owner.resources.add(item);
+        for (const value of Object.values(item)) {
+          if (value?.isTexture && allocated.has(value)) owner.resources.add(value);
+        }
+      }
+    }
+    for (const owner of owners) this.#releaseUnusedInstanceResources(owner);
     return binding;
   }
 
@@ -360,9 +526,12 @@ export class A3GameAssetLibrary {
         ? loaded.texture
         : loaded.texture.clone();
       texture.needsUpdate = true;
+      this.#own(texture);
       return createTilingTexture(texture, {
         renderer: this.renderer,
         ...options,
+        ...(['hdr', 'exr'].includes(loaded.entry?.representation)
+          ? { colorSpace: loaded.texture.colorSpace } : {}),
       });
     } catch (error) {
       this.warnings.push(
@@ -426,11 +595,13 @@ export class A3GameAssetLibrary {
       // is the right size for lighting and visibly soft as a backdrop.
       const backdrop = options.backgroundReference
         ? await this.tryLoadTexture(options.backgroundReference, {
-            srgb: true,
             clone: false,
           })
         : loaded.texture;
-      if (backdrop) settings.backgroundTexture = backdrop;
+      if (backdrop) {
+        backdrop.mapping = THREE.EquirectangularReflectionMapping;
+        settings.backgroundTexture = backdrop;
+      }
       if (options.backgroundIntensity !== undefined) {
         settings.backgroundIntensity = options.backgroundIntensity;
       }
@@ -438,16 +609,17 @@ export class A3GameAssetLibrary {
         settings.backgroundBlurriness = options.backgroundBlurriness;
       }
     }
-    if (options.rotationDegrees !== undefined) {
-      settings.environmentRotationDegrees = options.rotationDegrees;
-      settings.backgroundRotationDegrees = options.rotationDegrees;
-    }
+    const rotation = Number(options.rotationDegrees ?? 0);
+    if (!Number.isFinite(rotation)) throw new TypeError('Environment rotation must be finite');
+    settings.environmentRotationDegrees = rotation;
+    settings.backgroundRotationDegrees = rotation;
 
     let sunDirection = null;
     const sun = loaded.entry?.sun;
-    if (sun && Number.isFinite(Number(sun.elevation))) {
+    if (sun && sun.elevation != null &&
+        Number.isFinite(Number(sun.elevation)) && Number.isFinite(Number(sun.azimuth ?? 180))) {
       const elevation = THREE.MathUtils.degToRad(Number(sun.elevation));
-      const azimuth = THREE.MathUtils.degToRad(Number(sun.azimuth ?? 180));
+      const azimuth = THREE.MathUtils.degToRad(Number(sun.azimuth ?? 180) + rotation);
       sunDirection = new THREE.Vector3(
         Math.cos(elevation) * Math.sin(azimuth),
         Math.sin(elevation),
@@ -463,23 +635,65 @@ export class A3GameAssetLibrary {
     return { entry: loaded.entry, texture: loaded.texture, sunDirection };
   }
 
-  /** Release every cached GPU resource held by the library. */
+  #own(resource) {
+    if (!resource?.dispose || this.resources.has(resource) || this.releasedResources.has(resource)) return resource;
+    resource.userData ??= {};
+    resource.userData.a3AssetLibraryOwned = true;
+    this.resources.add(resource);
+    const released = () => {
+      this.resources.delete(resource);
+      this.releasedResources.add(resource);
+      resource.removeEventListener?.('dispose', released);
+    };
+    resource.addEventListener?.('dispose', released);
+    return resource;
+  }
+
+  #releaseUnusedInstanceResources(owner) {
+    const used = new Set();
+    owner.root.traverse((child) => {
+      for (const material of [child.material].flat()) {
+        if (!material) continue;
+        used.add(material);
+        for (const value of Object.values(material)) {
+          if (value?.isTexture) used.add(value);
+        }
+      }
+    });
+    for (const resource of owner.resources) {
+      if (used.has(resource)) continue;
+      if (this.resources.has(resource)) resource.dispose();
+      owner.resources.delete(resource);
+    }
+  }
+
+  #ownObjectResources(object) {
+    object?.traverse?.((child) => {
+      this.#own(child.geometry);
+      for (const material of [child.material].flat()) {
+        if (!material) continue;
+        this.#own(material);
+        for (const value of Object.values(material)) {
+          if (value?.isTexture) this.#own(value);
+        }
+      }
+    });
+  }
+
+  /** Library-created materials and shared geometry/textures live until disposal. */
   async dispose() {
     for (const promise of this.cache.values()) {
       const loaded = await promise.catch(() => null);
-      loaded?.texture?.dispose?.();
-      loaded?.object?.traverse?.((child) => {
-        child.geometry?.dispose?.();
-        const materials = Array.isArray(child.material)
-          ? child.material
-          : child.material
-            ? [child.material]
-            : [];
-        for (const material of materials) material.dispose?.();
-      });
+      this.#own(loaded?.texture);
+      this.#ownObjectResources(loaded?.object);
     }
+    for (const resource of this.resources) resource.dispose();
+    this.resources.clear();
     this.cache.clear();
-    this.fileLoaders.glb?.dracoLoader?.dispose?.();
+    for (const loader of [this.fileLoaders.glb, this.fileLoaders.gltf]) {
+      loader?.dracoLoader?.dispose?.();
+      loader?.ktx2Loader?.dispose?.();
+    }
   }
 
   /**
@@ -492,15 +706,13 @@ export class A3GameAssetLibrary {
    * - **scale**, when the reviewer recorded a real-world height and the
    *   caller did not override it.
    *
-   * The correction is applied to the *model*, inside a wrapper that is
-   * handed back as the object. That split is deliberate: gameplay code
-   * and world specs both assign `rotation.y` on the object they are
-   * given, and rotating the same node the correction lives on would undo
-   * it on the first frame. The wrapper is the game's to turn; the model
-   * inside it is already facing the right way.
+   * An inner correction Group owns orientation, scale and grounding;
+   * the outer Group is free for gameplay/world transforms. The authored
+   * model remains untouched below both, so root animation tracks and
+   * skeletons retain their original coordinate system.
    *
-   * With no orientation recorded this reduces to the previous behaviour
-   * exactly: no wrapper, no rotation, no implied height.
+   * With no orientation, height or grounding requested, no wrappers are
+   * introduced and the authored transform is preserved.
    */
   #prepare(loaded, options = {}) {
     const orientation = { ...(loaded.entry?.orientation ?? {}) };
@@ -523,21 +735,29 @@ export class A3GameAssetLibrary {
       options.height ?? (Number.isFinite(hint) && hint > 0 ? hint : undefined);
 
     let object = loaded.object;
-    if (rotates) {
-      const model = object;
-      orientModel(model, {
-        forwardAxis,
-        runtimeForwardAxis: orientation.runtime_forward_axis,
-        yawOffsetDegrees: yaw,
-        pitchOffsetDegrees: pitch,
-        rollOffsetDegrees: roll,
-      });
+    let correction = object;
+    if (rotates || height !== undefined || options.ground) {
+      correction = new THREE.Group();
+      correction.name = `${object.name || loaded.entry?.asset_id || 'asset'}_correction`;
+      correction.add(object);
+      if (rotates) {
+        orientModel(correction, {
+          forwardAxis,
+          runtimeForwardAxis: orientation.runtime_forward_axis,
+          yawOffsetDegrees: yaw,
+          pitchOffsetDegrees: pitch,
+          rollOffsetDegrees: roll,
+        });
+      }
       object = new THREE.Group();
-      object.name = `${model.name || loaded.entry?.asset_id || 'asset'}_oriented`;
-      object.add(model);
+      object.name = `${loaded.object.name || loaded.entry?.asset_id || 'asset'}_prepared`;
+      object.add(correction);
     }
 
-    prepareModel(object, { ...options, height, orientation: {}, forwardAxis: '' });
+    prepareModel(correction, {
+      ...options, height, orientation: {}, forwardAxis: '',
+      yawOffsetDegrees: 0, pitchOffsetDegrees: 0, rollOffsetDegrees: 0,
+    });
 
     if (!forwardAxis && orientation.needs_vision_check) {
       this.warnings.push(

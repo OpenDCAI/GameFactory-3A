@@ -281,6 +281,11 @@ class AssetService:
             },
             metadata=metadata,
         )
+        previous = self.artifacts.get(record.artifact_id)
+        if previous and previous.metadata.get("material_bindings"):
+            metadata["material_bindings"] = list(
+                previous.metadata["material_bindings"]
+            )
         self.artifacts.upsert(record)
         warnings.extend(self._supersede_stale(record))
         self.write_manifest()
@@ -567,6 +572,14 @@ class AssetService:
                 # model exactly as authored rather than guessing.
                 "orientation": dict(
                     record.metadata.get("orientation") or {}
+                ),
+                "material_bindings": list(
+                    record.metadata.get("material_bindings") or []
+                ),
+                "sun": dict(
+                    record.metadata.get("sun")
+                    or record.metadata.get("option_sun")
+                    or {}
                 ),
             }
             for record in self.artifacts.list()

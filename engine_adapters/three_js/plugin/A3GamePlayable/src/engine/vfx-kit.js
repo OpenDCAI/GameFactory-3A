@@ -301,6 +301,10 @@ export class A3GameParticleSystem {
     ]);
     this.gravity = readVector(config.gravity, [0, 0, 0]);
     this.drag = Math.max(0, Number(config.drag ?? 0));
+    this.windResponse = Math.max(0, Number(config.windResponse ?? 0));
+    this.windField = config.windField ?? null;
+    this.unsubscribeWind = null;
+    this.disposed = false;
     this.turbulence = config.turbulence
       ? {
           intensity: Number(config.turbulence.intensity ?? 0),
@@ -564,6 +568,14 @@ export class A3GameParticleSystem {
       this.velocities[base + 2] =
         (this.velocities[base + 2] + this.gravity.z * delta) * damping;
 
+      if (this.windField && this.windResponse > 0) {
+        this.#scratch.vector.set(this.positions[base], this.positions[base + 1], this.positions[base + 2]);
+        this.windField.sample(this.#scratch.vector, this.windField.elapsedSeconds, flow);
+        const follow = 1 - Math.exp(-this.windResponse * delta);
+        this.velocities[base] += (flow.x - this.velocities[base]) * follow;
+        this.velocities[base + 1] += (flow.y - this.velocities[base + 1]) * follow;
+        this.velocities[base + 2] += (flow.z - this.velocities[base + 2]) * follow;
+      }
       this.positions[base] += this.velocities[base] * delta;
       this.positions[base + 1] += this.velocities[base + 1] * delta;
       this.positions[base + 2] += this.velocities[base + 2] * delta;
@@ -577,7 +589,10 @@ export class A3GameParticleSystem {
 
   /** Bind the system to a host tick, including the camera it needs. */
   attachToHost(host) {
-    return host.onTick((delta) => this.update(delta, host.camera));
+    this.unsubscribeWind?.();
+    this.windField = host.wind ?? this.windField;
+    this.unsubscribeWind = host.onTick((delta) => this.update(delta, host.camera));
+    return this.unsubscribeWind;
   }
 
   /** @returns {object} observable state, which is what tests assert. */
@@ -594,6 +609,10 @@ export class A3GameParticleSystem {
   }
 
   dispose() {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.unsubscribeWind?.();
+    this.unsubscribeWind = null;
     this.object3D.parent?.remove(this.object3D);
     this.geometry?.dispose?.();
     this.material?.dispose?.();
@@ -1562,6 +1581,7 @@ export const A3GameVfxPreset = Object.freeze({
       [-0.2, 0.2],
     ],
     gravity: [0, 0.4, 0],
+    windResponse: 1.2,
     turbulence: { intensity: 0.5, frequency: 0.8, speed: 0.4 },
     emissionOverTime: 26,
     autoStart: false,
@@ -1584,6 +1604,17 @@ export const A3GameVfxPreset = Object.freeze({
     drag: 3,
     blending: A3GameParticleBlending.ADDITIVE,
     intensity: 3,
+  }),
+  FIRE_PLUME: Object.freeze({
+    maxParticles: 320, lifetime: [0.35, 0.85], size: [0.12, 0.4],
+    sizeOverLife: [1, 0.1], opacityOverLife: [0.9, 0],
+    colorStart: ['#fff2ba', '#ffad29', '#ff521c'], colorEnd: ['#94240a'],
+    speed: [1, 2.2], direction: [[-0.12, 0.12], [0.8, 1], [-0.12, 0.12]],
+    gravity: [0, 1.5, 0], windResponse: 1.8,
+    turbulence: { intensity: 0.6, frequency: 2.5, speed: 1.3 },
+    emitterShape: A3GameEmitterShape.DISK, emitterRadius: [0, 0.4],
+    emissionOverTime: 170, autoStart: false,
+    blending: A3GameParticleBlending.ADDITIVE, intensity: 2.3,
   }),
   /** Tyre smoke while a car slides. */
   TYRE_SMOKE: Object.freeze({
@@ -1837,6 +1868,7 @@ export class A3GameVfxDirector {
         .add(follower.offset);
     }
     for (const system of this.systems.values()) {
+      if (this.host?.wind) system.windField = this.host.wind;
       system.update(deltaSeconds, view);
     }
     for (const beam of this.beams.values()) beam.update(deltaSeconds);

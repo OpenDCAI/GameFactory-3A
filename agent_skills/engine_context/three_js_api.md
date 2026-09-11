@@ -555,9 +555,20 @@ Reference implementation of both halves:
 - `three.bindings.bind_pbr_material` - Stages a PBR texture set and
   writes a runtime material binding for registered mesh artifacts.
 
-Bindings are written to `public/assets/bindings/<asset_id>.json` and
-applied at runtime by `A3GameAssetLibrary.applyMaterialBinding`. Texture
-slots are inferred from file names (`_basecolor`, `_normal`,
+Bindings are written to `public/assets/bindings/<asset_id>.json`, recorded
+on each target artifact and included in manifest `material_bindings`.
+`instantiate` (therefore `tryInstantiate` and World loading) applies them
+automatically. Manual `applyMaterialBinding` remains available. Binding
+`targets` select asset URLs, not arbitrary child mesh names. Material types
+are honoured, including Standard-to-Physical upgrades; vector parameters
+such as `normalScale` remain vectors. Color maps are sRGB; data maps are
+linear data, with glTF's `flipY: false` convention preserved.
+
+Instance materials are isolated; cached geometry and source textures remain
+library-owned. Unload objects with `disposeObject3D`, then dispose the asset
+library at project shutdown. A bad binding makes strict instantiation fail;
+`tryInstantiate` retains its warning-and-null fallback contract.
+Texture slots are inferred from file names (`_basecolor`, `_normal`,
 `_roughness`, `_metallic`, `_ao`, `_emissive`, `_alpha`, `_height`).
 
 ## World
@@ -586,7 +597,10 @@ Coordinates are right-handed, Y-up, metres; rotations are radians.
   settings for the `gradient` preset — see `createSkyGradient`),
   `background`, `environment_artifact_id`, `background_artifact_id`,
   `environment_intensity`, `background_intensity`,
-  `background_blurriness`, `tone_mapping`, `tone_mapping_exposure`,
+  `background_blurriness`, `show_sky`, `environment_rotation_degrees`,
+  `background_rotation_degrees`, `tone_mapping`, `tone_mapping_exposure`,
+  `wind` (`velocity`, `gustStrength`, `gustPeriod`, `spatialScale`, `response`, `seed`),
+  `water[]` (`water_id`, `size`, `position`, `normal_artifact_id`, `terrain_entity_ids`, `options`),
   `shadows`, `fog` (`type`/`color`/`near`/`far`/`density`), `ground`
   (`size`/`color`/`texture_artifact_id`/`normal_artifact_id`/
   `roughness_artifact_id`/`texture_repeat`);
@@ -957,7 +971,8 @@ They are game-neutral.
   `setFrustumHeight`, `attachOrbitControls`, `attachPointerLockControls`,
   `requestPointerLock`, `exitPointerLock`, `isPointerLocked`,
   `detachControls`, `setEnvironment`, `setFog`, `getSunDirection`,
-  `getSunPosition`, `raycastFromPointer`,
+  `getSunPosition`, `registerSunLight`, `refreshEnvironment`,
+  `onRender`, `interpolateObject`, `resetInterpolation`, `raycastFromPointer`,
   `raycast`, `captureFrame`, `getStats`, `dispose`.
   `setEnvironment` also takes `backgroundTexture` (an equirectangular
   image as the visible sky, with the mapping set for you),
@@ -985,8 +1000,8 @@ They are game-neutral.
   copies of one generated body), the outdoor dressing set
   `createSkyGradient`, `createDistantRange` (closes the hard edge where a
   ground plane stops), `createCloudLayer` (parallax the dome cannot give),
-  `createWaterSurface` (near-mirror reflections of `scene.environment`,
-  no second render pass), `createTilingTexture` (fixes clamped
+  `createWaterSurface` (`standard` GPU waves or `low` CPU waves, shared
+  depth/normal sampling, optional planar reflection/refraction), `createTilingTexture` (fixes clamped
   wrapping, anisotropy 1 and the colour space), and the procedural PBR
   surface pair `createSurfaceTextures` / `createSurfaceMaterial` with
   `A3GameSurfacePattern` (`CONCRETE`, `STEEL_PLATE`, `BLOCKWORK`,
@@ -1013,7 +1028,9 @@ They are game-neutral.
   because a game must run before its art arrives.
 - `A3GameSceneLoader` - Builds a scene from a published world scene
   graph; `loadWorld`, `buildWorld`, `getEntityObject`,
-  `resolveSpawnTransform`, plus `collisionTargets` and `spawnPoints`.
+  `resolveSpawnTransform`, `dispose`, plus `collisionTargets`, `spawnPoints`
+  and `waterSurfaces` (map keyed by `water_id`). World water is updated and
+  disposed automatically; it is not a solid collision floor.
 - `A3GameInputRouter` - Converts keyboard, pointer, and gamepad events
   into normalized input frames; `enable`, `disable`, `reset`, `onAction`,
   `isActionHeld`, `setLook`, `sample`, `pipeToSession`.
@@ -1084,10 +1101,18 @@ three.js game.
 | What is **near** me? (pickups, melee arcs, chests, checkpoints, triggers) | `overlapSphere` |
 | Where did my projectile go this frame? | `sweepSphere` |
 
-`overlapSphere` treats a target with no geometry as a point at its world
-position, so bare `Object3D` markers work as triggers. `sweepSphere`
-tests the whole travelled segment, which is what stops a fast projectile
-tunnelling through a thin wall.
+`overlapSphere` treats geometry-free markers as points and meshes as coarse
+bounding volumes. `sweepSphere` continuously tests a finite-radius sphere
+against static mesh triangles (faces, edges and vertices), including
+transformed instances. Results include surface `point`, world `normal`,
+`centre`, centre travel `distance`, `timeOfImpact` in [0,1], and
+`penetrationDepth`. Invisible collider meshes remain collidable.
+
+`resolveMove`/`stepCharacter` use an overlapping sphere-chain character proxy
+with iterative sliding and ceiling checks. This is not an exact capsule or a
+rigid-body solver: use simplified static colliders, not animated skins; it
+provides no stacking, joints or full moving-platform dynamics. Refresh geometry
+attributes with `needsUpdate` after editing collider vertices.
 
 ### Boot Options
 
@@ -1105,6 +1130,64 @@ It returns `{ host, assets, sceneLoader, hud, session, runtime, world }`.
 Reuse `context.hud`; constructing a second `A3GameHudLayer` on the same
 container stacks two overlay roots and makes `getState()` ambiguous.
 
+### Simulation and rendering
+
+`hostOptions` defaults to `fixedTimeStep: 1/60`, `maxSubSteps: 6`,
+`maxFrameDelta: 0.1`. `fixedTimeStep: 0` keeps the legacy variable-step mode.
+`onTick(dt, elapsed)` receives simulation time advanced once per substep.
+Negative or non-finite deltas are rejected; excess catch-up time is dropped
+and exposed by `getStats().droppedSeconds`, not silently simulated in one jump.
+Recorders should use small explicit deltas rather than one large time jump.
+
+Use `onRender(dt, alpha)` for display-only camera updates after simulation.
+`interpolateObject(object)` opt-in interpolates position, rotation and scale
+for rendering, then restores the simulation transform. It returns an
+unsubscribe function; call `resetInterpolation(object)` after teleporting.
+Do not probe collisions or write simulation state from `onRender`.
+`captureFrame()` uses the same display path without advancing simulation.
+
+### Shared wind and effects
+
+`host.wind` is one deterministic world-space air velocity field (metres/second,
+velocity points **towards** the downwind direction). Set `environment.wind`
+in World specs or `host.setWind({velocity:[3,0,1], gustStrength:0.5,
+gustPeriod:6, spatialScale:30, response:1.5, seed:7})`. Changes ease towards the
+new velocity; `setWind(config,true)` applies immediately. The host advances it
+once per simulation step. Never update it again from an effect.
+
+`A3GameWindField.sample(worldPosition,time,target)` queries air velocity;
+`getState()` exposes time and integrated displacement. This is a procedural
+wind field, not an obstacle-aware atmospheric solver.
+
+- Sky clouds use accumulated wind displacement. Near clouds opt in with
+  `clouds.userData.attachToHost(host)`; do not additionally tick them manually.
+- Particle `windResponse` (1/seconds, default 0) relaxes velocity towards air
+  velocity. Standalone `attachToHost` and `A3GameVfxDirector` share host wind.
+  `SMOKE_PLUME` and `FIRE_PLUME` presets opt in; sparks can use a smaller value.
+- `bindVegetationWind(root,host,{flexibility,maxBend,response,phase})` bends a
+  plant around its authored root without translating it. It returns a detach
+  function and restores the rest pose on dispose. Shadows use the same transform.
+- Attached water responds smoothly to wind in its fine waves/normal motion;
+  existing swell remains continuous. Air velocity is **not** water current.
+- `createLightningArc({from,to,segments,period,seed})` returns a Group with
+  `userData.update/attachToHost/getState/dispose`. Electrical endpoints remain
+  anchored; only path jitter and flash timing vary. Do not advect bolts with wind.
+
+### Synchronized lighting
+
+`createSunLight()` is automatically registered when added through `host.add`;
+set `syncEnvironment: false` for an independent art light. Existing direction
+lights can use `registerSunLight(light, distance)`. World loading syncs its
+first directional light by default; `options.sync_environment` overrides this.
+Changing `setEnvironment({sunPosition})` updates the existing sky and registered
+sun lights. HDRI rotation is included when interpreting its sun metadata.
+
+`refreshEnvironment()` refreshes procedural IBL from the current sky clock.
+Optional `hostOptions.environmentUpdateInterval` refreshes periodically in
+simulation seconds (default `0`, on-demand only). Imported HDRIs remain static
+and are never replaced by this refresh. Sky output uses the renderer's color
+conversion; PMREM remains linear HDR, without a second gamma/tone-map bake.
+
 ### Making a Generated Game Look Good
 
 three.js ships **no 3D models** in its npm package — only loaders and
@@ -1121,8 +1204,10 @@ visible effect per line of code:
    it is physically correct and completely **cloudless**, and an empty
    gradient overhead is the clearest single tell of a generated scene.
    See *Sky, IBL and Outdoor Dressing* below.
-2. **Filmic tone mapping.** `toneMapping: 'ACESFilmicToneMapping'` with
-   an exposure near 0.7 outdoors. The default clips highlights to white.
+2. **Calibrated tone mapping.** The default is `NeutralToneMapping`;
+   `ACESFilmicToneMapping` is an alternative, not an automatic realism
+   upgrade. Tune exposure against the actual lights and HDRI. Do not add
+   a second gamma conversion or bake tone mapping into environment maps.
 3. **A fitted shadow camera.** `createSunLight({ radius })`. The stock
    `DirectionalLight` shadow camera is a 10-metre box at the origin, so a
    200-metre track gets no shadow at all.
@@ -1212,20 +1297,106 @@ the texture is what gives a sense of speed.
 host.add(createDistantRange({ radius: 300, height: 96, color: 0x5c6f86,
                               topColor: 0xa9bccf, seed: 91 }), 'environment');
 const clouds = createCloudLayer({ count: 16, radius: 260, height: 110 });
-host.onTick((d) => clouds.userData.update(d));
+host.add(clouds, 'environment');
+clouds.userData.attachToHost(host);
 
-const lake = createWaterSurface({ size: 55, normalMap, waveHeight: 0.07 });
-host.onTick((d) => lake.userData.update(d));
+const lake = createWaterSurface({
+  quality: 'standard', size: 55, normalMap, waveHeight: 0.07,
+  terrainHeight, reflection: true, refraction: true,
+  reflectionResolution: 256, reflectionUpdateRate: 30,
+});
+host.add(lake, 'environment');
+lake.userData.attachToHost(host);
 ```
 
-`createDistantRange` closes the hard edge where a ground plane stops —
-fog alone cannot, because it fades the ground into the sky and leaves
-nothing behind it. `createCloudLayer` parallaxes against the dome's
-clouds, which sit at infinity and never move. `createWaterSurface` is a
-near-mirror `MeshStandardMaterial` reflecting `scene.environment`, which
-costs nothing next to the `Water` addon's second render pass; assign
-`material.normalMap` whenever the texture arrives, including after
-construction.
+`createDistantRange` closes the hard terrain edge. `createCloudLayer`
+adds near-cloud parallax. `createWaterSurface` returns a `Mesh` and keeps
+`userData.update(dt)` compatibility; do not both attach and manually tick it.
+
+Water contracts:
+- `standard` (default): GPU analytic waves/normals, non-metallic material
+  with water IOR 1.333, depth absorption and shoreline foam. `low` uses a
+  smaller CPU-deformed mesh and disables planar passes.
+- `terrainHeight(x,z)` supplies the world-space bottom. The same cached
+  bottom grid controls rendering and CPU depth queries. No callback means
+  constant `depth` (default 5 metres), not automatic terrain excavation.
+- `sampleHeight(x,z)`, `sampleNormal(x,z)`, `sampleDepth(x,z)` live in
+  `userData`, accept world coordinates, and return `null` outside the surface.
+  Dry terrain has zero depth. Transforms trigger a depth refresh; call
+  `refreshDepth()` after changing terrain geometry.
+- `reflection` and `refraction` are opt-in extra render passes, disabled
+  by default. Resolution defaults to 256, update rate to 30 simulated Hz.
+  Refraction currently requires a perspective camera. Their offscreen
+  buffers stay linear; final output is converted once by the renderer.
+- `addRipple(x,z,strength,radius)` adds bounded, decaying interactive waves;
+  the default pool holds eight ripples and reuses slots.
+- `computeBuoyancy({points, centerOfMass, velocity, angularVelocity,
+  volume, draft, density, gravity, damping})` returns force, torque and
+  submerged fractions. Positions are world-space metres, forces newtons;
+  `applyBuoyancy(body, options)` calls `body.applyForce(force, worldPoint)`.
+  The game must integrate motion/gravity or connect a rigid-body backend.
+- `getState()` reports wave time and render-target counts. `dispose()`
+  releases owned targets and removes the tick subscription; calling
+  `disposeObject3D(lake)` also performs this cleanup.
+
+This is analytic surface water with approximate multi-point buoyancy,
+not a volume-conserving fluid solver. Wave sampling is continuous while
+rasterized geometry approximates it with triangles; increase segments only
+where close-up silhouettes need them.
+
+World `environment.water[]` automatically builds, ticks and disposes surfaces.
+Choose the bottom explicitly with `terrain_entity_ids`; otherwise entities with
+`parameters.waterTerrain: true` are used, falling back to World ground. General
+collision meshes (bridges, roofs, moving props) are **not** water bottoms.
+`refreshDepth()` refreshes the selected terrain matrices and sampled heights.
+Access surfaces via `sceneLoader.waterSurfaces.get(water_id)`; water is not a
+solid floor.
+
+`current` is an independent world-space water velocity `[x,y,z]` in m/s or a
+callback `(position,time,target) => Vector3`. `sampleVelocity(position,time?,target?)`
+combines it with wave vertical velocity. `sampleBottom(x,z)` returns terrain
+height. `flowSpeed` still means texture scrolling, not current.
+
+Buoyancy points represent the bottom of equal-volume columns of height `draft`.
+Only their overlap with `[bottom,surface]` displaces water; completely buried
+columns receive no buoyancy. Drag is relative to water velocity, not the origin.
+
+`A3GameWaterBody({water,object,mass,volume,size,velocity,onEnterWater})` integrates
+a lightweight box: gravity, multi-point buoyancy/torque, box inertia, drag and
+bottom contact. `object` origin is its centre of mass; units are metres/kg/s.
+Call `attachToHost(host)` **after** attaching the water, or `update(dt)` yourself,
+not both. Water entry produces a ripple and calls `onEnterWater` once per entry;
+use the callback for splash particles. Dispose the body separately. This is not
+full rigid-body collision, hull hydrodynamics or a guarantee against all fast
+water-crossing cases.
+
+### Viscous surface flow
+
+`createSurfaceFlow({preset:'lava'|'blood',size:[width,length],position:[x,y,z],
+resolution:56,heightMap,viscosity,mobility,sources})` returns a Mesh with
+`userData.update`, `addSource`, `attachToHost`, `getState`, `getBedGeometry`, `dispose`.
+It transports non-negative liquid depth between neighboring cells according to
+hydraulic head and mobility/viscosity. A source `{x,z,radius,volume,rate,duration}`
+adds cubic metres immediately and/or per second; `addSource` returns a stop
+callback. Closed boundaries conserve volume; open boundaries account for outflow.
+`getState().massError` checks `volume + outflow - initialVolume - totalInjected`.
+
+`createSurfaceFlowTerrain(flow,materialOptions)` creates the matching bed mesh.
+Choose world placement at construction; do not transform the fluid independently
+of its heightfield. Lava heat is transported and decays, changing emissive cracks
+and crust; the blood preset is simply red liquid, not a wound/character system.
+Lava additionally uses `yieldSlope` (default 0.025, a threshold on depth × surface
+slope, not an angle), `thermalViscosity` (5), `referenceDepth` (0.25 m) and
+`solidificationTemperature` (0.28 on the normalized 0–1 temperature scale).
+Cooling increases viscosity; below the solidification threshold transport stops
+without deleting mass, and a hot source can soften cooled cells again. Thicker
+material pushes the front more readily than a thin film. These are game-tunable
+coefficients, not calibrated SI viscosity or Celsius values. `getState()` exposes
+these settings and copied `materialCoords`; the renderer uses transported labels
+for moving crust detail. Keep substantial dark basalt between bright hot openings,
+and light nearby terrain from actual hot regions rather than a fixed red spotlight.
+This is a viscous heightfield transport approximation, **not** full Navier–Stokes,
+SPH, splashing, overhangs or a calibrated material-viscosity solver.
 
 **Carve water into the height field, not on top of it.** Gameplay asks
 the terrain function where the floor is; a blue plane laid over an
@@ -1479,7 +1650,10 @@ model needs and no glTF can express:
 - **Scale.** Every model arrives in whatever unit its author chose. Of
   three CC0 models staged for these games, one is 4.5 units tall, one is
   79, and one is 0.07. Pass `height`, or let the recorded
-  `scale_hint_metres` supply it — never a magic constant.
+  `scale_hint_metres` supply it — never a magic constant. Normalization and
+  grounding are retained on an inner node; the returned outer node owns game
+  transforms. A World scale of `(1,1,1)` preserves the calibrated metres;
+  `(2,2,2)` doubles them instead of overwriting the asset's normalization.
 - **Shadows.** glTF has no notion of casting shadows, so `GLTFLoader`
   leaves `castShadow` false on every mesh. A model that lights correctly
   but floats shadowless above the floor is the most common "why does my
