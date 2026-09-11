@@ -87,7 +87,14 @@ _WINDOWS_VK = {
     "space": 0x20, "enter": 0x0D, "escape": 0x1B, "leftshift": 0xA0,
     "w": 0x57, "a": 0x41, "s": 0x53, "d": 0x44, "j": 0x4A,
     "e": 0x45, "u": 0x55, "h": 0x48,
+    "left_arrow": 0x25, "up_arrow": 0x26, "right_arrow": 0x27, "down_arrow": 0x28,
 }
+
+_KEYEVENTF_KEYUP = 0x0002
+#: How long a tap holds the key down before releasing. UE fires IE_Pressed
+#: from the key-down message itself, but games that poll key state per frame
+#: only observe the press if it spans at least one frame.
+_TAP_HOLD_SECONDS = 0.05
 
 #: A fighting-style default take matching the Unity/Godot adapters: survive
 #: the countdown, approach, attack, trade with the AI opponent.
@@ -260,7 +267,11 @@ class UE5PlaytestClient:
             "command": command,
             "editor_binary": str(editor),
             "ffmpeg": str(encoder) if encoder else None,
-            "input_transport": "macos_system_events",
+            "input_transport": (
+                "windows_sendinput" if os.name == "nt" else
+                "macos_system_events" if sys_platform() == "Darwin" else
+                "trace_only"
+            ),
         }
         if dry_run:
             return UEOperationResult.success(_OPERATION, payload=payload).to_dict()
@@ -270,6 +281,7 @@ class UE5PlaytestClient:
             return self._fail(input_error, payload)
 
         out.mkdir(parents=True, exist_ok=True)
+        _reset_take_output(out)
         (out / "_scenario.json").write_text(
             json.dumps(
                 {"actions": actions, "fps": fps, "duration": duration},
@@ -310,10 +322,15 @@ class UE5PlaytestClient:
         editor_report = self._read_editor_report(out, payload)
         frames = sorted((out / "frames").glob("f*.png")) if (out / "frames").is_dir() else []
         video_path = self._encode_video(out, frames, fps, encoder)
+        input_failures = _input_failures(warnings)
         report = {
             "schema_version": _REPORT_SCHEMA,
             "engine": "ue5",
-            "status": "passed" if frames else "failed",
+            "status": (
+                "failed" if not frames else
+                "partial" if input_failures else
+                "passed"
+            ),
             "url": str(project_file),
             "output_dir": str(out),
             "map": str(map_path or ""),
@@ -327,7 +344,8 @@ class UE5PlaytestClient:
             "video": str(video_path) if video_path else None,
             "game_state": None,
             "warnings": warnings,
-            "errors": [],
+            "errors": input_failures,
+            "input_failures": input_failures,
             "editor_report": editor_report,
         }
         report_path = out / "report.json"
@@ -428,6 +446,7 @@ class UE5PlaytestClient:
         if dry_run:
             return UEOperationResult.success(_OPERATION, payload=payload).to_dict()
         output_dir.mkdir(parents=True, exist_ok=True)
+        _reset_take_output(output_dir)
         (output_dir / "frames").mkdir(exist_ok=True)
         actions_path = output_dir / "actions.jsonl"
         with actions_path.open("w", encoding="utf-8") as handle:
@@ -484,11 +503,16 @@ class UE5PlaytestClient:
         frames = sorted((output_dir / "frames").glob("f*.png"))
         native_report = self._read_editor_report(output_dir, payload)
         video_path = self._encode_video(output_dir, frames, fps, ffmpeg)
+        input_failures = _input_failures(warnings)
         report = {
             "schema_version": _REPORT_SCHEMA,
             "engine": "ue5",
             "mode": "game",
-            "status": "passed" if frames else "failed",
+            "status": (
+                "failed" if not frames else
+                "partial" if input_failures else
+                "passed"
+            ),
             "url": str(project_file),
             "output_dir": str(output_dir),
             "map": str(map_path or ""),
@@ -503,7 +527,8 @@ class UE5PlaytestClient:
             "game_state": None,
             "native_report": native_report,
             "warnings": warnings,
-            "errors": [],
+            "errors": input_failures,
+            "input_failures": input_failures,
         }
         report_path = output_dir / "report.json"
         report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -552,12 +577,23 @@ class UE5PlaytestClient:
             actions = list(action_plan)
         else:
             actions = [dict(item) for item in DEFAULT_ACTIONS]
-        for action in actions:
+        for index, action in enumerate(actions, 1):
             if not isinstance(action, dict) or action.get("action") not in ALLOWED_ACTIONS:
                 return None, (
                     "invalid action plan: use allowlisted action names "
                     f"{sorted(ALLOWED_ACTIONS)}"
                 )
+            raw_duration = action.get("duration_ms", 100)
+            try:
+                duration_ms = int(raw_duration)
+            except (TypeError, ValueError, OverflowError):
+                return None, f"invalid action plan: action {index} duration_ms must be a positive integer"
+            if (
+                isinstance(raw_duration, bool)
+                or isinstance(raw_duration, float) and not raw_duration.is_integer()
+                or duration_ms <= 0
+            ):
+                return None, f"invalid action plan: action {index} duration_ms must be a positive integer"
         if not actions:
             return None, "action plan must not be empty"
         return actions, None
@@ -669,7 +705,7 @@ class UE5PlaytestClient:
     ) -> Path | None:
         if not frames:
             return None
-        binary = encoder or shutil.which("ffmpeg")
+        binary = encoder or shutil.which("ffmpeg") or _bundled_ffmpeg()
         if not binary:
             return None
         video_path = out / "video.mp4"
@@ -750,20 +786,26 @@ class UE5PlaytestClient:
                     seq += 1
                     if not ok:
                         warnings.append(f"key event failed: {error}")
-                    handle.write(json.dumps({
+                    entry = {
                         "seq": seq,
                         "t_monotonic_ms": int((time.monotonic() - started) * 1000),
                         "phase": phase,
                         "key": key,
-                    }) + "\n")
-                    if phase == "down":
+                        "ok": ok,
+                    }
+                    if not ok:
+                        entry["error"] = error
+                    handle.write(json.dumps(entry) + "\n")
+                    if phase == "down" and ok:
                         held.add(key)
                     elif phase == "up":
                         held.discard(key)
             finally:
                 # Never leave a key pressed in the Editor session.
                 for key in sorted(held):
-                    _key_event(process_id, key, "up")
+                    ok, error = _key_event(process_id, key, "up")
+                    if not ok:
+                        warnings.append(f"key event failed: cleanup {key} up: {error}")
         return warnings
 
     @staticmethod
@@ -789,6 +831,39 @@ def _osascript(script: str) -> tuple[bool, str]:
     if result.returncode != 0:
         return False, (result.stderr or result.stdout or "osascript failed").strip()
     return True, result.stdout.strip()
+
+
+def _input_failures(warnings: list[str]) -> list[str]:
+    """Extract input-delivery failures from host-side warnings."""
+    return [warning for warning in warnings if warning.startswith("key event failed:")]
+
+
+def _bundled_ffmpeg() -> str | None:
+    """Resolve an ffmpeg binary shipped inside the Python environment.
+
+    imageio-ffmpeg packages a standalone ffmpeg build; using it keeps
+    playtest videos working on hosts where ffmpeg is not on PATH.
+    """
+    try:
+        import imageio_ffmpeg
+    except ImportError:
+        return None
+    try:
+        return str(imageio_ffmpeg.get_ffmpeg_exe())
+    except Exception:
+        return None
+
+
+def _reset_take_output(output_dir: Path) -> None:
+    """Remove artifacts from a prior take before accepting its start marker."""
+    stale_frames = output_dir / "frames"
+    if stale_frames.is_dir():
+        shutil.rmtree(stale_frames)
+    for name in (
+        "report.json", "video.mp4", "actions.jsonl", "play_started.json",
+        "_editor_report.json", "_scenario.json",
+    ):
+        (output_dir / name).unlink(missing_ok=True)
 
 
 def _key_event(process_id: int, key: str, phase: str) -> tuple[bool, str]:
@@ -817,23 +892,72 @@ def _windows_key_event(process_id: int, key: str, phase: str) -> tuple[bool, str
     if vk is None:
         return False, f"unsupported Windows key: {key}"
     user32 = ctypes.windll.user32
+    # Be explicit about handle widths: the default int conversions can
+    # sign-flip or truncate HWNDs above 2^31.
+    user32.GetClassNameW.argtypes = [
+        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int,
+    ]
+    user32.GetForegroundWindow.restype = ctypes.c_void_p
+    user32.SetForegroundWindow.argtypes = [ctypes.c_void_p]
+    user32.ShowWindow.argtypes = [ctypes.c_void_p, ctypes.c_int]
     enum_proc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
-    found = {"hwnd": 0}
+    matches: list[int] = []
 
     @enum_proc
     def callback(hwnd: int, _lparam: int) -> bool:
         owner = ctypes.c_ulong()
         user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
         if owner.value == int(process_id) and user32.IsWindowVisible(hwnd):
-            found["hwnd"] = hwnd
-            return False
+            matches.append(hwnd)
         return True
 
     user32.EnumWindows(callback, 0)
-    if found["hwnd"]:
-        user32.ShowWindow(found["hwnd"], 5)
-        user32.SetForegroundWindow(found["hwnd"])
-    flags = 0 if phase == "down" else 0x0002
+    if not matches:
+        return False, f"no visible window found for process {process_id}"
+    # The editor -game flow also owns a -log console window that can hold
+    # keyboard focus; target the engine viewport, not whichever window
+    # EnumWindows happens to visit first.
+    target = 0
+    for hwnd in matches:
+        name = ctypes.create_unicode_buffer(64)
+        if user32.GetClassNameW(hwnd, name, 64) and name.value == "UnrealWindow":
+            target = hwnd
+            break
+    if not target:
+        target = matches[0]
+    if not _windows_foreground_window(user32, target):
+        return False, f"failed to foreground window for process {process_id}"
+    if phase == "tap":
+        # A tap is a complete press-and-release: bindings such as the
+        # example's attack fire on IE_Pressed, which a lone key-up event
+        # never triggers.
+        ok, error = _windows_send_key(user32, key, vk, down=True)
+        if not ok:
+            return False, error
+        time.sleep(_TAP_HOLD_SECONDS)
+        return _windows_send_key(user32, key, vk, down=False)
+    return _windows_send_key(user32, key, vk, down=(phase == "down"))
+
+
+def _windows_foreground_window(user32: Any, target: int) -> bool:
+    """Give the game viewport keyboard focus so injected keys reach it.
+
+    SetForegroundWindow is denied to background processes by the Windows
+    foreground lock. A lone ALT key event grants the calling thread the
+    right to set the foreground window, after which the call succeeds.
+    """
+    if user32.GetForegroundWindow() == target:
+        return True
+    user32.ShowWindow(target, 5)
+    if user32.SetForegroundWindow(target):
+        return True
+    _windows_send_key(user32, "alt", 0x12, down=True)
+    _windows_send_key(user32, "alt", 0x12, down=False)
+    return bool(user32.SetForegroundWindow(target))
+
+
+def _windows_send_key(user32: Any, key: str, vk: int, *, down: bool) -> tuple[bool, str]:
+    """Inject one keyboard edge into the system input stream via SendInput."""
     class KEYBDINPUT(ctypes.Structure):
         _fields_ = [("wVk", ctypes.c_ushort), ("wScan", ctypes.c_ushort),
                     ("dwFlags", ctypes.c_ulong), ("time", ctypes.c_ulong),
@@ -841,9 +965,13 @@ def _windows_key_event(process_id: int, key: str, phase: str) -> tuple[bool, str
     class INPUT(ctypes.Structure):
         _fields_ = [("type", ctypes.c_ulong), ("ki", KEYBDINPUT),
                     ("padding", ctypes.c_byte * 8)]
+    flags = 0 if down else _KEYEVENTF_KEYUP
     item = INPUT(type=1, ki=KEYBDINPUT(wVk=vk, dwFlags=flags))
     sent = user32.SendInput(1, ctypes.byref(item), ctypes.sizeof(INPUT))
-    return (True, "") if sent == 1 else (False, "SendInput returned zero")
+    if sent == 1:
+        return True, ""
+    edge = "down" if down else "up"
+    return False, f"SendInput returned zero for {key} {edge}"
 
 
 def _game_log_tail(project_file: Path, limit: int = 2000) -> str:
