@@ -75,4 +75,5 @@ export {
   resolveEntityId,
 } from './collision-probe.js';
 export { A3GameHudLayer } from './hud-layer.js';
+export { A3GameCinematicPlayer } from './cinematic-player.js';
 export { A3GameRuntimeChannel } from './runtime-channel.js';

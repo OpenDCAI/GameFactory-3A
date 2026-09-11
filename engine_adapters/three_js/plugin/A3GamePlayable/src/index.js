@@ -68,6 +68,7 @@ export {
   A3GameAssetLibrary,
   A3GameBeamEffect,
   A3GameCollisionProbe,
+  A3GameCinematicPlayer,
   A3GameEmitterShape,
   A3GameEnvironmentPreset,
   A3GameForwardAxis,

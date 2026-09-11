@@ -57,6 +57,9 @@ class BrowserServingConfig:
     dry_run: bool = False
     pixel_use_frontend: bool = False
     pixel_start_timeout: float = 120.0
+    cg_video_enabled: bool = True
+    cg_video_allow_cloud: bool = False
+    cg_video_max_workers: int = 1
 
     @classmethod
     def from_environment(cls) -> "BrowserServingConfig":
@@ -192,6 +195,20 @@ class BrowserServingConfig:
                 os.environ.get(
                     "A3GAME_BROWSER_PIXEL_START_TIMEOUT",
                     "120",
+                )
+            ),
+            cg_video_enabled=_flag(
+                "A3GAME_BROWSER_CG_VIDEO_ENABLED",
+                True,
+            ),
+            cg_video_allow_cloud=_flag(
+                "A3GAME_BROWSER_CG_VIDEO_ALLOW_CLOUD",
+                False,
+            ),
+            cg_video_max_workers=int(
+                os.environ.get(
+                    "A3GAME_BROWSER_CG_VIDEO_MAX_WORKERS",
+                    "1",
                 )
             ),
         )

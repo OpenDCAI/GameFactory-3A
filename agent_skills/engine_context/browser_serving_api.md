@@ -73,6 +73,10 @@ does not import the Python client.
 - `BrowserServingService` - Gateway/service composition API that delegates
   operations to a registered Engine backend. It is not a generated Browser
   Play dependency.
+- `CgVideoGateway` - Queues a canonical CG-video task and records its
+  generated artifact.
+- `CgVideoGatewayProtocol` - Injection contract for a CG-video job gateway.
+- `CgVideoError` - Reports a rejected or failed CG-video request.
 - `EngineBackend` - Protocol implemented and registered by the Gateway
   composition root. Generated Browser Play treats it as opaque.
 - `EngineCapabilities` - Declares supported browser-facing capabilities.
@@ -130,6 +134,24 @@ Uploads use `pipeline.common.paths`. Cross-engine consumers select assets by
 - `client.sessions.apply_preview_camera` - Sends preview camera input.
 - `client.sessions.stop` - Stops the Engine session and stream.
 
+## CG Video
+
+- `client.cg_video.generate` - Queues a CG-video task by its repository task
+  identity and returns a request id.
+- `client.cg_video.status` - Reads one queued, running, ready, or failed
+  request.
+
+The request resolves `test_data/test_samples/<game_id>/cg_video/cg_tasks.jsonl`
+and never accepts a prompt or credential from the browser. A completed clip is
+stored under the standard CG-video output directory and exposed through a
+gateway-controlled media URL.
+
+The request body contains `game_id`, `task_id`, optional `run_id`, `backend`,
+`engine`, `session_id`, `trigger_id`, `idempotency_key`, `options`, and
+`playback`. The payload reports `status` (`queued`, `running`, `ready`, or
+`failed`); a ready response includes `video.artifact_id`, `video.media_type`,
+and `video.url`, with the same public descriptor listed in `artifacts`.
+
 Game-specific actions remain owned by the generated Mechanic contract.
 
 ## Browser HTTP API
@@ -166,6 +188,9 @@ operations above:
   input.
 - `DELETE /api/sessions/{session_id}` - Stops a session.
 - `WS /api/sessions/{session_id}/input-ws` - Streams normalized input.
+- `POST /api/cg-video` - Queues one CG-video task.
+- `GET /api/cg-video/{request_id}` - Reads CG-video job status.
+- `GET /api/media/cg-video/{artifact_id}` - Streams a completed MP4 artifact.
 
 HTTP results use the Result Contract above. Browser code reads operation data
 from `payload`, and reads the playable Engine URL from session
@@ -264,7 +289,9 @@ fullscreen, error, and generic input controls only.
 Browser Serving does not expose a versioned Mechanic state/event/command bridge
 to Web. Generated Browser Play must not invent health, ammo, score, objective,
 pause, victory, or game-specific command APIs. Game-specific actions stay in
-the native Engine UI and the Mechanic contract.
+the native Engine UI and the Mechanic contract. CG-video generation is the
+single generic media operation exposed by the Browser Serving API; gameplay
+still decides when a clip is meaningful and how it is presented.
 
 ## Launch
 
@@ -279,6 +306,12 @@ the native Engine UI and the Mechanic contract.
 - `A3GAME_UNITY_WEBGL_BUILD` - Selects an existing Unity WebGL build.
 - `A3GAME_BROWSER_DRY_RUN` - Validates Serving lifecycle without real Engine
   rendering.
+- `A3GAME_BROWSER_CG_VIDEO_ENABLED` - Enables the CG-video gateway (default
+  `true`).
+- `A3GAME_BROWSER_CG_VIDEO_ALLOW_CLOUD` - Explicitly permits cloud video
+  requests (default `false`).
+- `A3GAME_BROWSER_CG_VIDEO_MAX_WORKERS` - Maximum concurrent CG-video jobs
+  (default `1`).
 
 Default ports are `7860` for Admin, `7870` for Gateway, `18080+` for session
 pages, and `18888+` for UE streamer WebSockets. Unity WebGL does not use the UE
