@@ -101,18 +101,18 @@ The fighting and racing demos use simple downloaded assets, while the exploratio
 
 ### three.js
 
-The demos below show a battle game, an RPG exploration game, a first-person shooter (FPS), and a racing game.
+The demos below show a battle game, an RPG exploration game, and a racing game. **Claude5-Ops** first produces a playable generation, then **GPT6-Astra** updates it; what follows is the updated result.
 
 <table>
   <tr>
     <td width="33%">
-      <video src="https://github.com/user-attachments/assets/6dc42e07-3b58-43e5-8005-cd83fbce1db4" width="100%" controls muted playsinline></video>
+      <video src="https://github.com/user-attachments/assets/aa6375a2-dc32-4fb9-a74b-115b7086e3c3" width="100%" controls muted playsinline></video>
     </td>
     <td width="33%">
-      <video src="https://github.com/user-attachments/assets/3b679c56-7fcd-42aa-985b-3c3cd4e05159" width="100%" controls muted playsinline></video>
+      <video src="https://github.com/user-attachments/assets/3660a593-d739-4faf-ae70-5b855b74ff1f" width="100%" controls muted playsinline></video>
     </td>
     <td width="33%">
-      <video src="https://github.com/user-attachments/assets/12786f57-154c-4b74-b1a0-d68efd21ee50" width="100%" controls muted playsinline></video>
+      <video src="https://github.com/user-attachments/assets/9c30ceb3-dc56-4f80-b747-ea2d1daaa317" width="100%" controls muted playsinline></video>
     </td>
   </tr>
 </table>

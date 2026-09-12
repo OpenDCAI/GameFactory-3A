@@ -71,15 +71,17 @@ Read `three.api_version`; use `get_environment_info()` for effective paths and U
 | Setting | Default / configuration |
 |---|---|
 | API version | `v1` only |
-| Dev host / port | `127.0.0.1:5173`; Python reads `A3GAME_THREE_HOST/PORT`, with `THREE_HOST/PORT` compatibility |
-| Runtime endpoint | `127.0.0.1:30040`; `A3GAME_THREE_RUNTIME_HOST/RUNTIME_PORT` |
-| Package manager | `npm`; supported `npm/pnpm/yarn`; `A3GAME_THREE_PACKAGE_MANAGER` |
-| Runtime transport config | `http`; `http/websocket` accepted by Python config; see actual delivery limits in section 10 |
+| Dev host / port | Loopback host and adapter default port from `engine_adapters/three_js/config.py`; Python reads `A3GAME_THREE_HOST`, `A3GAME_THREE_PORT`, with `THREE_HOST`, `THREE_PORT` compatibility |
+| Runtime endpoint | Separate loopback host/port defaults from the same module; `A3GAME_THREE_RUNTIME_HOST`, `A3GAME_THREE_RUNTIME_PORT` |
+| Package manager | `npm`; supported `npm, pnpm, yarn`; `A3GAME_THREE_PACKAGE_MANAGER` |
+| Runtime transport config | `http`; `http, websocket` accepted by Python config; see actual delivery limits in section 10 |
 | Project / adapter roots | `A3GAME_THREE_PROJECT`, `A3GAME_THREE_ROOT` |
 | Node toolchain | `node_root` / `A3GAME_NODE_ROOT` |
 | Registry and evidence paths | `A3GAME_THREE_DATA_ROOT`, `A3GAME_THREE_ARTIFACT_REGISTRY`, `A3GAME_THREE_WORLD_REGISTRY_ROOT`, `A3GAME_THREE_PREVIEW_ROOT` |
 
-Vite separately reads A3GAME_DEV_HOST/PORT; Python launch passes explicit --host/--port. Ports:1–65535; dev and runtime endpoints differ.
+Vite separately reads `A3GAME_DEV_HOST` and `A3GAME_DEV_PORT`; Python launch passes explicit --host/--port. Ports:1–65535; dev and runtime endpoints differ.
+Do not hardcode host/port literals in generated code or commands: pass them explicitly or read the effective values from
+`get_environment_info()`, the documented environment variables, or the CLI flags, so a busy port can be changed without editing sources.
 Keep services on loopback/protected networks;0.0.0.0 and allowedHosts:true broaden access.
 
 Results: `{ok,operation,artifacts,diagnostics,warnings,errors,payload}`. Check payload as well as ok (not gameplay proof).
@@ -206,15 +208,15 @@ source = {
 - Omit artifact_key only for exactly one non-empty `*_path` in meta.json. Metadata identities must match; paths must stay inside the task directory.
 - Directories are accepted for generic scene/effect/environment imports; bindings/packages have separate rules.
 - Prefer GLB/glTF; let importers maintain sidecars/registry/manifest. Check license, budgets, bounds, skins, and clips.
-- Options include asset_id/category/replace_existing/orientation; arbitrary options may be metadata-only, not conversion or retargeting.
+- Options include asset_id, category, replace_existing, orientation; arbitrary options may be metadata-only, not conversion or retargeting.
 - **Asset replace_existing=False may warn and overwrite**; it is not the package installer's overwrite guard.
 
 Distinguish these records:
 
 | Record | Relevant fields / access |
 |---|---|
-| Registered artifact | `backend_class/backend_path/runtime_capabilities`; `assets.get_metadata(artifact_id)` returns records in `artifacts[]` |
-| Runtime manifest entry | `artifact_id/asset_id/type/class/url/capabilities/orientation/material_bindings/animations/bounds/sun` |
+| Registered artifact | `backend_class, backend_path, runtime_capabilities`; `assets.get_metadata(artifact_id)` returns records in `artifacts[]` |
+| Runtime manifest entry | `artifact_id, asset_id, type, class, url, capabilities, orientation, material_bindings, animations, bounds, sun` |
 | World graph asset references | Smaller `assets` mapping; not a replacement for loading the manifest into AssetLibrary |
 
 ### JavaScript asset library
@@ -226,7 +228,7 @@ Default manifest/decoder paths are `/assets/manifest.json`, `/draco/`, `/basis/`
 | Method | Result / behavior |
 |---|---|
 | `resolveUrl(url)` | Rebase project resource paths; preserve already-prefixed paths, external protocols, data/blob URLs, and `//` URLs |
-| `await load()` | Fetch/index manifest; return library; inspect `available/manifest/warnings` |
+| `await load()` | Fetch/index manifest; return library; inspect `available, manifest, warnings` |
 | `has(reference)`, `findEntry(reference)`, `requireEntry(reference)` | Boolean, entry/null, or entry/throw; candidate arrays choose the first registered candidate |
 | `listByType(type)` | Matching manifest entries |
 | `await loadArtifact(reference)` | Cached model/texture/audio buffer/JSON result; not every resource is instantiable |
@@ -249,14 +251,14 @@ const loaded = await assets.tryInstantiate(['scene_crate', 'crate_fallback'], {
 if (loaded) host.add(loaded.object, 'environment');
 ```
 
-Here and in subsequent snippets, obtain `assets/host/runtime/session/sceneLoader/hud` from the boot context unless explicitly constructed.
+Here and in subsequent snippets, obtain `assets, host, runtime, session, sceneLoader, hud` from the boot context unless explicitly constructed.
 
 ### Orientation and model utilities
 
 Use metres, right-handed +Y up, and runtime local forward -Z. Verify authored orientation visually; bounds alone do not identify the face.
 Author-axis conversion to -Z: `+z → 180°`, `-z → 0°`, `+x → 90°`, `-x → 270°`.
-Store `forward_axis/up_axis/yaw_offset_degrees/pitch_offset_degrees/roll_offset_degrees/scale_hint_metres/pivot/verified_by/notes` through orientation APIs.
-JS overrides use `forwardAxis/yawOffsetDegrees/pitchOffsetDegrees/rollOffsetDegrees`; `orient:false` disables orientation correction.
+Store `forward_axis, up_axis, yaw_offset_degrees, pitch_offset_degrees, roll_offset_degrees, scale_hint_metres, pivot, verified_by, notes` through orientation APIs.
+JS overrides use `forwardAxis, yawOffsetDegrees, pitchOffsetDegrees, rollOffsetDegrees`; `orient:false` disables orientation correction.
 Use `height` to override scale_hint_metres; `ground:true` aligns the bounding-box bottom.
 Do not apply the same correction in both metadata and gameplay. Prepared outer transforms preserve inner asset normalization.
 
@@ -272,7 +274,7 @@ Do not apply the same correction in both metadata and gameplay. Prepared outer t
 | `measureWeapon(object, options={})` | Geometry-based weapon-axis confidence measurement |
 | `alignWeaponModel(object, options={})` | Measurement plus applied flag; replace quaternion when accepted |
 
-Weapon measurement options: `lowerBandFraction/minElongation/maxThicknessRatio/minMuzzleMargin/stride`.
+Weapon measurement options: `lowerBandFraction, minElongation, maxThicknessRatio, minMuzzleMargin, stride`.
 Alignment additionally accepts `requireConfident`; default acceptance requires weaponlike and confident geometry.
 Do not infer a working `tipFraction` option from comments alone; it is not read by this implementation.
 
@@ -287,13 +289,13 @@ MeshPhongMaterial, MeshMatcapMaterial, MeshToonMaterial.
 
 | Option family | Supported binding keys |
 |---|---|
-| Texture slots | `map/normalMap/roughnessMap/metalnessMap/aoMap/emissiveMap/alphaMap/displacementMap/clearcoatMap/sheenColorMap` |
-| Scalars | `roughness/metalness/clearcoat/clearcoatRoughness/sheen/sheenRoughness/transmission/ior/iridescence/emissiveIntensity/normalScale/aoMapIntensity/envMapIntensity/opacity` |
-| Colors | `color/emissive/sheenColor/attenuationColor` |
-| Flags | `transparent/side/flatShading/wireframe/depthWrite/vertexColors` |
+| Texture slots | `map, normalMap, roughnessMap, metalnessMap, aoMap, emissiveMap, alphaMap, displacementMap, clearcoatMap, sheenColorMap` |
+| Scalars | `roughness, metalness, clearcoat, clearcoatRoughness, sheen, sheenRoughness, transmission, ior, iridescence, emissiveIntensity, normalScale, aoMapIntensity, envMapIntensity, opacity` |
+| Colors | `color, emissive, sheenColor, attenuationColor` |
+| Flags | `transparent, side, flatShading, wireframe, depthWrite, vertexColors` |
 
 Explicit texture paths override filename-based slot discovery; unknown options warn and are ignored.
-Inspect returned `binding_path/binding_url/material_type/targets/textures/scalars/colors/flags`.
+Inspect returned `binding_path, binding_url, material_type, targets, textures, scalars, colors, flags`.
 Python binding creation does not guarantee runtime acceptance: JS rejects zero matching targets, unsupported material properties, and invalid values.
 Use sRGB for color/emissive maps and linear data for normal/roughness/metalness/AO; preserve glTF texture orientation.
 
@@ -326,12 +328,12 @@ for example `environment.wind.gustStrength`. Runtime session messages use camelC
 
 | World field | Input contract |
 |---|---|
-| Top level | `world_id/name/project_id/environment/camera/lights/entities/spawn_points/metadata`; world_id defaults world_001 |
+| Top level | `world_id, name, project_id, environment, camera, lights, entities, spawn_points, metadata`; world_id defaults world_001 |
 | IDs | World/entity/light/water IDs use `[A-Za-z0-9][A-Za-z0-9_.-]*` |
-| `entities[]` | `entity_id/role/artifact_id/category/collision/cast_shadow/receive_shadow/transform/behaviors/parameters` |
+| `entities[]` | `entity_id, role, artifact_id, category, collision, cast_shadow, receive_shadow, transform, behaviors, parameters` |
 | Roles | environment, player_start, prop, npc, pickup, trigger, vehicle, weapon, effect |
 | `transform` | `{position,rotation,scale}`; vectors normalize to `{x,y,z}`; defaults zero/zero/one |
-| `lights[]` | Required type; AmbientLight/HemisphereLight/DirectionalLight/PointLight/SpotLight/RectAreaLight; light_id, color, intensity, position, target, cast_shadow |
+| `lights[]` | Required type; AmbientLight, HemisphereLight, DirectionalLight, PointLight, SpotLight, RectAreaLight; light_id, color, intensity, position, target, cast_shadow |
 | `behaviors[]` | Required type; animation/spin/orbit/float/path/audio; animation validation needs artifact_id or clip |
 | `camera` | PerspectiveCamera/OrthographicCamera; fov=50, near=.1, far=2000, position, target, controls |
 | `environment` | preset, sun, sky, background, environment/background artifact IDs, intensity/blur/rotation, show_sky, tone_mapping/exposure, shadows, fog, ground, wind, water |
@@ -346,7 +348,7 @@ Validation does not execute behaviors, prove navigation, compile shaders, or ver
 **Current schema/loader boundaries:**
 
 - `frustum_height`: dropped by Python; direct JS graphs apply it only when switching to orthographic. Use host.setFrustumHeight after loading.
-- Controls: Python accepts none/OrbitControls/PointerLockControls/MapControls/FlyControls; JS installs only OrbitControls/PointerLockControls. Detach old controls explicitly.
+- Controls: Python accepts none, OrbitControls, PointerLockControls, MapControls, FlyControls; JS installs only OrbitControls/PointerLockControls. Detach old controls explicitly.
 - Light/Behavior extra keys become options; nested options can nest again on round-trip. Configure advanced lights in JS if needed.
 - behaviors are metadata in `userData.a3gameWorldEntity`, not executed actions. World objects are not registered runtime entities; graph.assets does not populate AssetLibrary.
 
@@ -361,7 +363,7 @@ Validation does not execute behaviors, prove navigation, compile shaders, or ver
 | `getEntityObject(entityId)` | Object3D or null |
 | `resolveSpawnTransform(index=0)` | Spawn transform with modulo indexing; pass a non-negative integer; empty list returns origin/unit scale |
 | `sceneGraph` | Original loaded graph |
-| `entityObjects/collisionTargets/spawnPoints/waterSurfaces/warnings` | Entity map, collider list, spawns, water map, diagnostic list |
+| `entityObjects, collisionTargets, spawnPoints, waterSurfaces, warnings` | Entity map, collider list, spawns, water map, diagnostic list |
 | `dispose()` | Release loader-owned content and subscriptions |
 
 Build/load returns `{worldId, entityCount, collisionTargetCount, spawnPoints, warnings}`, not the graph itself.
@@ -398,7 +400,7 @@ export async function startGame() {
 
 `bootA3GameRuntime` returns `{host,assets,sceneLoader,hud,session,runtime,world}`; world is a loader summary or null.
 Options: `container/hudContainer/baseUrl/manifestUrl/worldUrl/worldId/hostOptions/requireManifest/createHud/
-autoBeginPlay/autoStart/entityFactory`. autoBeginPlay/autoStart default true; requireManifest defaults false.
+autoBeginPlay, autoStart, entityFactory`. autoBeginPlay/autoStart default true; requireManifest defaults false.
 Providing hudContainer creates one HUD unless createHud=false; reuse it. Only worldUrl triggers World loading.
 No input router, controller, or binding is created automatically. No aggregate context.dispose exists.
 Use explicit construction of public classes for decoder, session, or channel options not forwarded by boot.
@@ -449,7 +451,7 @@ Capture viewport means page size. captureFrame returns a canvas PNG data URL **w
 | Perspective fov | Vertical degrees; visible height=`2*d*tan(fov*PI/360)`, width=height×aspect |
 | Orthographic frustumHeight | Visible world height; width=height×aspect |
 | Camera switch | Copies position/quaternion/parent and controls.object, not zoom/layers |
-| Orbit options | target/enableDamping/maxPolarAngle/minDistance/maxDistance only |
+| Orbit options | target, enableDamping, maxPolarAngle, minDistance, maxDistance only |
 | Ownership | One camera driver; do not combine controls with independent yaw/pitch writes |
 | Pointer lock | Requires a user gesture |
 
@@ -484,9 +486,9 @@ Use sRGB color maps and linear data maps; no double gamma or display tone mappin
 |---|---|
 | `createMaterial(preset, overrides={})` | Standard/Physical PBR; unknown preset throws |
 | `createRoundedBox(options)` | width/height/depth/radius/segments/material/preset/render flags; visible bevels do not replace simple colliders |
-| `createSurfaceTextures(options)` | pattern/size/repeat/color/jointColor/roughness/cells/contrast/normalStrength/seed/renderer/anisotropy |
-| `createSurfaceMaterial(options)` | Surface textures plus normalScale/metalness/envMapIntensity; additional material overrides in options.material |
-| `createTilingTexture(texture, options)` | In-place repeat/rotation/srgb/colorSpace/anisotropy setup |
+| `createSurfaceTextures(options)` | pattern, size, repeat, color, jointColor, roughness, cells, contrast, normalStrength, seed, renderer, anisotropy |
+| `createSurfaceMaterial(options)` | Surface textures plus normalScale, metalness, envMapIntensity; additional material overrides in options.material |
+| `createTilingTexture(texture, options)` | In-place repeat, rotation, srgb, colorSpace, anisotropy setup |
 | `createRadialGradientTexture({resolution=128,color})` | Canvas in browser, DataTexture fallback without DOM; use a CSS color string for browser color |
 | `createContactShadow({radius,opacity,...})` | Visual contact-shadow mesh; keep outside collision targets |
 
@@ -498,8 +500,8 @@ Texture sets return `{map,normalMap,roughnessMap,height,size,dispose}`. Use the 
 The set is also available as `material.userData.surface`; material.dispose alone does not dispose its textures.
 Normals affect lighting, not geometry or collision. Material roughness multiplies roughnessMap values.
 
-`createSkyGradient(options)` supports zenith/horizon/ground, sunDirection/sunColor/sunSize/sunGlow,
-cloudCoverage/cloudOpacity/cloudScale/cloudSpeed/cloudColor/cloudShadow/cloudHeight, haze, and windField.
+`createSkyGradient(options)` supports zenith/horizon/ground, sunDirection, sunColor, sunSize, sunGlow,
+cloudCoverage, cloudOpacity, cloudScale, cloudSpeed, cloudColor, cloudShadow, cloudHeight, haze, and windField.
 Use its userData.update(dt,wind?) and setSunDirection(direction) only when not already host-driven.
 Disabling the solar disc uses sunSize=0; disc size, glow falloff, and haze are separate controls.
 
@@ -520,7 +522,7 @@ Disabling the solar disc uses sunSize=0; disc size, glow falloff, and haze are s
 | `createGroundRibbon(points,options={})` | Terrain-conforming mesh; not automatically a collider |
 | `createFacadeTexture(options={})` | Seeded sRGB DataTexture, no Canvas requirement |
 | `createDistantRange({radius,height,baseY,color,topColor,segments,roughness,seed})` | Seam-connected distant mountain ring |
-| `createCloudLayer(options={})` | Sprite cloud group; count/radius/height/size/texture/color/opacity/seed/speed/windField |
+| `createCloudLayer(options={})` | Sprite cloud group; count, radius, height, size, texture, color, opacity, seed, speed, windField |
 | `createInstancedFromModel(source,count,options={})` | Single non-skinned mesh only; unsupported hierarchy returns null |
 
 ```js
@@ -533,21 +535,21 @@ host.add(trail, 'environment');
 ```
 
 Ribbon points accept Vector3, `{x,y?,z}`, `[x,z]`, or `[x,y,z]`.
-width/lift/tileLength are metres; segments is subdivisions per source segment, maximum 1024.
+width, lift, tileLength are metres; segments is subdivisions per source segment, maximum 1024.
 Provide at least two distinct XZ points for an open path, three for a closed path.
 UVs use metres/tileLength; `userData.pathLength` is XZ centerline length.
 heightAt projects both sides; without it, interpolate path y. Options also include closed/material/name.
 Supply enough source points for a smooth curve; sharp cusps/self-intersections need application-level handling.
 
 Facade defaults: width=256, height=512 pixels; columns=6, rows=12, seed=1, litRatio=.45.
-Set wallColor/windowColor/litColor; dimensions must be 16–2048 and cells at least four pixels.
+Set wallColor, windowColor, litColor; dimensions must be 16–2048 and cells at least four pixels.
 Lit windows are baked color, not light sources; use restrained emissive material settings if desired.
 
-Cloud userData exposes update/attachToHost/dispose; attach once and do not manually update it again.
+Cloud userData exposes update, attachToHost, dispose; attach once and do not manually update it again.
 Wind-driven clouds use the wind field rather than fixed speed drift.
 Instancing clones/bakes geometry but shares material; prepare templates at the origin before baking transforms.
 Set instanceMatrix.needsUpdate after setMatrixAt and refresh instance bounds when placements change.
-Options include castShadow/receiveShadow/frustumCulled; groups and shadow passes can still add draw calls.
+Options include castShadow, receiveShadow, frustumCulled; groups and shadow passes can still add draw calls.
 Instancing reduces calls, not triangles; use distance/detail budgets for high-poly repeated props.
 
 ## 8. Runtime wire data, interfaces, and identity
@@ -559,13 +561,13 @@ Except `createVector3(source,fallback={x:0,y:0,z:0})`, the data factories accept
 | Factory | Output fields |
 |---|---|
 | `createVector3` | Plain `{x,y,z}` from an object or at least three array elements; not THREE.Vector3 |
-| `createTransform` | position/rotation/scale; defaults zero/zero/one |
-| `createRuntimeInputState` | worldId/participantId/controllerId/entityId/moveX/moveY/run/jump/yaw/pitch/sequence/timestampSeconds |
-| `createEntitySpawnRequest` | worldId/participantId/entityId/transform/parameters |
-| `createParticipantInfo` | participantId/worldId/userId/entityId/online/lastSeenSeconds |
-| `createControllerState` | controllerId/participantId/worldId/kind/online/lastSeenSeconds |
-| `createControlBinding` | controllerId/entityId/worldId/mode/priority/active |
-| `createEntitySnapshot` | entityId/objectName/position/rotation/locomotionState/motionState/persistent/lastInputTimeSeconds |
+| `createTransform` | `position`, `rotation`, `scale`; defaults zero/zero/one |
+| `createRuntimeInputState` | `worldId`, `participantId`, `controllerId`, `entityId`, `moveX`, `moveY`, `run`, `jump`, `yaw`, `pitch`, `sequence`, `timestampSeconds` |
+| `createEntitySpawnRequest` | `worldId`, `participantId`, `entityId`, `transform`, `parameters` |
+| `createParticipantInfo` | `participantId`, `worldId`, `userId`, `entityId`, `online`, `lastSeenSeconds` |
+| `createControllerState` | `controllerId`, `participantId`, `worldId`, `kind`, `online`, `lastSeenSeconds` |
+| `createControlBinding` | `controllerId`, `entityId`, `worldId`, `mode`, `priority`, `active` |
+| `createEntitySnapshot` | `entityId`, `objectName`, `position`, `rotation`, `locomotionState`, `motionState`, `persistent`, `lastInputTimeSeconds` |
 | `locomotionStateFromInput` | jump first, then run/walk/idle using movement threshold 1e-3 |
 
 Clamp moveX/moveY independently to [-1,1], then limit the combined movement vector in gameplay to prevent faster diagonal movement.
@@ -588,8 +590,8 @@ Implement through inheritance or duck typing:
 | `A3GameEntityFactory` | spawnRuntimeEntity(request,{host,assets,session}) → entity or Promise of entity |
 | `A3GameRuntimeMessageHandler` | handleRuntimeMessage(messageType,payload) → synchronous boolean |
 
-`CONTROLLABLE_ENTITY_METHODS/ENTITY_FACTORY_METHODS/RUNTIME_MESSAGE_HANDLER_METHODS` list required methods.
-`isControllableEntity/isEntityFactory/isRuntimeMessageHandler` check method presence;
+`CONTROLLABLE_ENTITY_METHODS, ENTITY_FACTORY_METHODS, RUNTIME_MESSAGE_HANDLER_METHODS` list required methods.
+`isControllableEntity, isEntityFactory, isRuntimeMessageHandler` check method presence;
 `assertControllableEntity/assertEntityFactory/assertRuntimeMessageHandler(candidate,label?)` return the candidate or throw TypeError.
 Do not use an async message handler: runtime extension dispatch does not await handlers.
 Factories own model creation, scene attachment, and gameplay assembly; the framework does not automatically move Object3D instances.
@@ -653,7 +655,7 @@ A participant identifies a user, a controller produces input, an entity implemen
 | `enqueueInputState(rawInputState)` | Accept into latest-input queue, not immediate movement |
 | `consumeLatestInputs(deltaSeconds)` | Deliver queued frames at configured interval; return delivered count |
 | `getWorldStateSnapshot()` | Entity snapshot array |
-| `getSessionSnapshot()` | worldId/participants/controllers/bindings/entities |
+| `getSessionSnapshot()` | worldId, participants, controllers, bindings, entities |
 | `resetWorld(disposeEntities=true)` | Clear session and return cleared entity IDs; do not reload static World |
 
 syncSession payload: `{participant:{participantId,userId},controller:{controllerId,kind},binding:{mode,priority},spawnRequest:{entityId,transform,parameters}}`.
@@ -708,7 +710,8 @@ Unknown messages are offered synchronously to every registered handler, not stop
 
 ### Browser channel and local bridge
 
-`new A3GameRuntimeChannel({onCommand,host='127.0.0.1',port=30040,transport='local',pollIntervalMs=250,globalName='__A3GAME_RUNTIME__'})`.
+`new A3GameRuntimeChannel({onCommand,host,port,transport='local',pollIntervalMs=250,globalName='__A3GAME_RUNTIME__'})`.
+Omitted `host`/`port` fall back to the loopback runtime defaults in `engine_adapters/three_js/plugin/A3GamePlayable/src/engine/runtime-channel.js`.
 Public API: baseUrl getter, connect(), disconnect(), await dispatch(command,payload={}), getHistory().
 Precedence: options → VITE_A3GAME_RUNTIME_* → A3GAME_RUNTIME_* → defaults.
 connect installs the local bridge; websocket/polling require explicit selection and a relay (not provided by Vite).
@@ -742,8 +745,8 @@ const stopAnimation = actor?.animator?.attachToHost(host);
 ```
 
 Attach actor.object to the visual root; unsubscribe separately from animator disposal.
-Results: motionSource=clips/imported_motion/rigged_asset/auto_rig/none, plus rig/measurement/warnings.
-Options: ground/motionReferences/motionLibrary/clipSpeed/shoulderWidth/minAspect/maxAspect/requireMotion/autoRig.
+Results: `motionSource` is one of `clips`, `imported_motion`, `rigged_asset`, `auto_rig`, `none`, plus rig, measurement and warnings.
+Options: `ground`, `motionReferences`, `motionLibrary`, `clipSpeed`, `shoulderWidth`, `minAspect`, `maxAspect`, `requireMotion`, `autoRig`.
 requireMotion rejects motionless results; autoRig:false disables generated-rig fallback, not clips/imported motion.
 clipSpeed affects generated clips only; states is not a strict filter. Defaults: ground=true, envMapIntensity=1, frustumCulled=false.
 
@@ -753,10 +756,10 @@ clipSpeed affects generated clips only; states is not a strict filter. Defaults:
 
 | API | Behavior |
 |---|---|
-| `addClip/addClips`, `listClipNames` | Add and enumerate clips |
+| `addClip`, `addClips`, `listClipNames` | Add and enumerate clips |
 | `mapState(state,clipName)`, `mapStates(mapping)` | Bind states; batch returns missing names |
 | `mapStateChain(state,candidates)`, `mapStateChains(mapping)` | Select available candidates; batch returns bound/missing |
-| `play(state,options={})` | fade/loop/timeScale/clampWhenFinished/restart; return action or null |
+| `play(state,options={})` | fade, loop, timeScale, clampWhenFinished, restart; return action or null |
 | `playOnce(state,{fade,timeScale})` | Promise resolved through mixer updates |
 | `stopAll(fade=0)`, `update(dt)`, `attachToHost(host)` | Control playback; attachment returns unsubscribe |
 | `getState()`, `dispose()` | Inspect and release mixer state |
@@ -772,9 +775,9 @@ await loadForCharacter(character,{references,states,rename}) → `{clips,sources
 
 | Function | Contract |
 |---|---|
-| `createHumanoidSkeleton({height,centre,baseY,shoulderWidth})` | Return root/bones/byName/skeleton/radii; no visible character |
-| `measureHumanoid(object,{minAspect,maxAspect})` | Proportion assessment, size/centre/baseY/reason; not semantic face detection |
-| `autoRigHumanoid(object,options)` | Approximate binding or null; height/centre/baseY/shoulderWidth/maxBones/castShadow |
+| `createHumanoidSkeleton({height,centre,baseY,shoulderWidth})` | Return root, bones, byName, skeleton, radii; no visible character |
+| `measureHumanoid(object,{minAspect,maxAspect})` | Proportion assessment, size, centre, baseY, reason; not semantic face detection |
+| `autoRigHumanoid(object,options)` | Approximate binding or null; height, centre, baseY, shoulderWidth, maxBones, castShadow |
 | `findRiggedHumanoid(object,minimumBones=12)` | Inspect the first skeleton for canonical bone names and hips |
 | `createHumanoidClip(state,{height,speed,hipsRest})` | Generated clip; unknown state returns null |
 | `createHumanoidClipSet(states?,options)` | Default/empty states selects full set; unknown states ignored |
@@ -824,15 +827,15 @@ The surface does not carve terrain. waveHeight/amplitude is not mean water level
 | waves | Up to four `{direction:[u,v],wavelength,amplitude,speed,phase}`; directions use local surface axes, speed is wave phase motion |
 | segments | standard default64/max192; low default24/max32 |
 | waveHeight/windInfluence | Amplitude 0–20; influence default .15, clamped 0–1 |
-| depth/depthResolution/terrainHeight | Depth field; resolution default32, range2–128 |
-| normalMap/repeat/normalScale | Detail texture; the supplied map is configured and its offset animated in place |
-| color/shallowColor/deepColor/absorption | Surface/depth appearance; absorption has three components |
-| roughness/opacity/envMapIntensity | Optical material controls |
-| foamWidth/foamStrength/distortion | Shoreline and refraction appearance |
+| depth, depthResolution, terrainHeight | Depth field; resolution default32, range2–128 |
+| normalMap, repeat, normalScale | Detail texture; the supplied map is configured and its offset animated in place |
+| color, shallowColor, deepColor, absorption | Surface/depth appearance; absorption has three components |
+| roughness, opacity, envMapIntensity | Optical material controls |
+| foamWidth, foamStrength, distortion | Shoreline and refraction appearance |
 | reflection/refraction | Both default false; refraction requires perspective projection |
 | reflectionResolution/reflectionUpdateRate | Defaults256/30 simulated Hz; limits64–1024 / 1–60 |
 | current | World vector or `(position,time,target)=>Vector3`; not the same as wind or texture flowSpeed |
-| rippleCapacity/rippleLifetime/maxRippleStrength | Bounded ripples; capacity standard8/low4, maximum8 |
+| rippleCapacity, rippleLifetime, maxRippleStrength | Bounded ripples; capacity standard8/low4, maximum8 |
 
 Public water.userData methods:
 
@@ -843,7 +846,7 @@ Public water.userData methods:
 | `sampleDepth(x,z)`, `sampleBottom(x,z)` | World depth/bottom; dry depth is zero |
 | `sampleVelocity(position,time?,target?)` | Current plus vertical wave velocity; also supports position,target |
 | `addRipple(x,z,strength=.12,radius=1,{speed,frequency,decay}={})` | Boolean acceptance; radius at least .05; full pool overwrites |
-| `computeBuoyancy(settings={})` | force/torque/submergedFraction/point results |
+| `computeBuoyancy(settings={})` | force, torque, submergedFraction, point results |
 | `applyBuoyancy(body,settings={})` | Call body.applyForce(force,worldPoint) and return computed result |
 | `refreshDepth()` | Refresh after bottom changes |
 | `attachToHost(host)` | Return unsubscribe |
@@ -864,7 +867,7 @@ Bridges and roofs are not automatically water bottoms. SceneLoader owns these su
 density=1000,gravity=9.81,damping,angularDamping=1.5,groundFriction=4,fixedStep=1/120})`.
 Use object origin as center of mass and metre/kilogram/second units. damping defaults mass*4.
 Public methods: update(dt), attachToHost(host), dispose(). Observe velocity/angularVelocity/force/torque/submergedFraction/grounded/elapsedSeconds/disposed.
-There are no getState/reset/applyForce methods; this class is not itself the applyBuoyancy body interface.
+There are no getState, reset, applyForce methods; this class is not itself the applyBuoyancy body interface.
 Attach water before the body. fixedStep is limited to 1/240–1/30; each update caps input dt at .25 seconds.
 onEnterWater receives `{body,object,position,velocity,impactSpeed}` on a new entry, not merely construction underwater.
 Dispose detaches driving but does not dispose object/water. This is a light box-body model, not a general rigid-body or naval hydrodynamics engine.
@@ -876,7 +879,7 @@ Presets are lava/blood; position is `[x,y,z]`, and heightMap returns absolute wo
 resolution is integer4–256, default56; initialDepth may be a number or `(worldX,worldZ)=>number`.
 Additional options: coolingRate/yieldSlope/solidificationTemperature/thermalViscosity/referenceDepth/fixedStep/
 minVisibleDepth/boundary/color/roughness/emissiveIntensity.
-Viscosity is at least .0001; mobility/coolingRate/yieldSlope/thermalViscosity are non-negative; solidificationTemperature is in [0,1).
+Viscosity is at least .0001; mobility, coolingRate, yieldSlope, thermalViscosity are non-negative; solidificationTemperature is in [0,1).
 
 userData: update(dt), addSource(source), getBedGeometry(), attachToHost(host), getState(), dispose().
 - Sources: world `{x,z,radius,volume,rate,duration,temperature}`; immediate volume, rate in volume/s, temperature0–1. Outside bounds throws.
@@ -902,7 +905,7 @@ vfx.play('dust', { position: [0, 0.1, 0], direction: [0, 1, 0], count: 12 });
 
 createVfxDirector with host attaches by default; attach:false disables it. new A3GameVfxDirector requires explicit attachment.
 Custom presets replace the factory defaults; append with register/registerAll.
-Default registered names are muzzle_flash/bullet_impact/impact_dust/blood_hit/melee_impact/shock_ring/block_spark/foot_dust,
+Default registered names are muzzle_flash, bullet_impact, impact_dust, blood_hit, melee_impact, shock_ring, block_spark, foot_dust,
 not every constant in A3GameVfxPreset. Unregistered play returns zero.
 
 | Constant | Members |
@@ -920,11 +923,11 @@ emit(count=1,options={}) returns emitted count; burst defaults to pool capacity.
 
 | Configuration group | Fields |
 |---|---|
-| Pool and lifetime | maxParticles/lifetime/size/sizeOverLife/opacityOverLife/seed |
-| Appearance | colorStart/colorEnd/intensity/appearance/blending/map/renderMode/geometry/material/depthTest/renderOrder/name |
-| Motion | speed/direction/gravity/drag/turbulence/windResponse/windField/rotation/rotationSpeed/stretchBySpeed/orientToDirection |
-| Emitter | position/emitterShape/emitterRadius/emitterAngle/emitterHeight/emitterDirection/emitterSize/surfaceOnly/startPositionAsDirection |
-| Continuous emission | emissionOverTime/looping/autoStart |
+| Pool and lifetime | maxParticles, lifetime, size, sizeOverLife, opacityOverLife, seed |
+| Appearance | colorStart, colorEnd, intensity, appearance, blending, map, renderMode, geometry, material, depthTest, renderOrder, name |
+| Motion | speed, direction, gravity, drag, turbulence, windResponse, windField, rotation, rotationSpeed, stretchBySpeed, orientToDirection |
+| Emitter | position, emitterShape, emitterRadius, emitterAngle, emitterHeight, emitterDirection, emitterSize, surfaceOnly, startPositionAsDirection |
+| Continuous emission | emissionOverTime, looping, autoStart |
 
 Per-emission overrides: position/direction/spread/speed/size/lifetime/colorStart/colorEnd/scale.
 - Ranges are scalars/endpoints, not curves; scale affects offset/size/speed, not lifetime.
@@ -944,7 +947,7 @@ Per-emission overrides: position/direction/spread/speed/size/lifetime/colorStart
 - register/registerBeam reuses existing names without reconfiguration.
 - follow(name,target,{offset,rate}) returns `{stop}`; offset is world-space. One system shares one emitterPosition; unparented non-camera targets stop following.
 - Beams use x/y/z endpoints and overwrite full pools; configurable thick-line width is unsupported.
-- Trails require manual push; history counts world-space samples, not seconds. No update/attachToHost/getState methods.
+- Trails require manual push; history counts world-space samples, not seconds. No update, attachToHost, getState methods.
 - Align impacts with world normals; unsubscribe on teardown.
 
 `createLightningArc({from,to,segments,period,seed,width,color})` returns a Group.
@@ -1020,13 +1023,13 @@ input ownership, fallback, and cleanup; assert state/events. Separately verify d
 
 `testing.run_automation_tests`: vitest/playwright; scripts test/test:e2e; filters -t/--grep.
 Reports default to `.a3game/reports/vitest-report.json` or playwright-report.json.
-Inspect matched_count/passed_count/failed_count/skipped_count/cases/failed_cases plus command status.
+Inspect matched_count, passed_count, failed_count, skipped_count, cases, failed_cases plus command status.
 Missing/stale/malformed/empty/failed reports are rejected, but **all-skipped reports or nonzero/timeout commands can still yield ok=True**.
 Require successful execution, actual passes, and expected coverage; screenshots, readiness, and dry-runs are not benchmark results.
 
 ### Declared gameplay plans
 
-Expose `globalThis.__A3GAME_GAME__ = game` with host/input/getState; return serializable gameplay state, not a THREE graph.
+Expose `globalThis.__A3GAME_GAME__ = game` with host, input, getState; return serializable gameplay state, not a THREE graph.
 Expose `__A3GAME_PLAYTEST__` (or game.playtestActions) to avoid irrelevant generic actions.
 
 ```js
@@ -1094,13 +1097,13 @@ Limits: depth8, budget2048,128 entries/object or array,512 characters/string; no
 | Preview | png_frames=1, no video; status preview_completed |
 | Paths | Report/stdout absolute; all manifest media/report paths relative to BASE |
 | completed | MP4 plus ffprobe-verified frames/size/fps/duration and no page errors; only this updates BASE/manifest.json |
-| Gameplay | Inspect executed_actions/unexecuted_actions/partial_plan and actual game_state progress |
+| Gameplay | Inspect executed_actions, unexecuted_actions, partial_plan and actual game_state progress |
 | Playback | Test target-browser codecs; offer WebM when H.264 is unavailable |
 
 ### Pipeline integration boundaries
 
 `pipeline.code_gen.playtest.run.record_playtest` differs from the adapter: defaults12s/640×360/warmup0/look auto;
-not all mode/preview/source_hash options are forwarded. Use the adapter for declared-plan defaults.
+not all mode, preview, source_hash options are forwarded. Use the adapter for declared-plan defaults.
 recorder_root maps to Playwright root, root/browsers, root/deps/lib.
 `pipeline.code_gen.playtest.eval.evaluate_report` validates report/action/browser structure only, not media/hash/gameplay or preview/overview; authoritative_validation=False.
 
@@ -1121,7 +1124,7 @@ camera/UI, fresh reports, complete plans, and playable media.
 
 ## 18. Complete JavaScript exports and source map
 
-The following index covers all 108 named exports from `plugin/A3GamePlayable/src/index.js`.
+The following index covers all 108 named exports from `engine_adapters/three_js/plugin/A3GamePlayable/src/index.js`.
 Keep generated imports at `@a3game/playable`; packaged subpaths are not needed for normal gameplay.
 
 | Group | Root exports |
@@ -1140,30 +1143,29 @@ Keep generated imports at `@a3game/playable`; packaged subpaths are not needed f
 
 ### Implementation lookup
 
-Paths in this table are relative to `engine_adapters/three_js/`.
-
 | Path | Authority / usage |
 |---|---|
-| `__init__.py`, `three_client.py`, `config.py`, `contracts/` | Python entry, namespace construction, configuration, operation envelopes |
-| `project/client.py`, `plugin/client.py`, `build/client.py`, `runtime/client.py` | Project/package/build/server workflows |
-| `runtime/sessions.py`, `observe/client.py` | Python session delivery and readiness checks |
-| `assets/client.py`, `bindings/client.py`, `animation/client.py`, `reflection/client.py`, `preview/client.py` | Source import, bindings, compatibility, metadata, CPU preview |
-| `world/client.py` | Draft/build/validation/publication facade; read its schema implementation for serialized-field limits, not as a public import |
-| `testing/client.py`, `playtest/client.py`, `playtest/record.mjs` | Test execution, unique-take wrapper, recorder and self-tests |
-| `plugin/A3GamePlayable/src/index.js`, `plugin/A3GamePlayable/package.json` | Runtime exports, boot, supported package/version contract |
-| `plugin/A3GamePlayable/src/data-types/runtime-types.js`, `plugin/A3GamePlayable/src/interfaces/contracts.js` | Wire records and duck-typed contracts |
-| `plugin/A3GamePlayable/src/components/`, `plugin/A3GamePlayable/src/subsystems/` | Identity, input-state component, entity/session lifecycle |
-| `plugin/A3GamePlayable/src/engine/runtime-host.js`, `plugin/A3GamePlayable/src/engine/runtime-channel.js` | Renderer/scheduling and command transport |
-| `plugin/A3GamePlayable/src/engine/asset-library.js`, `plugin/A3GamePlayable/src/engine/scene-loader.js`, `plugin/A3GamePlayable/src/engine/scene-kit.js` | Runtime assets, Worlds, generic layout helpers |
-| `plugin/A3GamePlayable/src/engine/visual-kit.js`, `plugin/A3GamePlayable/src/engine/wind-field.js`, `plugin/A3GamePlayable/src/engine/water-body.js`, `plugin/A3GamePlayable/src/engine/surface-flow.js` | Materials/sky/water/wind/fluid implementation limits |
-| `plugin/A3GamePlayable/src/engine/motion-kit.js`, `plugin/A3GamePlayable/src/engine/animation-director.js` | Rigging/motion and mixer control |
-| `plugin/A3GamePlayable/src/engine/vfx-kit.js`, `plugin/A3GamePlayable/src/engine/lightning-effect.js`, `plugin/A3GamePlayable/src/engine/collision-probe.js`, `plugin/A3GamePlayable/src/engine/input-router.js`, `plugin/A3GamePlayable/src/engine/hud-layer.js` | Effects, queries, input, UI |
-| `plugin/A3GamePlayable/tests/`, `plugin/A3GamePlayable/vitest.config.js` | Framework regression evidence; configuration also includes selected example tests |
-| `cli.py` | Public Python CLI with create-project/import-asset/run subcommands |
-| `import_generated/import_mesh.mjs` | Node GLTFLoader inspection, not staging/registry import |
-| `examples/` | Read-only fps-example, arena-fighter-example, racing-example, explorer-example, motion-vfx-example |
+| `engine_adapters/three_js/__init__.py`, `engine_adapters/three_js/three_client.py`, `engine_adapters/three_js/config.py`, `engine_adapters/three_js/contracts/` | Python entry, namespace construction, configuration, operation envelopes |
+| `engine_adapters/three_js/project/client.py`, `engine_adapters/three_js/plugin/client.py`, `engine_adapters/three_js/build/client.py`, `engine_adapters/three_js/runtime/client.py` | Project/package/build/server workflows |
+| `engine_adapters/three_js/runtime/sessions.py`, `engine_adapters/three_js/observe/client.py` | Python session delivery and readiness checks |
+| `engine_adapters/three_js/assets/client.py`, `engine_adapters/three_js/bindings/client.py`, `engine_adapters/three_js/animation/client.py`, `engine_adapters/three_js/reflection/client.py`, `engine_adapters/three_js/preview/client.py` | Source import, bindings, compatibility, metadata, CPU preview |
+| `engine_adapters/three_js/world/client.py` | Draft/build/validation/publication facade; read its schema implementation for serialized-field limits, not as a public import |
+| `engine_adapters/three_js/testing/client.py`, `engine_adapters/three_js/playtest/client.py`, `engine_adapters/three_js/playtest/record.mjs` | Test execution, unique-take wrapper, recorder and self-tests |
+| `engine_adapters/three_js/plugin/A3GamePlayable/src/index.js`, `engine_adapters/three_js/plugin/A3GamePlayable/package.json` | Runtime exports, boot, supported package/version contract |
+| `engine_adapters/three_js/plugin/A3GamePlayable/src/data-types/runtime-types.js`, `engine_adapters/three_js/plugin/A3GamePlayable/src/interfaces/contracts.js` | Wire records and duck-typed contracts |
+| `engine_adapters/three_js/plugin/A3GamePlayable/src/components/`, `engine_adapters/three_js/plugin/A3GamePlayable/src/subsystems/` | Identity, input-state component, entity/session lifecycle |
+| `engine_adapters/three_js/plugin/A3GamePlayable/src/engine/runtime-host.js`, `engine_adapters/three_js/plugin/A3GamePlayable/src/engine/runtime-channel.js` | Renderer/scheduling and command transport |
+| `engine_adapters/three_js/plugin/A3GamePlayable/src/engine/asset-library.js`, `engine_adapters/three_js/plugin/A3GamePlayable/src/engine/scene-loader.js`, `engine_adapters/three_js/plugin/A3GamePlayable/src/engine/scene-kit.js` | Runtime assets, Worlds, generic layout helpers |
+| `engine_adapters/three_js/plugin/A3GamePlayable/src/engine/visual-kit.js`, `engine_adapters/three_js/plugin/A3GamePlayable/src/engine/wind-field.js`, `engine_adapters/three_js/plugin/A3GamePlayable/src/engine/water-body.js`, `engine_adapters/three_js/plugin/A3GamePlayable/src/engine/surface-flow.js` | Materials/sky/water/wind/fluid implementation limits |
+| `engine_adapters/three_js/plugin/A3GamePlayable/src/engine/motion-kit.js`, `engine_adapters/three_js/plugin/A3GamePlayable/src/engine/animation-director.js` | Rigging/motion and mixer control |
+| `engine_adapters/three_js/plugin/A3GamePlayable/src/engine/vfx-kit.js`, `engine_adapters/three_js/plugin/A3GamePlayable/src/engine/lightning-effect.js`, `engine_adapters/three_js/plugin/A3GamePlayable/src/engine/collision-probe.js`, `engine_adapters/three_js/plugin/A3GamePlayable/src/engine/input-router.js`, `engine_adapters/three_js/plugin/A3GamePlayable/src/engine/hud-layer.js` | Effects, queries, input, UI |
+| `engine_adapters/three_js/plugin/A3GamePlayable/tests/*.spec.js`, `engine_adapters/three_js/plugin/A3GamePlayable/vitest.config.js` | Framework regression evidence; configuration also includes selected example tests |
+| `engine_adapters/three_js/plugin/A3GamePlayable/tests/realism.html`, `engine_adapters/three_js/plugin/A3GamePlayable/tests/wind-fluid.html`, `engine_adapters/three_js/plugin/A3GamePlayable/tests/wind-fluid-demo.js` | Reference browser harnesses for real-WebGL checks of lighting, water, wind and surface flow; not part of Vitest runs |
+| `engine_adapters/three_js/cli.py` | Public Python CLI with create-project/import-asset/run subcommands |
+| `engine_adapters/three_js/import_generated/import_mesh.mjs` | Node GLTFLoader inspection, not staging/registry import |
+| `engine_adapters/three_js/examples/` | Read-only fps-example, arena-fighter-example, racing-example, explorer-example, motion-vfx-example |
 
-Mesh inspector: --source, --usage asset/vfx_standalone/vfx_particle; optional --report/--draco-decoder.
+Mesh inspector: --source, --usage asset, vfx_standalone, vfx_particle; optional --report/--draco-decoder.
 Reports loadability/geometry/materials/textures/animation/bounds/budgets without staging or registry updates.
 Install scripts: `scripts/engine_install/three_js/`, not `scripts/three_js/`. Verify wrapper cwd/environment; keep the repository root importable.
 
