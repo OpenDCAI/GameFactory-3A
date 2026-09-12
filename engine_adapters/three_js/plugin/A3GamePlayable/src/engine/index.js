@@ -6,6 +6,14 @@ export {
   disposeObject3D,
 } from './runtime-host.js';
 export { A3GameAssetLibrary } from './asset-library.js';
+export {
+  directionToYaw,
+  yawToDirection,
+  footprintCorners,
+  distanceToPolyline,
+  createGroundRibbon,
+  createFacadeTexture,
+} from './scene-kit.js';
 export { A3GameWindField, bindVegetationWind } from './wind-field.js';
 export { createLightningArc } from './lightning-effect.js';
 export { A3GameWaterBody } from './water-body.js';

@@ -1141,7 +1141,10 @@ export function createSkyGradient(options = {}) {
         sky += uSunColor * pow(sunDot, 6.0) * uHaze *
                (1.0 - smoothstep(0.0, 0.6, height));
         sky += uSunColor * pow(sunDot, uSunGlow) * 0.9;
-        float disc = smoothstep(1.0 - uSunSize, 1.0 - uSunSize * 0.25, sunDot);
+        float disc = 0.0;
+        if (uSunSize > 0.0) {
+          disc = smoothstep(1.0 - uSunSize, 1.0 - uSunSize * 0.25, sunDot);
+        }
         sky += uSunColor * disc * 6.0;
 
         // Clouds live on a virtual plane above the camera, so the
@@ -1397,10 +1400,11 @@ export function createSurfaceTextures(options = {}) {
     // Ambient occlusion baked into the albedo: recesses are darker, which
     // survives even when a renderer's shadows do not reach them.
     const cavity = 0.72 + height[index] * 0.38;
+    shade.multiplyScalar(cavity).convertLinearToSRGB();
     const offset = index * 4;
-    colourData[offset] = Math.min(255, Math.round(shade.r * cavity * 255));
-    colourData[offset + 1] = Math.min(255, Math.round(shade.g * cavity * 255));
-    colourData[offset + 2] = Math.min(255, Math.round(shade.b * cavity * 255));
+    colourData[offset] = Math.min(255, Math.round(shade.r * 255));
+    colourData[offset + 1] = Math.min(255, Math.round(shade.g * 255));
+    colourData[offset + 2] = Math.min(255, Math.round(shade.b * 255));
     colourData[offset + 3] = 255;
     const rough = Math.min(
       1,
@@ -1437,6 +1441,9 @@ export function createSurfaceTextures(options = {}) {
 
   const build = (data, srgb) => {
     const texture = new THREE.DataTexture(data, size, size);
+    texture.magFilter = THREE.LinearFilter;
+    texture.minFilter = THREE.LinearMipmapLinearFilter;
+    texture.generateMipmaps = true;
     texture.needsUpdate = true;
     return createTilingTexture(texture, {
       repeat: options.repeat ?? 1,
@@ -2152,11 +2159,13 @@ export function createDistantRange(options = {}) {
     colors.push(color.r, color.g, color.b);
   };
 
+  const peaks = Array.from({ length: segments }, (_, i) =>
+    baseY + height * peakAt((i / segments) * Math.PI * 2));
   for (let i = 0; i < segments; i += 1) {
     const a0 = (i / segments) * Math.PI * 2;
     const a1 = ((i + 1) / segments) * Math.PI * 2;
-    const h0 = baseY + height * peakAt(a0);
-    const h1 = baseY + height * peakAt(a1);
+    const h0 = peaks[i];
+    const h1 = peaks[(i + 1) % segments];
     // Two triangles per segment, wound so the inside of the ring is front.
     push(a0, baseY, 0);
     push(a1, baseY, 0);

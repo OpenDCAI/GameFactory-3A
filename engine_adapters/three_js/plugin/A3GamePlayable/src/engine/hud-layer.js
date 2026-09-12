@@ -88,6 +88,8 @@ export class A3GameHudLayer {
     this.widgets = new Map();
     /** @type {Map<string, HTMLElement>} */
     this.slots = new Map();
+    /** @type {Map<string, () => void>} */
+    this.fadeTasks = new Map();
     this.#injectStyle();
   }
 
@@ -201,19 +203,78 @@ export class A3GameHudLayer {
   }
 
   setVisible(name, visible) {
-    const widget = this.widgets.get(String(name));
+    const key = String(name);
+    const widget = this.widgets.get(key);
     if (!widget) return false;
+    this.fadeTasks.get(key)?.();
     widget.element.style.display = visible ? '' : 'none';
+    widget.element.style.opacity = visible ? '1' : '0';
+    widget.element.style.pointerEvents = '';
     widget.element.dataset.a3gameVisible = visible ? 'true' : 'false';
+    widget.element.dataset.a3gameFaded = 'false';
     return true;
   }
 
   remove(name) {
-    const widget = this.widgets.get(String(name));
+    const key = String(name);
+    const widget = this.widgets.get(key);
     if (!widget) return false;
+    this.fadeTasks.get(key)?.();
     widget.element.remove();
-    this.widgets.delete(String(name));
+    this.widgets.delete(key);
     return true;
+  }
+
+  /** Fade using host frame time when supplied; otherwise use wall-clock time. */
+  autoHide(name, options = {}) {
+    const key = String(name);
+    const widget = this.widgets.get(key);
+    if (!widget) return () => {};
+    const after = Number(options.after ?? 6);
+    const fade = Number(options.fade ?? 0.8);
+    if (![after, fade].every(value => Number.isFinite(value) && value >= 0)) {
+      throw new RangeError('autoHide after/fade must be finite non-negative seconds');
+    }
+    if (options.host && typeof options.host.onRender !== 'function') {
+      throw new TypeError('autoHide host requires onRender');
+    }
+    this.setVisible(key, true);
+    widget.element.style.transition = 'none';
+    let elapsed = 0;
+    let detach = () => {};
+    let cancelled = false;
+    const cancel = () => {
+      if (cancelled) return;
+      cancelled = true;
+      detach();
+      if (this.fadeTasks.get(key) === cancel) this.fadeTasks.delete(key);
+    };
+    const update = (delta) => {
+      if (cancelled) return;
+      elapsed += Math.max(0, Number(delta) || 0);
+      const opacity = elapsed < after ? 1 : (fade > 0 ? Math.max(0, 1 - (elapsed - after) / fade) : 0);
+      widget.element.style.opacity = String(opacity);
+      if (opacity <= 1e-8) {
+        widget.element.style.display = 'none';
+        widget.element.dataset.a3gameVisible = 'false';
+        widget.element.dataset.a3gameFaded = 'true';
+        cancel();
+      }
+    };
+    this.fadeTasks.set(key, cancel);
+    if (options.host) {
+      detach = options.host.onRender(update);
+    } else {
+      let previous = performance.now();
+      const timer = setInterval(() => {
+        const now = performance.now();
+        update((now - previous) / 1000);
+        previous = now;
+      }, 16);
+      detach = () => clearInterval(timer);
+    }
+    update(0);
+    return cancel;
   }
 
   /** @returns {object} the readable HUD state, for tests and evidence. */
@@ -223,7 +284,7 @@ export class A3GameHudLayer {
       state[name] = {
         kind: widget.kind,
         value: widget.element.dataset.a3gameValue ?? '',
-        visible: widget.element.style.display !== 'none',
+        visible: widget.element.style.display !== 'none' && widget.element.style.opacity !== '0',
         anchor: widget.element.dataset.a3gameAnchor ?? '',
       };
     }
@@ -231,6 +292,8 @@ export class A3GameHudLayer {
   }
 
   dispose() {
+    for (const cancel of this.fadeTasks.values()) cancel();
+    this.fadeTasks.clear();
     this.widgets.clear();
     this.slots.clear();
     this.root.remove();

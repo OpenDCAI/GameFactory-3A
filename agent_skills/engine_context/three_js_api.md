@@ -1,1974 +1,1173 @@
-# three.js Agent API Reference
+# three.js Development Skill and Public API Reference
 
-Status: implemented `ThreeClient` API version `v1`.
+## Scope and navigation
 
-Validated engine baseline: three.js r185 (`three@0.185.0`), Node 20,
-Vite 6.
+Use for three.js project creation, gameplay, assets, Worlds, and validation.
+Baseline: `ThreeClient` API `v1`, three.js r185 (`three@0.185.0`, compatible r185 peers), Node 20+, project Vite/Vitest versions.
+Authority: `engine_adapters/three_js/`. Paths are repository-relative unless noted.
+Sections 2 and 18 index public APIs; following sections define their contracts and limits, not private implementations.
 
-This file is a compact index of implemented public capabilities. It lists
-public names and their functions only. Read the current source when exact
-parameters or result payload fields are required.
+| Task | Sections |
+|---|---|
+| Create a project or install gameplay | 1–2 |
+| Import resources, inspect orientation, bind materials | 3 |
+| Assemble or publish a World | 4 |
+| Boot a browser game and configure rendering | 5–6 |
+| Build terrain, props, paths, and backgrounds | 7 |
+| Implement entities, input, sessions, or remote commands | 8–10 |
+| Animate actors | 11 |
+| Add wind, water, surface flow, or VFX | 12–13 |
+| Implement collision and HUD | 14–15 |
+| Validate, record, and release resources | 16–17 |
+| Check the full public surface and source locations | 18 |
 
-## Toolchain
+## 1. Public boundaries and project workflow
 
-The three.js adapter has no engine installation. Its only external
-requirement is a **Node 20+** toolchain on `PATH`, because the adapter
-drives Vite, Vitest, and the package manager through its private Node
-transport.
-
-`<REPO_PATH>/scripts/engine_install/three_js/setup_env.sh` provisions that
-toolchain as a conda environment for machines with no system Node:
-
-```bash
-scripts/engine_install/three_js/setup_env.sh  # create or verify
-source <conda_root>/etc/profile.d/conda.sh
-conda activate threejs
-```
-
-`<REPO_PATH>/scripts/engine_install/three_js/README.md` documents the launchers
-and their environment variables. Every launcher is a thin wrapper over the public
-`ThreeClient`.
-
-## Hard API Boundary
-
-The only supported Python entry point is:
+- Python: `from engine_adapters.three_js import ThreeClient`. JS: `@a3game/playable` for framework APIs, `three` for native types.
+- Put gameplay in `packages/<game-name>/`; extend reusable code in the canonical plugin and install it through project tooling.
+- Avoid Python `_internal`, direct namespace-client construction, and JS deep imports. Treat `examples/` as read-only references.
+- Import assets/packages by registered task identity (section 3).
+- Follow packet permissions: Mechanic generators write tests, not authoritative results; UI generators also respect screenshot restrictions and preserve Mechanic code.
 
 ```text
-from engine_adapters.three_js import ThreeClient
+<resolved-project-directory>/
+├── package.json                  three/vite/vitest; packages/* workspaces
+├── vite.config.js
+├── index.html                    viewport and HUD containers
+├── src/main.js                   import and start the Gameplay Package
+├── public/assets/manifest.json   maintained by asset import tooling
+└── packages/
+    ├── a3game-playable/          installed framework
+    └── <game-name>/
+        ├── src/index.js         startup, factory, system assembly
+        ├── src/world.js         layout and static collision
+        ├── src/player.js        concrete entity; name by game role
+        ├── src/rules.js         rules and observable state
+        └── tests/
 ```
 
-The only supported JavaScript entry point for generated gameplay is:
+Paths: `pipeline.common.paths.task_output_dir(game_id,task_kind,task_id,run_id='default',create=True)`;
+`eval_output_dir` uses the same arguments. For queries use create=False; root override: AAAGF_OUTPUT_ROOT. No three.pipeline namespace.
 
-```text
-import { ... } from '@a3game/playable';
-```
+Workflow: project.create → plugin.install_framework → implement gameplay/entrypoint → project.install_dependencies → project.validate → authorized build/browser validation.
+The scaffold provides no concrete Character/Controller/GameMode/weapon/vehicle.
 
-Agents, generated code, Pipeline code, and platform Serving code must not:
-
-- import `engine_adapters.three_js._internal`;
-- import namespace client implementation classes directly;
-- import any `_internal` subpackage of a namespace;
-- call transports, services, registries, resolvers, or inspectors;
-- run arbitrary Node or npm commands through private transports;
-- modify the adapter-owned `A3GamePlayable` framework;
-- deep-import `@a3game/playable/src/...` paths;
-- depend on optional Arena Fighter, FPS, Racing, or Explorer example
-  packages;
-- hard-code asset URLs, `dist/` paths, or `public/` paths;
-- construct generated-output paths manually.
-
-Generated gameplay belongs in a separate project-local Gameplay Package
-under `packages/`.
-
-## Execution Authority
-
-The game-generation Agent generates engine-native test source. The Agent
-MUST NOT invoke `three.testing.*` or declare benchmark success.
-
-Engine execution and evaluation code owns bundle builds, test execution,
-runtime evidence, and benchmark results. A zero process return code alone
-is not success; the parsed test report must contain matching passing
-tests.
-
-`three.preview.*` is not execution and the Agent may call it freely: it
-renders an artifact on the CPU to inform a decision, produces no
-benchmark claim, and writes nothing a player downloads.
-
-`three.playtest.*` is likewise not a benchmark: it records what happened
-when the game was played and makes no pass/fail claim of its own. See
-**Playtest**.
-
-## Result Contract
-
-Public operations return JSON-serializable result dictionaries using
-these stable top-level fields:
-
-- `ok` - whether the operation completed successfully;
-- `operation` - stable operation identifier;
-- `artifacts` - produced or retained artifact paths;
-- `diagnostics` - structured diagnostic records;
-- `warnings` - non-fatal problems;
-- `errors` - fatal problems;
-- `payload` - operation-specific result data.
-
-## Client
-
-- `ThreeClient` - Creates the public three.js environment client and its
-  namespace clients.
-- `three.api_version` - Reports the active public ThreeClient API version.
-- `three.get_environment_info` - Reports configured project, three.js
-  baseline, dev server, runtime channel, and registry information.
-
-Constructor arguments: `project_path`, `three_root`, `api_version`, and
-keyword-only `host`, `port`, `runtime_host`, `runtime_port`,
-`package_manager`, `runtime_transport`, `node_root`. Every argument also
-resolves from `A3GAME_THREE_*` environment variables.
-
-## Project
-
-- `three.project.get_info` - Reports the configured project and three.js
-  baseline paths.
-- `three.project.create` - Creates a minimal Vite + three.js host project
-  without concrete gameplay defaults.
-- `three.project.install_dependencies` - Installs Node dependencies with
-  the configured package manager.
-- `three.project.validate` - Checks project configuration, descriptor,
-  entry document, static root, and installed dependencies.
-
-`project.create` writes `package.json`, `vite.config.js`, `index.html`,
-`src/main.js`, the `public/assets/imported/*` roots, `packages/`,
-`tests/`, and the `.a3game-three.json` descriptor. It installs no
-gameplay.
-
-## Assets
-
-- `three.assets.import_asset` - Stages a registered task artifact using
-  its declared asset type.
-- `three.assets.import_avatar` - Stages a registered character or avatar
-  artifact.
-- `three.assets.import_motion` - Stages registered animation data,
-  optionally against a target skeleton artifact.
-- `three.assets.import_scene` - Stages a registered Scene artifact.
-- `three.assets.import_prop` - Stages a registered prop or generic mesh
-  artifact.
-- `three.assets.import_weapon` - Stages a registered weapon mesh
-  artifact.
-- `three.assets.import_material` - Stages a registered material
-  artifact.
-- `three.assets.import_texture` - Stages a registered texture artifact.
-- `three.assets.import_effect` - Stages a registered Effect package or
-  native Effect content.
-- `three.assets.import_audio` - Stages a registered audio artifact.
-- `three.assets.validate` - Validates a registered source artifact
-  without staging it and without a Node process.
-- `three.assets.resolve_source` - Resolves a repository task identity to
-  its registered source artifact.
-- `three.assets.list` - Lists staged asset files under the project static
-  root.
-- `three.assets.list_registered` - Lists artifacts recorded in the
-  adapter registry.
-- `three.assets.get_metadata` - Reads metadata for one registered
-  artifact.
-- `three.assets.write_manifest` - Rewrites the runtime asset manifest
-  from the registry.
-- `three.assets.set_orientation` - Records which way a staged model faces
-  and how big it is meant to be.
-- `three.assets.get_orientation` - Reads back one artifact's recorded
-  orientation.
-- `three.assets.analyze_orientation` - Reports what geometry alone says
-  about a model's facing, for a staged artifact or an unstaged task
-  identity.
-
-Public asset methods consume repository task identities. They do not
-accept arbitrary generated-output filesystem paths.
-
-### Asset Orientation
-
-glTF fixes the up axis (+Y) and the unit (metre) and says nothing binding
-about **facing**. A model authored facing +Z and the same model facing -Z
-have identical bounding boxes, node trees and animation clips, so no
-amount of loading can tell them apart. The runtime convention is:
-
-```text
-local forward = -Z·   local up = +Y
-```
-
-That is what a yaw of zero means to generated gameplay, which derives
-facing with `Math.atan2(-x, -z)`. A model that disagrees is not broken —
-it is unlabelled, and the label is carried in the artifact record:
+### Client configuration and results
 
 ```python
-three.assets.import_prop(source, options={
-    "asset_id": "chest", "forward_axis": "+z",
-    "scale_hint_metres": 0.8, "verified_by": "agent_vision",
-})
-# or afterwards, without re-staging the file:
-three.assets.set_orientation("chest", forward_axis="+z",
-                             scale_hint_metres=0.8,
-                             verified_by="agent_vision")
+from engine_adapters.three_js import ThreeClient
+
+three = ThreeClient(project_path=resolved_project_path)
+info = three.get_environment_info()
+if not info["ok"]:
+    raise RuntimeError(info["errors"])
 ```
 
-`forward_axis` names the axis the model faces *as authored*; the adapter
-derives the yaw, so no caller computes an angle. `+z → 180°`,
-`-z → 0°`, `+x → 90°`, `-x → 270°`. Also available:
-`yaw_offset_degrees` for a model facing no cardinal axis,
-`pitch_offset_degrees` for content authored Z-up, `scale_hint_metres`,
-`pivot`, `verified_by` (`unverified`/`heuristic`/`declared`/
-`agent_vision`/`human`) and `notes`.
+Constructor: `ThreeClient(project_path=None, three_root=None, api_version='v1', *, host=None, port=None,
+runtime_host=None, runtime_port=None, package_manager=None, runtime_transport=None, node_root=None)`.
+Read `three.api_version`; use `get_environment_info()` for effective paths and URLs instead of reaching into `three._config`.
+`project_path` accepts a project directory or `package.json`. Invalid configuration can raise `ValueError` during construction.
 
-Importing a directional asset without a `forward_axis` succeeds and
-returns a warning: the runtime then places the model exactly as authored,
-which is a coin flip. Determining the axis requires looking at the model —
-see **Preview** below and
-`<REPO_PATH>/agent_skills/asset_qa/3d_object/orientation_review.md`.
+| Setting | Default / configuration |
+|---|---|
+| API version | `v1` only |
+| Dev host / port | `127.0.0.1:5173`; Python reads `A3GAME_THREE_HOST/PORT`, with `THREE_HOST/PORT` compatibility |
+| Runtime endpoint | `127.0.0.1:30040`; `A3GAME_THREE_RUNTIME_HOST/RUNTIME_PORT` |
+| Package manager | `npm`; supported `npm/pnpm/yarn`; `A3GAME_THREE_PACKAGE_MANAGER` |
+| Runtime transport config | `http`; `http/websocket` accepted by Python config; see actual delivery limits in section 10 |
+| Project / adapter roots | `A3GAME_THREE_PROJECT`, `A3GAME_THREE_ROOT` |
+| Node toolchain | `node_root` / `A3GAME_NODE_ROOT` |
+| Registry and evidence paths | `A3GAME_THREE_DATA_ROOT`, `A3GAME_THREE_ARTIFACT_REGISTRY`, `A3GAME_THREE_WORLD_REGISTRY_ROOT`, `A3GAME_THREE_PREVIEW_ROOT` |
 
-All three models in the curated CC0 pack face **+Z**, so every one of
-them needs a 180° correction.
+Vite separately reads A3GAME_DEV_HOST/PORT; Python launch passes explicit --host/--port. Ports:1–65535; dev and runtime endpoints differ.
+Keep services on loopback/protected networks;0.0.0.0 and allowedHosts:true broaden access.
 
-## Preview
+Results: `{ok,operation,artifacts,diagnostics,warnings,errors,payload}`. Check payload as well as ok (not gameplay proof).
+`contracts/` defines ThreeDiagnostic/ThreeOperationResult with to_dict and success/failure helpers, not a three.contracts namespace.
+Configuration/caller exceptions are not always wrapped.
 
-- `three.preview.render_artifact` - Renders a staged artifact from named
-  axes and writes labelled PNGs plus one contact sheet.
-- `three.preview.render_source` - Renders a repository task artifact
-  before it is imported.
-- `three.preview.orientation_report` - Renders the review sheet and
-  returns it with the geometric evidence and the exact call that records
-  a decision.
-- `three.preview.list_views` - Reports the view sets and what each
-  rendered axis means.
+## 2. Complete Python facade operation index
 
-The renderer is pure `numpy` and `Pillow`: no GPU, no display, no
-browser, no Node process, and about two seconds per asset. Views are
-**orthographic** and named after the axis the camera sits on — a view
-labelled `+z` shows the model's +Z side — because naming a view "front"
-would presuppose the answer being sought. Each image carries its axis and
-its screen-right axis burnt into the frame, since a filename is invisible
-to a reader handed only pixels.
+Use these 13 namespaces and the nested `runtime.sessions` API through the facade.
+The index covers 57 operations including `get_environment_info()`, excluding constructors and the `api_version` property.
+There are no `three.scene`, `three.schema`, `three.controller`, or `three.network` namespaces.
+Signatures use Python keyword-only `*`; omitted `options` dictionaries are detailed in the relevant section.
 
-Renders land under the project's `.a3game/previews/`, never in `public/`:
-they are review evidence, not shipped content.
+### Projects, packages, builds, and services
 
-Geometry is decoded in the **bind pose**, with a skinned mesh's node
-transform ignored as the specification requires, so the review measures
-the model rather than a frame of its walk cycle. Draco- and
-meshopt-compressed artifacts cannot be decoded without a GPU decoder and
-report that instead of drawing nonsense.
+| Operation | Signature / purpose |
+|---|---|
+| `get_environment_info()` | Effective project/toolchain/registry/runtime information |
+| `project.get_info()` | Project information |
+| `project.create(*, dry_run=False)` | Create at the configured project path |
+| `project.install_dependencies(*, timeout=None, dry_run=False)` | Install using the configured package manager |
+| `project.validate()` | Validate project structure/configuration |
+| `plugin.install(source, *, replace_existing=False, dry_run=False)` | Install a registered Gameplay Package |
+| `plugin.install_framework(*, dry_run=False)` | Install the canonical `@a3game/playable` package |
+| `plugin.list()` | List installed packages |
+| `build.project(*, target='build', configuration='production', clean=False, dry_run=False, timeout=None)` | Invoke the project build |
+| `runtime.launch_dev_server(*, script='dev', world='', extra_args=(), wait_timeout=60.0, dry_run=False)` | Launch and wait for the dev service |
+| `runtime.stop_dev_server(process_id)` | Stop a process managed by this client instance |
+| `runtime.preview_bundle(*, script='preview', extra_args=(), wait_timeout=60.0, dry_run=False)` | Serve an existing build |
+| `observe.check_status(*, timeout=5.0, check_runtime=True)` | Check toolchain, project, dependencies, dev server, and optional runtime endpoint |
 
-### Import Lifecycle
+- create rejects existing package.json. Package source needs a directory/top-level package.json with a name.
+- An @a3game/playable dependency/peerDependency requests framework installation; install dependencies afterwards.
+- Replacement synchronizes without guaranteed stale-file removal; asset overwrite differs (section 3).
+- Dry-runs check prerequisites; preview requires dist/. Launch timeout does not stop the process automatically.
+- check_runtime=False skips remote checks; readiness neither verifies WebGL nor necessarily fails on missing framework files.
 
-The web has no engine-side import step: a `.glb` file is already the
-runtime format. `import_asset` therefore stages the file into
-`public/<destination>/`, copies any `.gltf` sidecar buffers and images,
-records an artifact, and rewrites the manifest.
+### Assets, animation, bindings, and inspection
 
-`<REPO_PATH>/scripts/engine_install/three_js/import_asset.sh` is a lifecycle
-wrapper around the same public `ThreeClient`; it is not a second or faster asset
-API.
+| Operation | Signature |
+|---|---|
+| `assets.import_asset` | `(source, asset_type, *, destination='', options=None)` |
+| `assets.import_avatar` | `(source, *, destination='', options=None)` |
+| `assets.import_scene` | `(source, *, destination='', options=None)` |
+| `assets.import_prop` | `(source, *, destination='', options=None)` |
+| `assets.import_weapon` | `(source, *, destination='', options=None)` |
+| `assets.import_material` | `(source, *, destination='', options=None)` |
+| `assets.import_texture` | `(source, *, destination='', options=None)` |
+| `assets.import_effect` | `(source, *, destination='', options=None)` |
+| `assets.import_audio` | `(source, *, destination='', options=None)` |
+| `assets.import_motion` | `(source, *, skeleton='', destination='', avatar_name='', options=None)` |
+| `assets.validate` | `(source, asset_type, *, destination='', options=None)` |
+| `assets.resolve_source` | `(source, *, asset_type='')` |
+| `assets.list` | `(asset_type='', *, root='assets/imported')` |
+| `assets.list_registered` | `(asset_type='')` |
+| `assets.get_metadata` | `(artifact_id)` |
+| `assets.set_orientation` | `(reference, *, forward_axis='', up_axis='', yaw_offset_degrees=None, pitch_offset_degrees=None, roll_offset_degrees=None, scale_hint_metres=None, pivot='', verified_by='', notes='')` |
+| `assets.get_orientation` | `(reference)` |
+| `assets.analyze_orientation` | `(reference, *, asset_type='')` |
+| `assets.write_manifest` | `()` |
+| `animation.import_motion` | `(source, *, skeleton='', destination='', avatar_name='', options=None)` |
+| `animation.resolve_skeleton` | `(artifact_id)` |
+| `animation.validate_compatibility` | `(motion_artifact_id, skeleton_artifact_id)` |
+| `bindings.bind_pbr_material` | `(*, asset_id, source, mesh_assets, destination='', options=None)` |
+| `reflection.inspect_artifact` | `(artifact_id, *, refresh=False)` |
+| `reflection.list_object_names` | `(artifact_id)` |
+| `preview.render_artifact` | `(reference, *, views='all', size=384, target_samples=2200000, output_dir='')` |
+| `preview.render_source` | `(source, *, asset_type='', views='all', size=384, target_samples=2200000, output_dir='')` |
+| `preview.orientation_report` | `(reference, *, asset_type='', size=384, output_dir='')` |
+| `preview.list_views` | `()` |
 
-Asset and World operations need no live browser. Execution code should
-reuse one `ThreeClient` for a task batch.
+Use `import_asset(source, 'environment')` or `import_asset(source, 'static_mesh')`; no dedicated import_environment/import_static_mesh wrapper exists.
+`animation.resolve_skeleton` reads skin metadata. Compatibility checks are metadata/clip/node checks, not bind-pose validation or full retargeting.
+`reflection.list_object_names` exposes recorded animation/material names and geometry counts; do not assume a full scene-node-name enumeration.
+`refresh=True` rereads staged content for inspection; do not assume that it rewrites the artifact registry.
 
-### Asset Manifest
+### Worlds and sessions
 
-Every import rewrites `public/assets/manifest.json`. This file is the
-only supported way for generated gameplay to find an asset:
+| Operation | Signature |
+|---|---|
+| `world.build` | `(source, *, options=None)` |
+| `world.create_draft` | `(spec, *, draft_id='', project_id='', metadata=None)` |
+| `world.validate_draft` | `(draft_id)` |
+| `world.publish_draft` | `(draft_id)` |
+| `world.list_packages` | `(*, project_id='', world_id='')` |
+| `world.get_scene_graph` | `(draft_id)` |
+| `runtime.sessions.join` | `(*, world_id='', participant_id='', user_id='', avatar_artifact_id='', idle_motion_artifact_id='', move_motion_artifact_id='', controller_kind='human', control_mode='exclusive', priority=0, transform=None, parameters=None)` |
+| `runtime.sessions.leave` | `(*, participant_id='', controller_id='')` |
+| `runtime.sessions.heartbeat` | `(controller_id)` |
+| `runtime.sessions.apply_input` | `(controller_id, *, move_x=0.0, move_y=0.0, run=False, jump=False, yaw=0.0, pitch=0.0, seq=0)` |
+| `runtime.sessions.snapshot` | `(*, world_id='')` |
+| `runtime.sessions.reset_world` | `(*, world_id='')` |
+| `runtime.sessions.clear_entity` | `(*, participant_id='', controller_id='', entity_id='', destroy_object=True)` |
 
-```json
-{
-  "manifest_version": 1, "api_version": "v1", "backend": "web",
-  "engine": "three_js", "engine_version": "0.185.0",
-  "assets": {
-    "<artifact_id>": {
-      "artifact_id": "...", "asset_id": "hero", "package_id": "hero",
-      "type": "avatar", "category": "", "representation": "gltf_binary",
-      "class": "SkinnedMesh", "url": "/assets/imported/avatars/hero.glb",
-      "capabilities": {
-        "renderable": true, "spawnable": true, "collidable": false,
-        "playable": false, "animated": true, "skinned": true
-      },
-      "animations": ["idle", "walk"],
-      "bounds": { "min": [], "max": [], "size": [], "center": [] },
-      "orientation": {
-        "forward_axis": "+z", "up_axis": "+y",
-        "yaw_offset_degrees": 0, "runtime_forward_axis": "-z",
-        "runtime_yaw_degrees": 180, "scale_hint_metres": 1.8,
-        "verified_by": "agent_vision", "needs_vision_check": false
-      }
-    }
-  }
+### Testing and recording
+
+`testing.run_automation_tests(*, runner='vitest', test_filter='', script='', report_path='', timeout=None, dry_run=False)`.
+
+`playtest.record(*, output_dir, url='', action_plan=None, hold=None, warmup=None, look=None,
+playwright_root=None, browser_executable=None, browsers_path=None, library_path=None, ffmpeg=None,
+duration=14.0, fps=20, width=1280, height=720, timeout=900.0, dry_run=False,
+mode='gameplay', preview=False, allow_partial_plan=False, source_hash=None)`.
+
+Read section 16 before treating either result as validation evidence.
+
+## 3. Resource identity, loading, orientation, and PBR binding
+
+### Registered source descriptors
+
+Pass a mapping, not a raw file path, to source-based imports, World build, source preview, material binding, and package installation:
+
+```python
+source = {
+    "game_id": "example_game",
+    "run_id": "default",
+    "task_kind": "3d_object",
+    "task_id": "example_crate",
+    "artifact_key": "model_path",
 }
 ```
 
-`orientation` is what `A3GameAssetLibrary` applies at instantiation. An
-absent or empty block means nobody recorded a facing, and the runtime
-then leaves the model exactly as authored — so annotating an asset can
-never make an already-correct game worse.
+- Replace example values with registered IDs. Require game_id/task_id; run_id defaults `default`.
+- Inferred task_kind: scene→3d_scene, motion→motion, audio→audio, others→3d_object. Package installation requires explicit task_kind.
+- Omit artifact_key only for exactly one non-empty `*_path` in meta.json. Metadata identities must match; paths must stay inside the task directory.
+- Directories are accepted for generic scene/effect/environment imports; bindings/packages have separate rules.
+- Prefer GLB/glTF; let importers maintain sidecars/registry/manifest. Check license, budgets, bounds, skins, and clips.
+- Options include asset_id/category/replace_existing/orientation; arbitrary options may be metadata-only, not conversion or retargeting.
+- **Asset replace_existing=False may warn and overwrite**; it is not the package installer's overwrite guard.
 
-### Default Destinations
+Distinguish these records:
 
-`avatar` → `assets/imported/avatars`, `motion` → `.../motions`,
-`scene` → `.../scenes`, `environment` → `.../environments`,
-`effect` → `.../effects`, `material` → `.../materials`,
-`texture` → `.../textures`, `prop` and `static_mesh` → `.../props`,
-`weapon` → `.../weapons`, `audio` → `.../audio`.
+| Record | Relevant fields / access |
+|---|---|
+| Registered artifact | `backend_class/backend_path/runtime_capabilities`; `assets.get_metadata(artifact_id)` returns records in `artifacts[]` |
+| Runtime manifest entry | `artifact_id/asset_id/type/class/url/capabilities/orientation/material_bindings/animations/bounds/sun` |
+| World graph asset references | Smaller `assets` mapping; not a replacement for loading the manifest into AssetLibrary |
 
-### Runtime Formats
+### JavaScript asset library
 
-`glb`/`gltf` are the only supported mesh formats for shipped content;
-`png`, `jpeg`, `webp`, `ktx2`, `basis`, `hdr` for images; `mp3`, `ogg`,
-`wav` for audio. `fbx`, `obj`, `stl`, `ply`, and `usdz` load but validate
-with a warning and should be converted. Draco and meshopt compression are
-supported when the runtime configures the matching decoder.
+`new A3GameAssetLibrary({manifestUrl, baseUrl, requireManifest, dracoDecoderPath, ktx2TranscoderPath, renderer})`.
+Default manifest/decoder paths are `/assets/manifest.json`, `/draco/`, `/basis/`, scoped through baseUrl.
+`baseUrl` defaults to the browser document directory and `/` in Node; keep it consistent with the build base and served page path.
 
-## Animation
+| Method | Result / behavior |
+|---|---|
+| `resolveUrl(url)` | Rebase project resource paths; preserve already-prefixed paths, external protocols, data/blob URLs, and `//` URLs |
+| `await load()` | Fetch/index manifest; return library; inspect `available/manifest/warnings` |
+| `has(reference)`, `findEntry(reference)`, `requireEntry(reference)` | Boolean, entry/null, or entry/throw; candidate arrays choose the first registered candidate |
+| `listByType(type)` | Matching manifest entries |
+| `await loadArtifact(reference)` | Cached model/texture/audio buffer/JSON result; not every resource is instantiable |
+| `await instantiate(reference)` | Strict independent model instance with cloned materials/skins and bindings; no orientation/height preparation |
+| `await tryInstantiate(reference, options={})` | Prepared instance or null; loading failures enter warnings |
+| `await instantiateOrBuild(reference, fallback, options={})` | Prepared asset or synchronous Object3D fallback; inspect `source` |
+| `await tryLoadTexture(reference, options={})` | Configured texture or null; clones by default, `clone:false` modifies shared source state |
+| `await applyMaterialBinding(object, bindingUrl)` | Apply a validated binding; throw on invalid targets/options |
+| `await applyEnvironment(host, reference, options={})` | Environment result or null for unavailable assets; invalid arguments/host operations may throw |
+| `await dispose()` | Release cached/library-owned resources |
 
-- `three.animation.import_motion` - Stages motion through the Animation
-  namespace.
-- `three.animation.resolve_skeleton` - Reports the skinned hierarchy
-  carried by a registered artifact.
-- `three.animation.validate_compatibility` - Checks whether motion clips
-  can drive a target avatar skeleton and whether retargeting is required.
-
-Staged motion lands in `public/assets/imported/motions/` and appears in
-the manifest as `type: "motion"`. A motion artifact carries clips and
-usually a skeleton but **no renderable body**, so it is not something
-`instantiate()` can return — `A3GameMotionLibrary` is what resolves it at
-runtime.
-
-Convert a retargeted FBX to glTF before staging it: `fbx` loads in the
-browser but validates with a warning, and `glb` is the runtime format. The
-generation chain that produces the clip in the first place — Puppeteer rig,
-MoMask or a licensed clip, Blender `world_delta` retarget, `inspect_fbx`
-verification — is documented in
-`<REPO_PATH>/agent_skills/asset_qa/motion/SKILL.md`.
-
-### Motion On A Generated Character
-
-This is the single most consequential difference between a downloaded
-character and a generated one, and it is invisible from the call site.
-`assets.tryInstantiate` is correct for the first and silently wrong for the
-second: image-to-3D produces **one fused body**, so its manifest entry
-reports `animations: []` and `skinned: false`. A game that swaps its
-procedural body for such a model ends up with a good-looking character that
-never moves — strictly worse than the capsule it replaced, because the
-primitive limbs that *were* being posed went away with the swap.
-
-There are exactly three ways a character can move, and `createAnimatedActor`
-tries them in order:
-
-| Route | `motionSource` | When it applies |
-|---|---|---|
-| The model's own clips | `clips` | A CC0 character, or a generated one re-exported by `gen_motion` |
-| Imported motion, retargeted by bone name | `imported_motion` | `type: 'motion'` artifacts have been staged |
-| A skeleton the rigging pipeline produced | `rigged_asset` | The asset is skinned and its bones carry canonical names |
-| A fitted skeleton plus authored clips | `auto_rig` | A static generated humanoid with no rig |
-| Nothing usable | `none` | The mesh is not shaped like a standing figure |
-
-### The `rigged_asset` Route
-
-This is the route to prefer, and the one to produce. `<REPO_PATH>/operators/gen_motion`
-runs Puppeteer, which predicts the skeleton *and* the skinning weights from the
-mesh — a real answer, where `autoRigHumanoid` is a browser-side approximation.
-What comes back is skinned and bound but has **no clips**, because rigging and
-animating are separate stages.
-
-Two things make that asset usable with no retargeting at all:
-
-1. **The exporter renames the predicted joints to `A3GameHumanoidBone` names.**
-   Puppeteer emits `joint0..jointN` in prediction order, which carries no
-   anatomy — `joint23` is a hip on one character and a finger on the next. The
-   labels are derived from topology: the root is the pelvis, the subtree
-   reaching highest is the spine, the two reaching lowest are the legs, and the
-   spine node where two chains branch sideways is the chest. Authored clips
-   address tracks as `` `${boneName}.quaternion` ``, so canonical names bind
-   directly.
-2. **The rest pose is identity rotations plus parent-to-child offsets**, which
-   is how `createHumanoidSkeleton` builds the template. A clip swings a thigh
-   about local X, and that only means "forward" when a bone's local axes
-   coincide with the world's at rest. Proportions may then differ freely between
-   characters, because a rotation is scale-invariant.
-
-`findRiggedHumanoid` performs the check and runs **before** the humanoid gate.
-That order matters: the gate reads a bounding-box aspect ratio, which says
-nothing about a model that already carries a labelled skeleton, and it rejects
-legitimate assets — an archer holding a bow measures wider than tall.
+Do not mutate a cached loadArtifact model as an independent entity.
+Prepared results expose `object` for game transforms and `model` for the authored model root.
+Use fallback geometry when an optional resource is absent; a fallback is not automatically re-normalized or reoriented.
 
 ```js
-const rigged = findRiggedHumanoid(object);  // null when not usable
-// -> { skeleton, bones: Map<name, Bone>, height, matched, missing }
-```
-
-`height` comes from the bound geometry, not from the topmost bone: a clip's
-stride and hip travel are fractions of the character's height, and the head
-bone sits inside the skull rather than on top of it.
-
-### Reconstruction Debris Sets The Bounding Box
-
-Worth knowing before concluding that a generated character has bad proportions.
-Three of the four characters in the sample projects measured *wider than tall*
-and were refused by the humanoid gate. The bodies were fine — welded, the
-largest component of one was 98% of the faces and measured a perfectly ordinary
-0.38 x 0.73 x 0.33. **Four stray faces**, left floating by the reconstruction,
-were setting the bounding box.
-
-Every proportion derived from that box is then wrong: `fitToHeight` scales the
-character so the *debris field* is 1.8 m, `ground: true` puts the lowest speck
-on the floor, and the gate reads 0.74 and reports "not a person". Deleting the
-specks is the fix; regenerating the asset is not.
-
-Two traps when doing that in Python: `trimesh.load(..., process=False)` leaves a
-glTF unwelded, so `split()` returns one component per face and says nothing
-about the shape; and `merge_vertices()` preserves UV and normal seams by
-default, which for a glTF means it merges almost nothing. Pass
-`merge_tex=True, merge_norm=True`.
-
-```js
-const actor = await createAnimatedActor(assets, 'arena_trooper', {
-  height: 1.8,
-  ground: true,   // place by the feet: a generated origin is arbitrary
-  states: ['idle', 'walk', 'run', 'aim', 'shoot', 'hit', 'death'],
-  defaultState: 'idle',
+const loaded = await assets.tryInstantiate(['scene_crate', 'crate_fallback'], {
+  height: 0.8, ground: true, envMapIntensity: 1,
 });
-if (!actor || actor.motionSource === 'none') {
-  // Keep the procedural body. It moves, and this one does not.
-} else {
-  entity.setVisual(actor.object, actor.animations, {
-    animator: actor.animator, motionSource: actor.motionSource,
+if (loaded) host.add(loaded.object, 'environment');
+```
+
+Here and in subsequent snippets, obtain `assets/host/runtime/session/sceneLoader/hud` from the boot context unless explicitly constructed.
+
+### Orientation and model utilities
+
+Use metres, right-handed +Y up, and runtime local forward -Z. Verify authored orientation visually; bounds alone do not identify the face.
+Author-axis conversion to -Z: `+z → 180°`, `-z → 0°`, `+x → 90°`, `-x → 270°`.
+Store `forward_axis/up_axis/yaw_offset_degrees/pitch_offset_degrees/roll_offset_degrees/scale_hint_metres/pivot/verified_by/notes` through orientation APIs.
+JS overrides use `forwardAxis/yawOffsetDegrees/pitchOffsetDegrees/rollOffsetDegrees`; `orient:false` disables orientation correction.
+Use `height` to override scale_hint_metres; `ground:true` aligns the bounding-box bottom.
+Do not apply the same correction in both metadata and gameplay. Prepared outer transforms preserve inner asset normalization.
+
+| Utility | Contract |
+|---|---|
+| `measureObject(object)` | World-space `Box3` |
+| `fitToHeight(object, metres)` | Resize in place; return object |
+| `groundObject(object, {horizontal=true}={})` | Ground and optionally center in place |
+| `forwardAxisYaw(forwardAxis, runtimeForwardAxis='-z')` | Radian axis conversion |
+| `orientModel(object, options={})` | Add orientation corrections to existing Euler rotation; repeated calls accumulate |
+| `prepareModel(object, options={})` | Orientation, scale, grounding, render flags; does not create a safe wrapper itself |
+| `principalAxes(points)` | From Vector3 points, return centroid and axes with vector/deviation |
+| `measureWeapon(object, options={})` | Geometry-based weapon-axis confidence measurement |
+| `alignWeaponModel(object, options={})` | Measurement plus applied flag; replace quaternion when accepted |
+
+Weapon measurement options: `lowerBandFraction/minElongation/maxThicknessRatio/minMuzzleMargin/stride`.
+Alignment additionally accepts `requireConfident`; default acceptance requires weaponlike and confident geometry.
+Do not infer a working `tipFraction` option from comments alone; it is not read by this implementation.
+
+### Material bindings
+
+Call `bindings.bind_pbr_material(asset_id=..., source=..., mesh_assets=[artifact_id, ...], options=...)`.
+Use registered artifact IDs for mesh_assets, not mesh names, asset IDs, or file names.
+Bindings resolve targets to asset URLs; runtime matching uses the loaded asset identity, not arbitrary material names.
+
+Supported `options.type`: MeshStandardMaterial, MeshPhysicalMaterial, MeshBasicMaterial, MeshLambertMaterial,
+MeshPhongMaterial, MeshMatcapMaterial, MeshToonMaterial.
+
+| Option family | Supported binding keys |
+|---|---|
+| Texture slots | `map/normalMap/roughnessMap/metalnessMap/aoMap/emissiveMap/alphaMap/displacementMap/clearcoatMap/sheenColorMap` |
+| Scalars | `roughness/metalness/clearcoat/clearcoatRoughness/sheen/sheenRoughness/transmission/ior/iridescence/emissiveIntensity/normalScale/aoMapIntensity/envMapIntensity/opacity` |
+| Colors | `color/emissive/sheenColor/attenuationColor` |
+| Flags | `transparent/side/flatShading/wireframe/depthWrite/vertexColors` |
+
+Explicit texture paths override filename-based slot discovery; unknown options warn and are ignored.
+Inspect returned `binding_path/binding_url/material_type/targets/textures/scalars/colors/flags`.
+Python binding creation does not guarantee runtime acceptance: JS rejects zero matching targets, unsupported material properties, and invalid values.
+Use sRGB for color/emissive maps and linear data for normal/roughness/metalness/AO; preserve glTF texture orientation.
+
+### CPU preview and reflection
+
+CPU preview renders GLB/glTF bind pose with NumPy/Pillow, not browser PBR, animation, or Draco/meshopt geometry.
+Views: all=`+z,-z,+x,-x,+y`; horizontal=four horizontal axes; front_back=+z/-z; explicit lists support six axes.
+Axis names locate the camera, not the model's front. Directory preview selects one sorted GLB, otherwise glTF.
+Output defaults to `.a3game/previews`; payload contains views/contact_sheet/view_axes/render/source_path/output_dir.
+orientation_report adds evidence/decision/reflection; commit reviewed orientation separately with set_orientation.
+
+## 4. World drafts, publication, and browser loading
+
+`world.create_draft(spec)` takes a complete World spec; no per-entity patch/merge API exists.
+`world.build(source)` imports a registered Scene as collidable `environment_000`, publishing by default.
+Options: world_id/project_id/publish/default_spawn_point/native_scene/replace_existing/environment_artifact_id/lights/camera/environment.
+Unknown options warn; native_scene is metadata-only, and environment_artifact_id selects the scene entity, not HDRI.
+A World package is scene JSON, not an npm Gameplay Package.
+
+| Step | Read from the result |
+|---|---|
+| `create_draft` | `payload.draft` including draft_id, spec, status, metadata |
+| `validate_draft` | Resolved artifacts and counts; warnings/errors |
+| `get_scene_graph` | `payload.scene_graph` for `sceneLoader.buildWorld(graph)` |
+| `publish_draft` | `payload.package.scene_url/scene_path`, revision/package identity |
+| `list_packages` | Packages in `artifacts[]`; `payload.count` |
+
+World schema fields use snake_case, but embedded JS option dictionaries retain their documented camelCase keys,
+for example `environment.wind.gustStrength`. Runtime session messages use camelCase; do not mechanically rename either contract.
+
+| World field | Input contract |
+|---|---|
+| Top level | `world_id/name/project_id/environment/camera/lights/entities/spawn_points/metadata`; world_id defaults world_001 |
+| IDs | World/entity/light/water IDs use `[A-Za-z0-9][A-Za-z0-9_.-]*` |
+| `entities[]` | `entity_id/role/artifact_id/category/collision/cast_shadow/receive_shadow/transform/behaviors/parameters` |
+| Roles | environment, player_start, prop, npc, pickup, trigger, vehicle, weapon, effect |
+| `transform` | `{position,rotation,scale}`; vectors normalize to `{x,y,z}`; defaults zero/zero/one |
+| `lights[]` | Required type; AmbientLight/HemisphereLight/DirectionalLight/PointLight/SpotLight/RectAreaLight; light_id, color, intensity, position, target, cast_shadow |
+| `behaviors[]` | Required type; animation/spin/orbit/float/path/audio; animation validation needs artifact_id or clip |
+| `camera` | PerspectiveCamera/OrthographicCamera; fov=50, near=.1, far=2000, position, target, controls |
+| `environment` | preset, sun, sky, background, environment/background artifact IDs, intensity/blur/rotation, show_sky, tone_mapping/exposure, shadows, fog, ground, wind, water |
+| `spawn_points[]` | name, position, rotation |
+| `environment.water[]` | Unique water_id; size, position, normal_artifact_id, terrain_entity_ids, options |
+
+Collision defaults true only for environment/prop/vehicle roles. Shadow casting/receiving defaults true.
+Python vector inputs accept object vectors or at least three list/tuple elements. Rotations are radians; scale is applied outside asset normalization.
+Validation checks artifact readiness, duplicate entity IDs, and animation references; absent lights/spawns warn.
+Validation does not execute behaviors, prove navigation, compile shaders, or verify gameplay.
+
+**Current schema/loader boundaries:**
+
+- `frustum_height`: dropped by Python; direct JS graphs apply it only when switching to orthographic. Use host.setFrustumHeight after loading.
+- Controls: Python accepts none/OrbitControls/PointerLockControls/MapControls/FlyControls; JS installs only OrbitControls/PointerLockControls. Detach old controls explicitly.
+- Light/Behavior extra keys become options; nested options can nest again on round-trip. Configure advanced lights in JS if needed.
+- behaviors are metadata in `userData.a3gameWorldEntity`, not executed actions. World objects are not registered runtime entities; graph.assets does not populate AssetLibrary.
+
+### A3GameSceneLoader
+
+`new A3GameSceneLoader({host, assets})` exposes:
+
+| Method / property | Contract |
+|---|---|
+| `await loadWorld(sceneUrl)` | Fetch then build; URL is not automatically rebased through AssetLibrary |
+| `await buildWorld(sceneGraph)` | Dispose loader-owned previous World and build another |
+| `getEntityObject(entityId)` | Object3D or null |
+| `resolveSpawnTransform(index=0)` | Spawn transform with modulo indexing; pass a non-negative integer; empty list returns origin/unit scale |
+| `sceneGraph` | Original loaded graph |
+| `entityObjects/collisionTargets/spawnPoints/waterSurfaces/warnings` | Entity map, collider list, spawns, water map, diagnostic list |
+| `dispose()` | Release loader-owned content and subscriptions |
+
+Build/load returns `{worldId, entityCount, collisionTargetCount, spawnPoints, warnings}`, not the graph itself.
+Ordinary entities without artifact_id are skipped; player_start contributes a spawn.
+World rebuild does not reset session entities. Copying collisionTargets into another subsystem requires explicit updates after rebuilding.
+For subpath hosting, pass a correctly resolved World URL, such as `assets.resolveUrl('/assets/worlds/example.json')`.
+
+## 5. Browser boot, viewport, and host lifecycle
+
+Provide sized viewport and HUD containers before startup. Do not create a renderer or access document at gameplay module import time.
+
+```js
+import { bootA3GameRuntime, createRoundedBox, createSunLight } from '@a3game/playable';
+
+export async function startGame() {
+  const context = await bootA3GameRuntime({
+    container: '#a3game-viewport', hudContainer: '#a3game-hud',
+    requireManifest: false, autoBeginPlay: false, autoStart: false,
+    hostOptions: { fov: 50, fixedTimeStep: 1 / 60 },
   });
+  const { host, runtime } = context;
+  host.setEnvironment({ preset: 'gradient' });
+  host.add(createSunLight({ radius: 20 }), 'environment');
+  const ground = createRoundedBox({ width: 30, height: 0.2, depth: 30, preset: 'stone' });
+  ground.position.y = -0.1;
+  host.add(ground, 'environment');
+  host.camera.position.set(0, 4, 8);
+  host.camera.lookAt(0, 0, 0);
+  runtime.onWorldBeginPlay();
+  host.start();
+  return context;
 }
 ```
 
-`motionSource: 'none'` is a real answer that must be honoured. It is
-returned by `measureHumanoid` for a mesh wider than it is tall — the
-characteristic output of a reconstruction that inferred a ground plane —
-and rigging such a mesh produces a writhing lump rather than a fighter.
-Looking correct while frozen is a worse outcome than looking plain and
-moving.
+`bootA3GameRuntime` returns `{host,assets,sceneLoader,hud,session,runtime,world}`; world is a loader summary or null.
+Options: `container/hudContainer/baseUrl/manifestUrl/worldUrl/worldId/hostOptions/requireManifest/createHud/
+autoBeginPlay/autoStart/entityFactory`. autoBeginPlay/autoStart default true; requireManifest defaults false.
+Providing hudContainer creates one HUD unless createHud=false; reuse it. Only worldUrl triggers World loading.
+No input router, controller, or binding is created automatically. No aggregate context.dispose exists.
+Use explicit construction of public classes for decoder, session, or channel options not forwarded by boot.
 
-So hand the preference list to **`createAnimatedActor`**, not to
-`tryInstantiate`. `tryInstantiate` answers "is it staged" and stops at the
-first candidate; `createAnimatedActor` tries each in order and returns the
-first that ends up with clips, keeping a loaded-but-motionless one only as
-a last resort. Only the second question decides whether a swap is an
-improvement, and it cannot be answered before the rig is attempted.
+### A3GameRuntimeHost reference
 
-```js
-const actor = await createAnimatedActor(
-  assets, ['explorer_hero', 'explorer_ranger', 'robot_expressive'], { height: 1.8 });
-```
+Host defaults: antialias=true, shadows=true, pixelRatioCap=2, clearColor=0x101014,
+cameraType=perspective, frustumHeight=12, fov=50, near=.1, far=2000,
+fixedTimeStep=1/60, maxSubSteps=6, maxFrameDelta=.1, environmentUpdateInterval=0.
+Accept container/hudContainer, toneMapping/toneMappingExposure, and wind options as needed.
+Require finite non-negative fixedTimeStep/environmentUpdateInterval, positive maxFrameDelta, and positive integer maxSubSteps.
 
-- `A3GameHumanoidBone` / `A3GameMotionState` - the canonical bone and
-  state names. Left is `+x`, up is `+y`, forward is `-z`, and every bone
-  rests with an identity rotation, which is what makes one authored clip
-  valid for every character.
-- `createHumanoidSkeleton` - the template skeleton at a given height, as
-  fractions of that height rather than metres.
-- `measureHumanoid` - proportions, ground offset, horizontal centre, and
-  whether the mesh is a standing figure at all.
-- `autoRigHumanoid` - converts every mesh in a subtree into a
-  `SkinnedMesh` bound to one fitted skeleton, with weights from
-  distance to each bone's segment limited by that bone's influence
-  radius. A browser-side approximation of what `<REPO_PATH>/operators/gen_motion`
-  does properly with Puppeteer; it returns `null` for an
-  already-skinned model.
-- `createHumanoidClip` / `createHumanoidClipSet` /
-  `A3GAME_HUMANOID_CLIP_NAMES` - authored keyframe clips for `idle`,
-  `walk`, `run`, `jump`, `block`, `punch`, `kick`, `slash`, `hit`,
-  `death`, `aim`, `shoot`, `reload`, `draw`. Pass `hipsRest` from the
-  rig — a clip built against the template's rest position would throw
-  away the fitted skeleton's ground offset and horizontal centre on its
-  first frame.
-- `retargetClipToSkeleton` / `A3GameSourceBoneAliases` - renames a clip's
-  tracks onto another skeleton, resolving `mixamorig:` prefixes and
-  common library names. This is the *name* half of retargeting, which is
-  all a browser can do; reconciling rest poses and bone lengths needs the
-  source bind pose and belongs to `<REPO_PATH>/operators/gen_motion`.
-- `A3GameMotionLibrary` - `listMotions`, `loadClips`,
-  `loadForCharacter`, `available`, `warnings`. Renames clips to the state
-  they represent when the artifact declares one, because a game maps
-  states and `retargeted_003` names nothing.
-- `A3GameAnimationDirector.mapStateChain` / `mapStateChains` - bind a
-  state to the first clip name that exists. Necessary because the
-  authored set calls the shooting stance `aim` and the CC0
-  `robot_expressive` avatar has fourteen clips and none of them is
-  called that; a single name means one source silently plays nothing.
-
-## Visual Effects
-
-three.js ships no particle system: `Points` is a draw call and a point
-size, `Sprite` is one quad per object, and neither simulates or pools
-anything. A game that reaches for them directly ends up with one object
-per spark, a `requestAnimationFrame` of its own, and nothing disposed — so
-a firefight degrades the frame rate in proportion to how well it is going.
-
-The kit follows the two libraries that solved this for three.js already,
-without depending on either: **three.quarks** contributes the batched
-renderer, declarative systems, and render modes; **Three-VFX** contributes
-the parameter vocabulary (`size`, `colorStart`/`colorEnd`, `fadeSize`,
-`fadeOpacity`, `emitterShape`, `startPositionAsDirection`, `turbulence`,
-`friction`, `stretchBySpeed`, `blending`, `appearance`, `intensity`).
-Re-implementing it is what keeps a generated project buildable offline,
-and the parts that matter are a pooled CPU simulation feeding one
-instanced draw call.
-
-- `A3GameVfxDirector` / `createVfxDirector` - the batched owner of every
-  effect in a game: `register`, `registerAll`, `get`, `play`, `follow`,
-  `registerBeam`, `fireBeam`, `update`, `attachToHost`, `getState`,
-  `dispose`.
-- `A3GameParticleSystem` - one pooled effect, one draw call: `emit`,
-  `burst`, `start`, `stop`, `clear`, `update`, `attachToHost`,
-  `getState`, `dispose`, plus `emitterPosition` for a moving emitter.
-- `A3GameVfxPreset` - tuned definitions: `MUZZLE_FLASH`,
-  `BULLET_IMPACT`, `IMPACT_DUST`, `BLOOD_HIT`, `MELEE_IMPACT`,
-  `SHOCK_RING`, `BLOCK_SPARK`, `FOOT_DUST`, `LIGHT_ARROW_CORE`,
-  `LIGHT_ARROW_MOTES`, `LIGHT_ARROW_IMPACT`, `BLADE_SLASH`,
-  `PICKUP_SPARKLE`, `SMOKE_PLUME`, `EXPLOSION`, `TYRE_SMOKE`,
-  `SCRAPE_SPARK`, `BOOST_FLAME`. Each is a plain object, so tuning one
-  is a spread rather than a fork.
-- `A3GameBeamEffect` - pooled fading lines for tracers and laser sights.
-  A tracer is not a particle effect: it exists for two frames and has a
-  definite start and end.
-- `A3GameTrailRibbon` - a continuous surface through the positions a
-  projectile actually occupied. Particles alone cannot draw a streak,
-  because a spark stops moving the instant it is emitted and the eye sees
-  a dotted line.
-- `A3GameEmitterShape` (`POINT`, `BOX`, `SPHERE`, `CONE`, `DISK`,
-  `EDGE`), `A3GameParticleBlending` (`NORMAL`, `ADDITIVE`, `MULTIPLY`),
-  `A3GameParticleAppearance` (`DEFAULT`, `GRADIENT`, `CIRCULAR`, `RING`),
-  `A3GameParticleRenderMode` (`BILLBOARD`, `STRETCHED`, `MESH`).
-
-Choosing the right primitive:
-
-| Need | Primitive |
+| Group | Public methods |
 |---|---|
-| A burst at a point (impact, muzzle, hit) | `play(name, { position, direction })` |
-| A stream that tracks something (trail, exhaust, smoke) | `follow(name, object3D, { rate })` |
-| An instantaneous line (tracer, laser) | `registerBeam` + `fireBeam` |
-| A continuous streak behind a projectile | `A3GameTrailRibbon` |
+| Lifecycle | `await init()`, `start()`, `stop()`, `tick(forcedDelta?)`, `dispose()` |
+| Scheduling | `onTick(listener)`, `onRender(listener)`, `onResize(listener)`; each returns unsubscribe |
+| Interpolation | `interpolateObject(object)` returns unsubscribe; `resetInterpolation(object)` |
+| Scene roots | `add(object, rootName='entities')`, `remove(object)`, `getRoot(rootName='entities')` |
+| Projection | `usePerspectiveCamera({fov,near,far})`, `useOrthographicCamera({frustumHeight,near,far})`, `setFrustumHeight(height)` |
+| Controls | `attachOrbitControls(options)`, `attachPointerLockControls()`, `detachControls()` |
+| Pointer lock | `await requestPointerLock()`, `exitPointerLock()`, `isPointerLocked()` |
+| Environment | `setEnvironment(options)`, `setFog(options)`, `setWind(config,immediate=false)` |
+| Sun / IBL | `registerSunLight(light,distance?)`, `getSunDirection()`, `getSunPosition(distance=100)`, `refreshEnvironment()` |
+| Queries / evidence | `raycastFromPointer(event,targets?)`, `raycast(origin,direction,{targets,near,far})`, `captureFrame()`, `getStats()` |
 
-Three placement rules decide whether an effect reads at all:
+add returns the object; camera-switch methods return the current camera. remove detaches but does not dispose resources.
+registerSunLight returns unregister. Rays return native THREE intersections: pointer query returns one/null, raycast returns an array.
+Do not confuse these with CollisionProbe's `{hit,...}` results.
 
-1. **A burst points along the surface normal**, not along the shot.
-   Sparks that continue into the wall cannot be seen, which is why
-   `A3GameCollisionProbe.hitscan` now also returns a world-space
-   `normal`.
-2. **A tracer starts at the muzzle**, not at the camera: a line drawn
-   from the eye is inside the near plane and invisible.
-3. **A trail is not parented to what it follows.** A parented trail is
-   dragged along by the object, so the streak never forms — `follow()`
-   moves the *emitter* and leaves emitted particles in world space.
+### Fixed simulation and displayed frames
 
-Three properties are contractual, because they are what hand-rolled
-particle code gets wrong: one draw call per system; a **fixed** pool, so
-emission never allocates and a busy fight cannot leak; and no `document`,
-canvas, or GPU at construction time — the shape mask is computed in the
-fragment shader, so every class here can be constructed and stepped by a
-headless `vitest` test. Effects are decoration and must never be
-load-bearing: `play()` on an unregistered name returns `0` rather than
-throwing, so a missing effect can never be why a hit stops registering.
+- `onTick(dt,elapsed)`: simulation; register input/AI before session/entity consumption.
+- `onRender(dt,alpha)`: display only, not rules or authoritative movement.
+- tick advances and renders; negative/non-finite dt throws; excess catch-up increments droppedSeconds. fixedTimeStep=0 enables variable steps.
+- interpolateObject restores simulation transforms after display; resetInterpolation after teleports.
+- captureFrame runs onRender(0,alpha) and renders without advancing simulation.
+- getStats: frameCount/elapsedSeconds/simulationSteps/interpolationAlpha/droppedSeconds/drawCalls/triangles/geometries/textures/programs/pixelRatio/size.
+  simulationSteps is the latest frame's substep count.
+- Drive cooldowns/smoothing with dt; no extra gameplay rAF or wall-clock timers.
 
-Reference implementation of both halves:
-`<REPO_PATH>/engine_adapters/three_js/examples/motion-vfx-example/`.
+### Viewport and cameras
 
-## Bindings
+Container dimensions control renderer/projection, with window fallback and automatic resize updates; onResize receives `{width,height}`.
+Capture viewport means page size. captureFrame returns a canvas PNG data URL **without DOM HUD**; recorder page capture includes it.
 
-- `three.bindings.bind_pbr_material` - Stages a PBR texture set and
-  writes a runtime material binding for registered mesh artifacts.
-
-Bindings are written to `public/assets/bindings/<asset_id>.json`, recorded
-on each target artifact and included in manifest `material_bindings`.
-`instantiate` (therefore `tryInstantiate` and World loading) applies them
-automatically. Manual `applyMaterialBinding` remains available. Binding
-`targets` select asset URLs, not arbitrary child mesh names. Material types
-are honoured, including Standard-to-Physical upgrades; vector parameters
-such as `normalScale` remain vectors. Color maps are sRGB; data maps are
-linear data, with glTF's `flipY: false` convention preserved.
-
-Instance materials are isolated; cached geometry and source textures remain
-library-owned. Unload objects with `disposeObject3D`, then dispose the asset
-library at project shutdown. A bad binding makes strict instantiation fail;
-`tryInstantiate` retains its warning-and-null fallback contract.
-Texture slots are inferred from file names (`_basecolor`, `_normal`,
-`_roughness`, `_metallic`, `_ao`, `_emissive`, `_alpha`, `_height`).
-
-## World
-
-- `three.world.build` - Builds or imports a World from a registered Scene
-  artifact.
-- `three.world.create_draft` - Creates a persistent editable World draft.
-- `three.world.validate_draft` - Validates a World draft and its
-  referenced artifacts.
-- `three.world.publish_draft` - Publishes a validated draft as a
-  registered World package and writes its runtime scene graph.
-- `three.world.list_packages` - Lists registered World packages.
-- `three.world.get_scene_graph` - Returns the runtime scene graph
-  document for one draft without publishing it.
-
-Publishing writes `public/assets/worlds/<world_id>.json`. That document,
-not a hand-built scene, is what `A3GameSceneLoader` consumes.
-
-### World Spec Schema
-
-Coordinates are right-handed, Y-up, metres; rotations are radians.
-
-- `world_id`, `name`, `project_id`, `metadata`;
-- `environment` - `preset` (`room`/`sky`/`gradient`/`none`), `sun`
-  (`{x,y,z}`, also aims the painted sun), `sky` (palette and cloud
-  settings for the `gradient` preset — see `createSkyGradient`),
-  `background`, `environment_artifact_id`, `background_artifact_id`,
-  `environment_intensity`, `background_intensity`,
-  `background_blurriness`, `show_sky`, `environment_rotation_degrees`,
-  `background_rotation_degrees`, `tone_mapping`, `tone_mapping_exposure`,
-  `wind` (`velocity`, `gustStrength`, `gustPeriod`, `spatialScale`, `response`, `seed`),
-  `water[]` (`water_id`, `size`, `position`, `normal_artifact_id`, `terrain_entity_ids`, `options`),
-  `shadows`, `fog` (`type`/`color`/`near`/`far`/`density`), `ground`
-  (`size`/`color`/`texture_artifact_id`/`normal_artifact_id`/
-  `roughness_artifact_id`/`texture_repeat`);
-  a `preset` and an imported HDRI are complementary, not exclusive: the
-  preset can keep the visible sky while the HDRI supplies the lighting.
-  An unknown `preset` is rejected when the world is published rather than
-  showing up as a silently unlit scene in the browser;
-- `camera` - `type`, `fov`, `near`, `far`, `position`, `target`,
-  `controls`;
-- `lights[]` - `light_id`, `type`, `color`, `intensity`, `position`,
-  `target`, `cast_shadow`, plus type-specific `options`;
-- `entities[]` - `entity_id`, `role`, `artifact_id`, `category`,
-  `collision`, `cast_shadow`, `receive_shadow`, `transform`
-  (`position`/`rotation`/`scale`), `behaviors[]`, `parameters`;
-- `spawn_points[]` - `name`, `position`, `rotation`.
-
-Supported light types: `AmbientLight`, `HemisphereLight`,
-`DirectionalLight`, `PointLight`, `SpotLight`, `RectAreaLight`.
-Supported camera controls: `none`, `OrbitControls`,
-`PointerLockControls`, `MapControls`, `FlyControls`.
-Supported entity roles: `environment`, `player_start`, `prop`, `npc`,
-`pickup`, `trigger`, `vehicle`, `weapon`, `effect`.
-Supported behavior types: `animation`, `spin`, `orbit`, `float`, `path`,
-`audio`.
-
-## Plugin
-
-- `three.plugin.install` - Installs a registered generated Gameplay
-  Package into a project and synchronizes declared framework
-  dependencies.
-- `three.plugin.install_framework` - Installs the adapter-owned
-  `A3GamePlayable` Runtime Framework as `@a3game/playable`.
-- `three.plugin.list` - Lists installed project packages.
-
-Installation copies the package into `packages/<name>`, adds a
-`file:./packages/<name>` dependency, and ensures a `packages/*` workspace
-entry. Generated Gameplay Packages may depend only on the
-`@a3game/playable` public export surface. Declaring `@a3game/playable`
-makes `plugin.install` install the framework automatically.
-
-## Build
-
-- `three.build.project` - Builds the project's web bundle and returns
-  structured command and diagnostic evidence.
-
-## Testing
-
-- `three.testing.run_automation_tests` - Runs generated web tests with
-  `vitest` or `playwright`, parses a fresh report, and returns
-  authoritative matched, passed, failed, and skipped counts.
-
-The runner deletes any prior report, refuses to score a stale report,
-and fails when the report matches zero tests. The game-generation Agent
-must not invoke this namespace.
-
-## Playtest
-
-- `three.playtest.record` - Drives a running game through discovered
-  actions and writes `frames/`, `video.mp4`, and `report.json`.
-
-This answers a question `vitest` cannot: *does the game play*. A unit test
-asserts a method returns what it should; a playtest presses the keys the
-game declares it listens for and records what happened. It is evidence,
-not a benchmark — `checks` say the recording is intact, `game_state` says
-the game responded.
-
-```bash
-python -m pipeline.code_gen.playtest.run \
-    --project test_data/outputs/<game>/<run>/mechanic/<task> \
-    --url http://127.0.0.1:5188 \
-    --recorder-root <recorder_root> \
-    --browser-executable <recorder_root>/browsers/chromium-1234/chrome-linux64/chrome \
-    --ffmpeg /opt/conda/envs/torch-base/bin/ffmpeg \
-    --duration 10 --fps 20
-
-python -m pipeline.code_gen.playtest.eval --report <out_dir>/report.json
-```
-
-`run.py` records and scores nothing; `eval.py` reads a written report and
-records nothing. The engine switch is in `run.py`, so a second engine adds
-a branch there rather than anything to the three.js adapter.
-
-### This Is Not Screen Recording
-
-There is no display and no GPU render node, so WebGL runs on
-**SwiftShader** — 614 ms/frame for a first-person arena at 640x360, up to
-6 s/frame for a long view. `xvfb` + `ffmpeg` has no desktop to capture,
-and real-time recording yields a slideshow.
-
-So the simulation is driven at a **fixed timestep**, exactly one image is
-captured per step, and frames are encoded at that same rate. The video is
-smooth at the target frame rate however long each frame actually took — a
-10 s take costs about 2 minutes of wall clock. This is what
-`A3GameRuntimeHost.tick(forcedDelta)` is for.
-
-### Five Constraints That Are Not Negotiable
-
-Each was found by failing without it.
-
-1. **Only one flag combination reaches SwiftShader.** Chromium finds the
-   NVIDIA card, tries it, and fails *without* falling back to software.
-   `--use-angle=swiftshader --enable-unsafe-swiftshader --in-process-gpu
-   --override-use-software-gl-for-tests` — without `--in-process-gpu`
-   there is no WebGL context at all.
-2. **`--disable-features=CDPScreenshotNewSurface` or the renderer dies.**
-   Playwright enables it by default, and with `--in-process-gpu` it kills
-   the renderer after 40-60 screenshots — fatal, since no separate GPU
-   process is left to restart. `--disable-gpu-watchdog` covers the other
-   end: a SwiftShader frame over a second looks like a hang.
-3. **Stop the host loop, tick inside rAF, capture one frame later.**
-   `host.stop()` hands the frame loop to the recorder, but a stopped rAF
-   loop means the compositor no longer commits and every screenshot
-   blocks ~1.25 s on an internal timeout. Ticking inside a
-   `requestAnimationFrame` and waiting one further frame before capture:
-   **1335 ms/frame becomes 355 ms/frame**, same picture.
-4. **Capture through raw CDP, not `page.screenshot()`.** Playwright waits
-   for a stability condition a stopped rAF loop never satisfies;
-   `Page.captureScreenshot` returns immediately.
-5. **`libopenh264`, bitrate-driven.** No `libx264` here, so no `-crf` and
-   no `-preset`; use `-b:v 2500k`. `-r` must equal the simulation rate or
-   the video plays fast or slow, and `-start_number` stops `ffmpeg`
-   halting at the first gap.
-
-**Chromium is also missing three system libraries** —
-`libatk-bridge-2.0`, `libgbm`, `libatspi` — which cannot be installed on
-this image. They come from a conda prefix prepended to
-`LD_LIBRARY_PATH`, which is what `--recorder-root` wires up. Omitting it
-fails at browser launch and the error names Chromium, not the library.
-
-### Actions Are Discovered, Not Configured
-
-A recorder told what to press would need a new script per game. Instead
-the running game is asked, in this order, and `report.action_source` says
-which answered:
-
-| Source | What it yields |
+| Setting | Contract |
 |---|---|
-| `__A3GAME_PLAYTEST__` | A plan the game declares for itself |
-| `input.actionBindings` | The game's own verbs — `fire`, `reload`, `draw` |
-| `input.keyBindings` | Movement — `forward`, `left`, `run`, `jump` |
-| `[data-game-action]` | Menu-driven games |
-| built-in fallback | WASD + Space + click, so an unannotated game still records |
-
-`A3GameInputRouter` publishing both tables is what makes this work: they
-are the tables the running game dispatches on, so they cannot drift from
-what it actually listens for. A binding's **`event.code`** is what gets
-sent (`Digit1`, `ShiftLeft`), which is also what Playwright accepts.
-
-Beyond the verb list, three things vary per game and are read from the
-same plan:
-
-- **`sustained`** — what stays pressed for the whole take. A racer whose
-  throttle is released between actions records a car twitching on the
-  start line; the throttle is the condition the rest is demonstrated
-  under, not one of the things being demonstrated.
-- **`warmup`** — how long to tick before capturing. Countdowns, spawn-ins,
-  and a brawler that drops attacks until its round reaches FIGHT would
-  otherwise consume the take on inputs the game ignores.
-- **`look`** — whether sweeping the camera means anything. A static camera
-  in a first-person game records a wall; a side-scroller derives its
-  camera from the fighters and ignores a sweep; under drag-look a sweep
-  fights the game's own opening framing.
-
-Two rules the recorder applies, because getting either wrong records a
-game that appears not to respond:
-
-- **Movement is held; a verb is tapped.** One frame of `forward` moves a
-  character by centimetres, and a charge-and-release verb does nothing if
-  released the same frame. Conversely a discrete verb must be released —
-  a semi-automatic weapon will not fire twice, and a held key auto-repeats.
-- **Duplicate actions are dropped.** The defaults bind `KeyW` *and*
-  `ArrowUp` to `forward`; pressing each would spend half the take twice.
-
-A sustained input also constrains what can be shown alongside it:
-anything that negates it is dropped and named in `excluded_actions`
-(reverse under a held throttle demonstrates neither), and anything that
-discards progress is moved to the end rather than dropped (a respawn is
-worth seeing, one second in it throws away the run).
-
-A game with a specific story to tell should declare
-`window.__A3GAME_PLAYTEST__ = { actions: [...], sustained?, warmup?,
-look? }`, with actions shaped `{id, keys?, taps?, mouse?, click?,
-duration?}`. This is strictly better than discovery because only the game
-knows where its enemies are. Discovery is the floor, not the ceiling.
-
-### Input Must Be Real
-
-Keys go to `window`, where `A3GameInputRouter` listens; pointer events go
-to `host.container`; aiming goes through the router's public `setLook`.
-**Nothing reaches in and moves an entity** — a recording that positioned
-things directly would be evidence of tweening, not of a playable game.
-`report.game_state` makes the distinction checkable: a real take shows
-`shotsFired`/`shotsHit` moving and the player taking damage.
-
-One consequence: a synthetic `pointerdown` does not produce a real
-`click`, so a recording **never enters pointer lock**, and a first-person
-game would sit under its own "click to lock the mouse" prompt for the
-whole video. That prompt is correct for a human, so the game is not
-changed; the recorder hides that one widget for the take, and a result
-banner still re-shows itself through `onStateChanged`. **Change the
-recording, never the game, to make a video look right.**
-
-### A Silent Early Return Will Waste A Whole Take
-
-The most expensive failure here was not a crash. An autopilot read
-`entities.get('player_car')?.vehicle` where the factory stores the vehicle
-itself, so the lookup returned `undefined`, the script early-returned
-`{keys: []}` every frame, and the throttle was never touched. No error, no
-warning — a 45-minute recording of a car sitting on the start line while
-its position dropped from P1 to P4.
-
-So: **anything that degrades silently needs a path that makes it loud.**
-The recorder reports `executed_actions[].ok` and `frames` per action, and
-fails the run when nothing was captured. A custom plan should do the same
-— return a diagnostic field and `throw` if a required entity is still
-missing after the first few frames (allow a couple: entities spawn a frame
-or two after boot).
-
-**Do a 2-3 s test take before a real one.** It costs a minute and catches
-an empty video, which otherwise costs the whole recording.
-
-### Cost
-
-640x360 at 20 fps on SwiftShader, measured:
-
-| Game | Per frame | 10 s of video |
-|---|---|---|
-| First-person arena | ~0.6 s | ~2 min |
-| Racing (track, 4 cars, long view) | ~6 s | ~20 min |
-
-Frames are ~43 KB each and are the bulk of the output; the video is ~0.3
-MB/s. 1280x720 is four times the pixels and roughly four times the cost,
-not worth it for review footage. Default `timeout` is therefore 900 s.
-
-## Runtime
-
-- `three.runtime.launch_dev_server` - Starts the configured Vite dev
-  server and waits until it answers.
-- `three.runtime.stop_dev_server` - Stops dev server processes started by
-  the same runtime client.
-- `three.runtime.preview_bundle` - Serves the built bundle from `dist/`
-  for evidence capture.
-
-## Runtime Sessions
-
-- `three.runtime.sessions.join` - Creates or updates a generic
-  participant, controller, entity, and control-binding session.
-- `three.runtime.sessions.leave` - Removes a participant from the runtime
-  session.
-- `three.runtime.sessions.heartbeat` - Refreshes participant liveness.
-- `three.runtime.sessions.apply_input` - Applies normalized control input
-  to a bound runtime entity.
-- `three.runtime.sessions.snapshot` - Returns the current generic runtime
-  session state.
-- `three.runtime.sessions.reset_world` - Requests a generic runtime World
-  reset.
-- `three.runtime.sessions.clear_entity` - Removes an entity and its
-  associated bindings from session state.
-
-Runtime sessions are game-neutral and do not define Fighter, FPS, or
-Racing commands. Each call also forwards a generic command to the browser
-runtime control channel; the returned `runtime_delivery` field reports
-whether delivery succeeded, so session bookkeeping stays usable when no
-browser is attached.
-
-## Reflection
-
-- `three.reflection.inspect_artifact` - Inspects a registered staged
-  artifact through glTF document reflection and returns structured
-  metadata.
-- `three.reflection.list_object_names` - Lists animation clip and
-  material names carried by an artifact.
-
-## Observation
-
-- `three.observe.check_status` - Reports Node toolchain, package manager,
-  project, dependency, framework, dev server, and runtime channel
-  readiness.
-
-## A3GamePlayable Public JavaScript Contract
-
-Generated Gameplay Packages may import only from:
-
-```text
-@a3game/playable
-```
-
-### Enums
-
-- `A3GameControlMode` - Identifies the generic control mode assigned to
-  an entity: `EXCLUSIVE`, `PRIORITY`, `ASSISTED`, `OBSERVING`.
-- `A3GameLocomotionState` - Represents generic locomotion state for
-  runtime snapshots: `IDLE`, `WALK`, `RUN`, `JUMP`.
-- `A3GameRuntimeCommand` - Names the generic runtime commands:
-  `SYNC_SESSION`, `LEAVE_SESSION`, `APPLY_INPUT`, `WORLD_SNAPSHOT`,
-  `RESET_WORLD`, `CLEAR_ENTITY`.
-
-### Data Types
-
-Factory functions normalize and clamp their input, so the same payload is
-valid in Python, on the wire, and in the browser.
-
-- `createRuntimeInputState` - Carries normalized movement, look, action,
-  and input timing state (`moveX`, `moveY`, `run`, `jump`, `yaw`,
-  `pitch`, `sequence`, `timestampSeconds`).
-- `createEntitySpawnRequest` - Describes a generic entity spawn request.
-- `createParticipantInfo` - Describes one runtime participant.
-- `createControllerState` - Describes one generic controller.
-- `createControlBinding` - Connects a participant, controller, and
-  entity.
-- `createEntitySnapshot` - Reports observable generic entity state.
-- `createTransform` / `createVector3` - Serializable transform helpers.
-- `locomotionStateFromInput` - Derives a locomotion state from one input
-  frame.
-
-### Interfaces
-
-Each contract is an abstract base class plus a duck-type validator, so
-generated gameplay may extend it or implement the methods on any object.
-
-- `A3GameControllableEntity` - Contract implemented by game-owned
-  controllable entities: `getRuntimeEntityId`, `setRuntimeEntityId`,
-  `applyRuntimeInput`, `getRuntimeSnapshot`, optional `tick`, `dispose`.
-- `A3GameEntityFactory` - Contract implemented by game-owned entity
-  factories: `spawnRuntimeEntity(request, { host, assets, session })`.
-- `A3GameRuntimeMessageHandler` - Contract for game-owned runtime message
-  handling: `handleRuntimeMessage(messageType, payload)`.
-- `isControllableEntity` / `assertControllableEntity`,
-  `isEntityFactory` / `assertEntityFactory`,
-  `isRuntimeMessageHandler` / `assertRuntimeMessageHandler`.
-
-### Components
-
-three.js has no component system, so components attach through
-`object.userData.a3game`.
-
-- `A3GameIdentityComponent` - Stores stable runtime identity on a
-  game-owned `Object3D`; `attach`, `get`, `findInParents`,
-  `setRuntimeIdentity`.
-- `A3GameRuntimeEntityComponent` - Connects a game-owned `Object3D` to
-  runtime entity state and control; `setRuntimeEntityId`,
-  `applyRuntimeInput`, `onRuntimeInput`, `setMotionState`,
-  `getRuntimeSnapshot`, `dispose`. Drops out-of-order input frames.
-
-### Subsystems
-
-- `A3GameRuntimeSubsystem` - Registers game-owned factories and
-  coordinates generic runtime entity creation; `setEntityFactory`,
-  `registerMessageHandler`, `unregisterMessageHandler`,
-  `getSessionSubsystem`, `onWorldBeginPlay`, `deinitialize`,
-  `spawnEntity`, `handleRuntimeCommand`, `dispatchExtensionMessage`.
-- `A3GameWorldSessionSubsystem` - Owns generic participant, controller,
-  entity, binding, input, and snapshot session state;
-  `registerParticipant`, `markParticipantOffline`, `createController`,
-  `registerEntity`, `getEntity`, `removeEntity`,
-  `bindControllerToEntity`, `unbindController`, `syncSession`,
-  `enqueueInputState`, `consumeLatestInputs`, `getWorldStateSnapshot`,
-  `getSessionSnapshot`, `resetWorld`.
-
-### Engine Scaffolding
-
-Unreal supplies these natively; on the web the framework must own them.
-They are game-neutral.
-
-- `A3GameRuntimeHost` - Owns renderer, scene, camera, controls, and frame
-  loop; `init`, `start`, `stop`, `tick`, `onTick`, `onResize`, `add`,
-  `remove`, `getRoot`, `usePerspectiveCamera`, `useOrthographicCamera`,
-  `setFrustumHeight`, `attachOrbitControls`, `attachPointerLockControls`,
-  `requestPointerLock`, `exitPointerLock`, `isPointerLocked`,
-  `detachControls`, `setEnvironment`, `setFog`, `getSunDirection`,
-  `getSunPosition`, `registerSunLight`, `refreshEnvironment`,
-  `onRender`, `interpolateObject`, `resetInterpolation`, `raycastFromPointer`,
-  `raycast`, `captureFrame`, `getStats`, `dispose`.
-  `setEnvironment` also takes `backgroundTexture` (an equirectangular
-  image as the visible sky, with the mapping set for you),
-  `backgroundBlurriness`, `backgroundRotationDegrees`,
-  `environmentRotationDegrees` and `environmentIntensity`.
-- `A3GameEnvironmentPreset` - Procedural image-based lighting selected by
-  `setEnvironment({ preset })`: `ROOM` (interiors), `GRADIENT` (**the
-  outdoor default** — horizon gradient, sun, drifting clouds, and an
-  art-directable palette, convolved into the environment map so
-  reflections match the visible sky), `SKY` (the Preetham physical model:
-  correct, and therefore cloudless), `NONE`. Generated on the GPU at boot,
-  so no `.hdr` is downloaded and no licence applies. Whichever preset
-  paints a sky records where it put the sun, so `getSunPosition()` places
-  a `DirectionalLight` that agrees with it.
-- `disposeObject3D` - Recursively disposes geometries, materials, and
-  textures.
-- **Visual kit** - the look-and-feel building blocks, all game-neutral:
-  `createMaterial` with `A3GameMaterialPreset` (metal, painted_metal,
-  gunmetal, plastic, rubber, cloth, leather, wood, stone, concrete,
-  tarmac, grass, sand, glass, emissive), `createRoundedBox`,
-  `createSunLight` (shadow camera fitted to a radius), `createFillLight`,
-  `createContactShadow`, `createRadialGradientTexture` (falls back to a
-  `DataTexture` with no DOM, so headless world tests can build scenery),
-  `createSeededRandom`, `createInstancedFromModel` (one draw call for many
-  copies of one generated body), the outdoor dressing set
-  `createSkyGradient`, `createDistantRange` (closes the hard edge where a
-  ground plane stops), `createCloudLayer` (parallax the dome cannot give),
-  `createWaterSurface` (`standard` GPU waves or `low` CPU waves, shared
-  depth/normal sampling, optional planar reflection/refraction), `createTilingTexture` (fixes clamped
-  wrapping, anisotropy 1 and the colour space), and the procedural PBR
-  surface pair `createSurfaceTextures` / `createSurfaceMaterial` with
-  `A3GameSurfacePattern` (`CONCRETE`, `STEEL_PLATE`, `BLOCKWORK`,
-  `PAINTED_PANEL`) — colour, **normal** and roughness maps derived from one
-  shared height field, seamlessly tiling, computed into typed arrays so
-  they work headless. Reach for these on any large flat surface: the
-  realism of a floor or a wall is carried almost entirely by its normal
-  map, because a colour map alone cannot respond to a light the player
-  walks past, and a floor lit by a moving lamp stays visibly flat without
-  one. Deriving all three maps from the same height field is the point —
-  joints that are darker but not also recessed read as a printed pattern.
-  Plus the imported-model
-  utilities `prepareModel`,
-  `orientModel`, `forwardAxisYaw`, `A3GameForwardAxis`,
-  `A3GAME_RUNTIME_FORWARD_AXIS`, `fitToHeight`, `groundObject`, and
-  `measureObject`. Every factory that animates exposes
-  `userData.update(delta)`; only the sky dome is ticked by the host.
-- `A3GameAssetLibrary` - Loads the asset manifest and resolves artifacts;
-  `load`, `has`, `findEntry`, `requireEntry`, `listByType`,
-  `loadArtifact`, `instantiate`, `tryInstantiate`, `instantiateOrBuild`,
-  `tryLoadTexture`, `applyEnvironment`, `applyMaterialBinding`, `dispose`.
-  `tryLoadTexture` and `applyEnvironment` return `null` rather than
-  throwing when nothing was staged, exactly like `tryInstantiate`,
-  because a game must run before its art arrives.
-- `A3GameSceneLoader` - Builds a scene from a published world scene
-  graph; `loadWorld`, `buildWorld`, `getEntityObject`,
-  `resolveSpawnTransform`, `dispose`, plus `collisionTargets`, `spawnPoints`
-  and `waterSurfaces` (map keyed by `water_id`). World water is updated and
-  disposed automatically; it is not a solid collision floor.
-- `A3GameInputRouter` - Converts keyboard, pointer, and gamepad events
-  into normalized input frames; `enable`, `disable`, `reset`, `onAction`,
-  `isActionHeld`, `setLook`, `sample`, `pipeToSession`.
-  `DEFAULT_KEY_BINDINGS` maps WASD/arrows, Shift, and Space.
-- `A3GameLookMode` - Selects how mouse movement becomes look input:
-  `POINTER_LOCK` (default, first person), `DRAG` (third person, cursor
-  stays usable), `ALWAYS` (debug and headless tests).
-- `A3GameAnimationDirector` - Wraps `AnimationMixer`; `addClip`,
-  `addClips`, `listClipNames`, `mapState`, `mapStates`, `mapStateChain`,
-  `mapStateChains`, `play`, `playOnce`, `stopAll`, `update`,
-  `attachToHost`, `getState`, `dispose`.
-- **Motion kit** - `createAnimatedActor`, `findRiggedHumanoid`,
-  `A3GameMotionLibrary`, `autoRigHumanoid`, `createHumanoidSkeleton`,
-  `createHumanoidClip`, `createHumanoidClipSet`, `retargetClipToSkeleton`,
-  `measureHumanoid`, `A3GameHumanoidBone`, `A3GameMotionState`,
-  `A3GameSourceBoneAliases`, `A3GAME_HUMANOID_CLIP_NAMES`. See **Animation**
-  above: a generated character has no skeleton and no clips, and this is what
-  makes it move.
-- **Weapon orientation** - `measureWeapon`, `alignWeaponModel`,
-  `principalAxes`. A weapon's facing cannot come from the manifest:
-  `forward_axis` is a heuristic written for characters ("generated from a front
-  view, so it faces the camera") that is recorded for *every* artifact and can
-  only express quarter turns. Applied to a gun it is a coin flip whose losing
-  side points the barrel at the player's own face, and it cannot fix a mesh
-  authored at an angle — the staged pistol's barrel runs 31 degrees off +Z.
-  `alignWeaponModel` derives the barrel line from the first principal axis and
-  finds the muzzle end from the one feature every gun has: a stretch of **bare
-  barrel** that nothing hangs below, since grip, magazine and stock are all in
-  the lower silhouette. It refuses a mesh that is not weapon-shaped, because a
-  procedural box that points the right way beats an unrecognisable blob that
-  does not. Call it with `orient: false` on `tryInstantiate` so the manifest
-  heuristic does not fight it.
-- **VFX kit** - `createVfxDirector`, `A3GameVfxDirector`,
-  `A3GameParticleSystem`, `A3GameVfxPreset`, `A3GameBeamEffect`,
-  `A3GameTrailRibbon`, `A3GameEmitterShape`, `A3GameParticleBlending`,
-  `A3GameParticleAppearance`, `A3GameParticleRenderMode`. See **Visual
-  Effects** above.
-- `A3GameCollisionProbe` - Raycast and volume primitives that stand in
-  for the physics engine three.js does not ship; `setTargets`,
-  `addTarget`, `removeTarget`, `sampleGround`, `resolveMove`,
-  `stepCharacter`, `hitscan`, `overlapSphere`, `sweepSphere`. `hitscan`
-  reports `hit`, `point`, `object`, `distance`, `entityId`, and a
-  world-space `normal` for impact effects.
-- `resolveEntityId` - Walks up an `Object3D` hierarchy for the nearest
-  runtime entity id, which is how every probe names what it found.
-- `A3GameHudLayer` - DOM overlay HUD; `addText`, `addBar`, `addPanel`,
-  `addBanner`, `addCrosshair`, `setValue`, `setValues`, `setVisible`,
-  `remove`, `getState`, `dispose`. Widgets sharing an anchor stack in a
-  column instead of overlapping. Every widget writes `data-a3game-*`
-  attributes so end-to-end tests assert HUD state without screenshots.
-- `A3GameRuntimeChannel` - Browser side of the runtime control channel;
-  `connect`, `disconnect`, `dispatch`, `getHistory`. It always installs
-  `globalThis.__A3GAME_RUNTIME__`, which is how generated tests drive
-  commands deterministically.
-- `bootA3GameRuntime` - Boots host, assets, world, HUD, session, and
-  runtime in the conventional order.
-
-### Choosing a Collision Primitive
-
-Picking the wrong one is the most common gameplay bug in a generated
-three.js game.
-
-| Question | Primitive |
-|---|---|
-| What is under me? | `sampleGround` |
-| Can I move there? | `resolveMove` / `stepCharacter` |
-| What did I shoot, instantly? | `hitscan` |
-| What is **near** me? (pickups, melee arcs, chests, checkpoints, triggers) | `overlapSphere` |
-| Where did my projectile go this frame? | `sweepSphere` |
-
-`overlapSphere` treats geometry-free markers as points and meshes as coarse
-bounding volumes. `sweepSphere` continuously tests a finite-radius sphere
-against static mesh triangles (faces, edges and vertices), including
-transformed instances. Results include surface `point`, world `normal`,
-`centre`, centre travel `distance`, `timeOfImpact` in [0,1], and
-`penetrationDepth`. Invisible collider meshes remain collidable.
-
-`resolveMove`/`stepCharacter` use an overlapping sphere-chain character proxy
-with iterative sliding and ceiling checks. This is not an exact capsule or a
-rigid-body solver: use simplified static colliders, not animated skins; it
-provides no stacking, joints or full moving-platform dynamics. Refresh geometry
-attributes with `needsUpdate` after editing collider vertices.
-
-### Boot Options
-
-`bootA3GameRuntime` accepts `container`, `hudContainer`, `manifestUrl`,
-`worldUrl`, `worldId`, `hostOptions`, `entityFactory`, and:
-
-- `requireManifest` - fail instead of warning when no asset manifest
-  exists. Default `false`;
-- `createHud` - suppress the built-in HUD layer. Default: create one when
-  `hudContainer` is given;
-- `autoBeginPlay` / `autoStart` - hand tick ordering and loop start to
-  the game. Both default `true`.
-
-It returns `{ host, assets, sceneLoader, hud, session, runtime, world }`.
-Reuse `context.hud`; constructing a second `A3GameHudLayer` on the same
-container stacks two overlay roots and makes `getState()` ambiguous.
-
-### Simulation and rendering
-
-`hostOptions` defaults to `fixedTimeStep: 1/60`, `maxSubSteps: 6`,
-`maxFrameDelta: 0.1`. `fixedTimeStep: 0` keeps the legacy variable-step mode.
-`onTick(dt, elapsed)` receives simulation time advanced once per substep.
-Negative or non-finite deltas are rejected; excess catch-up time is dropped
-and exposed by `getStats().droppedSeconds`, not silently simulated in one jump.
-Recorders should use small explicit deltas rather than one large time jump.
-
-Use `onRender(dt, alpha)` for display-only camera updates after simulation.
-`interpolateObject(object)` opt-in interpolates position, rotation and scale
-for rendering, then restores the simulation transform. It returns an
-unsubscribe function; call `resetInterpolation(object)` after teleporting.
-Do not probe collisions or write simulation state from `onRender`.
-`captureFrame()` uses the same display path without advancing simulation.
-
-### Shared wind and effects
-
-`host.wind` is one deterministic world-space air velocity field (metres/second,
-velocity points **towards** the downwind direction). Set `environment.wind`
-in World specs or `host.setWind({velocity:[3,0,1], gustStrength:0.5,
-gustPeriod:6, spatialScale:30, response:1.5, seed:7})`. Changes ease towards the
-new velocity; `setWind(config,true)` applies immediately. The host advances it
-once per simulation step. Never update it again from an effect.
-
-`A3GameWindField.sample(worldPosition,time,target)` queries air velocity;
-`getState()` exposes time and integrated displacement. This is a procedural
-wind field, not an obstacle-aware atmospheric solver.
-
-- Sky clouds use accumulated wind displacement. Near clouds opt in with
-  `clouds.userData.attachToHost(host)`; do not additionally tick them manually.
-- Particle `windResponse` (1/seconds, default 0) relaxes velocity towards air
-  velocity. Standalone `attachToHost` and `A3GameVfxDirector` share host wind.
-  `SMOKE_PLUME` and `FIRE_PLUME` presets opt in; sparks can use a smaller value.
-- `bindVegetationWind(root,host,{flexibility,maxBend,response,phase})` bends a
-  plant around its authored root without translating it. It returns a detach
-  function and restores the rest pose on dispose. Shadows use the same transform.
-- Attached water responds smoothly to wind in its fine waves/normal motion;
-  existing swell remains continuous. Air velocity is **not** water current.
-- `createLightningArc({from,to,segments,period,seed})` returns a Group with
-  `userData.update/attachToHost/getState/dispose`. Electrical endpoints remain
-  anchored; only path jitter and flash timing vary. Do not advect bolts with wind.
-
-### Synchronized lighting
-
-`createSunLight()` is automatically registered when added through `host.add`;
-set `syncEnvironment: false` for an independent art light. Existing direction
-lights can use `registerSunLight(light, distance)`. World loading syncs its
-first directional light by default; `options.sync_environment` overrides this.
-Changing `setEnvironment({sunPosition})` updates the existing sky and registered
-sun lights. HDRI rotation is included when interpreting its sun metadata.
-
-`refreshEnvironment()` refreshes procedural IBL from the current sky clock.
-Optional `hostOptions.environmentUpdateInterval` refreshes periodically in
-simulation seconds (default `0`, on-demand only). Imported HDRIs remain static
-and are never replaced by this refresh. Sky output uses the renderer's color
-conversion; PMREM remains linear HDR, without a second gamma/tone-map bake.
-
-### Making a Generated Game Look Good
-
-three.js ships **no 3D models** in its npm package — only loaders and
-procedural helpers. So a generated game's appearance is decided by the
-framework calls below, not by finding a model to load. In rough order of
-visible effect per line of code:
-
-1. **An environment map.** `host.setEnvironment({ preset: 'room' })` for
-   an interior, `{ preset: 'gradient' }` for outdoors. Both are generated
-   on the GPU at boot — no `.hdr` download, no licence. Without one, every
-   PBR material has nothing to reflect and reads as flat plastic however
-   many lights are added. This is the single largest factor.
-   Prefer `gradient` over `sky` outdoors: `sky` is the Preetham model, so
-   it is physically correct and completely **cloudless**, and an empty
-   gradient overhead is the clearest single tell of a generated scene.
-   See *Sky, IBL and Outdoor Dressing* below.
-2. **Calibrated tone mapping.** The default is `NeutralToneMapping`;
-   `ACESFilmicToneMapping` is an alternative, not an automatic realism
-   upgrade. Tune exposure against the actual lights and HDRI. Do not add
-   a second gamma conversion or bake tone mapping into environment maps.
-3. **A fitted shadow camera.** `createSunLight({ radius })`. The stock
-   `DirectionalLight` shadow camera is a 10-metre box at the origin, so a
-   200-metre track gets no shadow at all.
-4. **Bevelled edges.** `createRoundedBox()` instead of `BoxGeometry`. A
-   mathematically sharp edge cannot catch a highlight; nothing
-   manufactured has one.
-5. **Honest materials.** `createMaterial('painted_metal')` and friends.
-   `metalness: 0.5` describes no real substance — a surface is a
-   conductor or it is not. Car paint is a dielectric with a clearcoat.
-6. **Contact shadows.** `createContactShadow()` grounds an object for one
-   draw call, and works with shadow maps switched off.
-
-Only then does imported art help, and it only helps if it is
-*game-ready*. Two things decide that, and both are recorded per artifact
-rather than guessed at runtime: it has to be the right size, and it has
-to face the right way. A generated mesh at the wrong scale reads as a
-toy; one facing the wrong way makes the character strafe for its entire
-walk cycle. Neither is a rendering problem, and no lighting change hides
-either.
-
-### Sky, IBL and Outdoor Dressing
-
-An outdoor scene loses its realism in four specific places, and none of
-them is the geometry. Fix them in this order.
-
-**1. The sky.** `preset: 'gradient'` installs a stylised dome — horizon
-gradient, sun disc and glow, and drifting fbm clouds — and convolves the
-*same* dome into the environment map, so what a car bonnet reflects is
-what the player sees above it. The host ticks the cloud clock itself.
+| Perspective fov | Vertical degrees; visible height=`2*d*tan(fov*PI/360)`, width=height×aspect |
+| Orthographic frustumHeight | Visible world height; width=height×aspect |
+| Camera switch | Copies position/quaternion/parent and controls.object, not zoom/layers |
+| Orbit options | target/enableDamping/maxPolarAngle/minDistance/maxDistance only |
+| Ownership | One camera driver; do not combine controls with independent yaw/pitch writes |
+| Pointer lock | Requires a user gesture |
+
+## 6. Lighting, sky, materials, and texture scale
 
 ```js
 host.setEnvironment({
-  preset: 'gradient',
-  sunPosition: sunDirection,           // also aims the painted sun
-  sky: {
-    zenith: 0x2f6fbd, horizon: 0xd3e2ee, ground: 0x5d6a52,
-    sunColor: 0xfff0cf, sunSize: 0.006, sunGlow: 220,
-    cloudCoverage: 0.44,               // lower = more cloud
-    cloudOpacity: 0.92, cloudScale: 1.35, cloudSpeed: 0.008,
-    haze: 0.4,                         // forward scattering near the sun
-  },
-  toneMapping: 'ACESFilmicToneMapping',
-  toneMappingExposure: 0.78,
+  preset: 'gradient', sunPosition: { x: -0.5, y: 0.8, z: -0.3 },
+  sky: { zenith: 0x2f6fbd, horizon: 0xd3e2ee, cloudCoverage: 0.44 },
+  toneMapping: 'NeutralToneMapping', toneMappingExposure: 1,
 });
-host.setFog({ type: 'Fog', color: 0xc2d7e4, near: 70, far: 240 });
+host.setFog({ type: 'Fog', color: 0xd3e2ee, near: 70, far: 240 });
 ```
 
-Tint the fog to `sky.horizon`. Fog in any other colour puts a grey band
-in front of the sky instead of dissolving distance into it.
+Presets: room (interior IBL), gradient (adjustable sky/clouds), sky (physical sky), none.
+Combine IBL and direct light; emissive materials are not light sources. Default tone mapping: NeutralToneMapping.
 
-**One sun direction, used four times** — the dome, the
-`DirectionalLight`, the environment map and the fog. `host.getSunPosition(d)`
-and `host.getSunDirection()` return what the installed sky actually
-painted, so a light can be placed from it instead of guessing. Shadows
-falling towards the light source is the most common lighting bug in a
-generated outdoor scene, and it has no other cause.
-
-**2. Real captured lighting.** A 1k HDRI supplies bounces no light rig
-reproduces — a forest floor throwing green up onto a character's chin.
-Keep the dome as the *visible* sky and import only the lighting:
-
-```js
-await assets.applyEnvironment(host, 'env_forest_sunrise', {
-  background: false,             // the gradient dome keeps the sky
-  environmentIntensity: 0.85,
-});
-```
-
-`applyEnvironment` also reads the entry's `sun: {elevation, azimuth}`
-hint and aligns `host.sunDirection` to it. To use a photograph *as* the
-backdrop instead, pass `background: true` (or a separate
-`backgroundReference`), and reach for `backgroundBlurriness` to keep
-sharp reflections without the player reading the JPEG artefacts.
-
-**3. Surfaces.** `assets.tryLoadTexture(ref, { repeat: 34 })` returns
-`null` when nothing was staged and otherwise fixes the three settings
-that are wrong by default: clamped wrapping (so `repeat` only stretches
-the last pixel), `anisotropy: 1` (so a ground plane is mush at every
-angle a player actually looks from), and the colour space. Multiply a
-photograph over existing vertex colours rather than replacing them — the
-height-and-slope palette is what makes the terrain read as terrain, and
-the texture is what gives a sense of speed.
-
-**4. The horizon and the water.**
-
-```js
-host.add(createDistantRange({ radius: 300, height: 96, color: 0x5c6f86,
-                              topColor: 0xa9bccf, seed: 91 }), 'environment');
-const clouds = createCloudLayer({ count: 16, radius: 260, height: 110 });
-host.add(clouds, 'environment');
-clouds.userData.attachToHost(host);
-
-const lake = createWaterSurface({
-  quality: 'standard', size: 55, normalMap, waveHeight: 0.07,
-  terrainHeight, reflection: true, refraction: true,
-  reflectionResolution: 256, reflectionUpdateRate: 30,
-});
-host.add(lake, 'environment');
-lake.userData.attachToHost(host);
-```
-
-`createDistantRange` closes the hard terrain edge. `createCloudLayer`
-adds near-cloud parallax. `createWaterSurface` returns a `Mesh` and keeps
-`userData.update(dt)` compatibility; do not both attach and manually tick it.
-
-Water contracts:
-- `standard` (default): GPU analytic waves/normals, non-metallic material
-  with water IOR 1.333, depth absorption and shoreline foam. `low` uses a
-  smaller CPU-deformed mesh and disables planar passes.
-- `terrainHeight(x,z)` supplies the world-space bottom. The same cached
-  bottom grid controls rendering and CPU depth queries. No callback means
-  constant `depth` (default 5 metres), not automatic terrain excavation.
-- `sampleHeight(x,z)`, `sampleNormal(x,z)`, `sampleDepth(x,z)` live in
-  `userData`, accept world coordinates, and return `null` outside the surface.
-  Dry terrain has zero depth. Transforms trigger a depth refresh; call
-  `refreshDepth()` after changing terrain geometry.
-- `reflection` and `refraction` are opt-in extra render passes, disabled
-  by default. Resolution defaults to 256, update rate to 30 simulated Hz.
-  Refraction currently requires a perspective camera. Their offscreen
-  buffers stay linear; final output is converted once by the renderer.
-- `addRipple(x,z,strength,radius)` adds bounded, decaying interactive waves;
-  the default pool holds eight ripples and reuses slots.
-- `computeBuoyancy({points, centerOfMass, velocity, angularVelocity,
-  volume, draft, density, gravity, damping})` returns force, torque and
-  submerged fractions. Positions are world-space metres, forces newtons;
-  `applyBuoyancy(body, options)` calls `body.applyForce(force, worldPoint)`.
-  The game must integrate motion/gravity or connect a rigid-body backend.
-- `getState()` reports wave time and render-target counts. `dispose()`
-  releases owned targets and removes the tick subscription; calling
-  `disposeObject3D(lake)` also performs this cleanup.
-
-This is analytic surface water with approximate multi-point buoyancy,
-not a volume-conserving fluid solver. Wave sampling is continuous while
-rasterized geometry approximates it with triangles; increase segments only
-where close-up silhouettes need them.
-
-World `environment.water[]` automatically builds, ticks and disposes surfaces.
-Choose the bottom explicitly with `terrain_entity_ids`; otherwise entities with
-`parameters.waterTerrain: true` are used, falling back to World ground. General
-collision meshes (bridges, roofs, moving props) are **not** water bottoms.
-`refreshDepth()` refreshes the selected terrain matrices and sampled heights.
-Access surfaces via `sceneLoader.waterSurfaces.get(water_id)`; water is not a
-solid floor.
-
-`current` is an independent world-space water velocity `[x,y,z]` in m/s or a
-callback `(position,time,target) => Vector3`. `sampleVelocity(position,time?,target?)`
-combines it with wave vertical velocity. `sampleBottom(x,z)` returns terrain
-height. `flowSpeed` still means texture scrolling, not current.
-
-Buoyancy points represent the bottom of equal-volume columns of height `draft`.
-Only their overlap with `[bottom,surface]` displaces water; completely buried
-columns receive no buoyancy. Drag is relative to water velocity, not the origin.
-
-`A3GameWaterBody({water,object,mass,volume,size,velocity,onEnterWater})` integrates
-a lightweight box: gravity, multi-point buoyancy/torque, box inertia, drag and
-bottom contact. `object` origin is its centre of mass; units are metres/kg/s.
-Call `attachToHost(host)` **after** attaching the water, or `update(dt)` yourself,
-not both. Water entry produces a ripple and calls `onEnterWater` once per entry;
-use the callback for splash particles. Dispose the body separately. This is not
-full rigid-body collision, hull hydrodynamics or a guarantee against all fast
-water-crossing cases.
-
-### Viscous surface flow
-
-`createSurfaceFlow({preset:'lava'|'blood',size:[width,length],position:[x,y,z],
-resolution:56,heightMap,viscosity,mobility,sources})` returns a Mesh with
-`userData.update`, `addSource`, `attachToHost`, `getState`, `getBedGeometry`, `dispose`.
-It transports non-negative liquid depth between neighboring cells according to
-hydraulic head and mobility/viscosity. A source `{x,z,radius,volume,rate,duration}`
-adds cubic metres immediately and/or per second; `addSource` returns a stop
-callback. Closed boundaries conserve volume; open boundaries account for outflow.
-`getState().massError` checks `volume + outflow - initialVolume - totalInjected`.
-
-`createSurfaceFlowTerrain(flow,materialOptions)` creates the matching bed mesh.
-Choose world placement at construction; do not transform the fluid independently
-of its heightfield. Lava heat is transported and decays, changing emissive cracks
-and crust; the blood preset is simply red liquid, not a wound/character system.
-Lava additionally uses `yieldSlope` (default 0.025, a threshold on depth × surface
-slope, not an angle), `thermalViscosity` (5), `referenceDepth` (0.25 m) and
-`solidificationTemperature` (0.28 on the normalized 0–1 temperature scale).
-Cooling increases viscosity; below the solidification threshold transport stops
-without deleting mass, and a hot source can soften cooled cells again. Thicker
-material pushes the front more readily than a thin film. These are game-tunable
-coefficients, not calibrated SI viscosity or Celsius values. `getState()` exposes
-these settings and copied `materialCoords`; the renderer uses transported labels
-for moving crust detail. Keep substantial dark basalt between bright hot openings,
-and light nearby terrain from actual hot regions rather than a fixed red spotlight.
-This is a viscous heightfield transport approximation, **not** full Navier–Stokes,
-SPH, splashing, overhangs or a calibrated material-viscosity solver.
-
-**Carve water into the height field, not on top of it.** Gameplay asks
-the terrain function where the floor is; a blue plane laid over an
-unchanged height field puts the shoreline in a different place for the
-player than for the physics.
-
-#### Acquiring the files
-
-`<REPO_PATH>/operators/gen_3d_scene/funcs/scene_assets.py` is a vetted catalogue of
-CC0/MIT equirectangular HDRIs, sky photographs, tiling ground textures,
-VFX sprites and open-source scene geometry, with a downloader and a
-stager that writes `manifest.json` entries the asset library already
-knows how to load.
-
-```bash
-python -m operators.gen_3d_scene.funcs.scene_assets \
-    --games game_archer_explorer --assets env_forest_sunrise tex_grass_ground
-```
-
-Licences travel into the manifest as `licence` and `attribution`.
-Anything CC-BY **must** display its credit — `scene_assets.attribution_lines(project)`
-returns exactly what a project owes. CC-BY-NC and bespoke licences
-(DamagedHelmet, Duck, Sponza) were rejected and are not in the
-catalogue.
-
-### Upgrading Appearance With Meshy or Tripo
-
-TRELLIS.2 reconstructs a shape from **one** view, so on a synthetic
-reference the silhouette is right and everything the camera could not see
-is guessed. In-game the guess reads as holes: a character missing the back
-of its hood, a pistol whose slide dissolves into the grip, trees with a
-bite out of the canopy. No lighting change hides an unclosed mesh.
-
-Meshy and Tripo are text-to-3D services with a multi-view prior and a
-texture pass, so for "make this prop look good" they are strictly better.
-`<REPO_PATH>/operators/gen_3d_scene/funcs/appearance_assets.py` holds the plan,
-generation, GLB optimisation and staging:
-
-```bash
-export MESHY_API_KEY=...        # or TRIPO_API_KEY, with --provider tripo
-python -m operators.gen_3d_scene.funcs.appearance_assets \
-    --games game_arcade_racer --workers 4
-```
-
-Entries re-generate an `asset_id` a game **already references**, so
-gameplay needs no change to benefit, and the existing `artifact_id` is
-kept so anything that resolved it keeps working. The previous mesh is
-saved beside it as `*.glb.trellis.bak`.
-
-Four things about this are worth carrying to the next job:
-
-* **Prompt for the whole object, and forbid what must not be in it.**
-  "single object", "complete", "standing upright", "no character", "no
-  hand". A bow prompt without the last one returns an archer about a
-  third of the time.
-* **Ask for the shell when the thing has moving parts.** A fused car
-  cannot steer or spin a wheel, so `racer_car_body` is prompted with "no
-  wheels, hollow open wheel arches" and `racer_wheel` is generated
-  separately. The shell carries the shape and the paint; the wheels go
-  inside the pivots the handling code already drives. Generate the shell
-  and the moving part as two assets — never one.
-* **Shrink the textures — but by how close the player gets.** Both
-  services return 2048² PBR sets, so one tree arrives as 9 MB and a
-  dressed forest is a 60 MB download before the first frame.
-  `appearance_assets.optimise()` resizes to `TEXTURE_BUDGET_BY_ROLE` and
-  stubs the all-black emissive map these services emit, which also removes
-  the self-lit look that `emissiveFactor: [1, 1, 1]` gives everything.
-  Two rules that a blanket "halve everything" gets wrong:
-  - **A first-person view model is not scenery.** It is 20 cm from the
-    camera and fills a quarter of the screen for the whole match, so
-    `weapon` and `vehicle` are budgeted at 1536 while `prop` is 1024.
-    Measured on the pistol at quality 92: 2048 costs 6.2 MB, 1536 costs
-    1.0 MB, 1024 costs 0.5 MB — so 1536 buys 2.25x the pixels of the 1024
-    that looked soft, for a megabyte.
-  - **Never be the one who introduces the loss.** A resize is a *second*
-    lossy generation, and that is what artifacts come from — the original
-    softness was quality 88 on top of a halved resolution, not JPEG as
-    such. So re-encode once, at 92, and preserve the source's format
-    class: keep a data map (normal, metallic-roughness, occlusion)
-    lossless only if the service sent it lossless. Converting Meshy's
-    already-JPEG normal map to PNG cannot undo the artifacts already in it
-    and cost 3.3x the bytes to prove it.
-* **Declare the height from the chassis, not from reality.** A generated
-  mesh arrives normalised into a unit box, so `scale_hint_metres` is the
-  only thing preventing every prop being one metre tall — and it must
-  match what the simulation assumes. The racer's wheel is authored at
-  0.68 m because that is twice the `TYRE_RADIUS` its pivot heights and its
-  rolling rate are built from, not because a tyre is that big.
-* **Do not declare a `forward_axis` you cannot know.** A text-to-3D car
-  arrives on an arbitrary axis — the staged shell came out lying along X —
-  so a declared forward axis is a guess, and a wrong guess is worse than
-  none: `orientModel` applies it, the game's own alignment then measures
-  the already-turned mesh and applies a second correction, and the two
-  compose into a third direction. Leave it empty and let exactly one thing
-  own the orientation.
-* **A cue that measured nothing must not get a vote.** Where orientation
-  *is* derived at runtime, score each cue by how much signal it found and
-  let the strongest decide. The racer's old rule — "the roof sits behind
-  the middle of the wheelbase" — is true of front-engined cars and
-  degenerate on the mid-engine shell the prompt asks for, where the roof
-  and body centroids agree to within 0.1 mm. It was deciding the car's
-  facing from that 0.1 mm. The nose-is-lower-than-the-tail cue measured
-  0.29 on the same mesh, and holds for saloons and supercars alike.
-
-**A character is the exception.** A raw generated humanoid has no
-skeleton, so it can only be auto-rigged, and `autoRigHumanoid` refuses a
-mesh whose height/width is under about 1.45. Prompt for a **relaxed
-A-pose with empty hands** — a figure reconstructed holding a bow measured
-0.78 and could never be rigged. Pass a candidate list and let the runtime
-decide:
-
-```js
-createAnimatedActor(assets, ['explorer_hero', 'explorer_ranger', 'robot_expressive'])
-```
-
-An array is tried **in order**, and the first candidate that ends up with
-clips wins; a loaded-but-motionless one is kept only as a last resort.
-That is deliberately different from `assets.findEntry`, which stops at
-the first staged candidate: for a prop "whatever was staged" is right,
-but for a character "the better-looking mesh, unless it cannot be made to
-move" is only answerable after trying to rig it, and a character that
-cannot move is worse than a plainer one that can.
-
-### Sourcing Imported Models
-
-three.js ships no models, so there are exactly two ways to get one, and
-they are not interchangeable.
-
-**Generate it** — `Gen3DObjectOperator.run_art_plan`, driving TRELLIS.2
-through `<REPO_PATH>/models/gen_3d_object/trellis_2_model.py`. This is the default for
-a game's own content, because it produces the props the design asked for
-rather than the three that happen to be free:
-
-```python
-from models.gen_3d_object.trellis_2_model import Trellis2Model
-from operators.gen_3d_object.operator import Gen3DObjectOperator
-
-op = Gen3DObjectOperator(model=Trellis2Model(model_path="…/TRELLIS.2-4B"))
-op.run_art_plan("game_archer_explorer", image_model=qwen_edit)
-```
-
-Each entry of the art plan
-(`<REPO_PATH>/operators/gen_3d_object/funcs/art_plan.py`) names a subject, an asset
-type, **a height in metres**, and a **role**. The operator generates a
-concept image, reconstructs it, strips the floor the reconstruction
-invents, writes an ordinary `3d_object` task output, imports it, and
-renders the review sheet.
-
-Its budgets differ from the model wrapper's showcase defaults, and the
-role is what picks them — because what costs a frame is how *often* a
-thing is drawn, not what it is:
-
-| Role | Triangles | Texture |
-|---|---|---|
-| `avatar` | 40 000 | 2048 |
-| `weapon` / `prop` / `landmark` | 20 000 | 1024 |
-| `scenery` (repeated dozens of times) | 8 000 | 1024 |
-| *model wrapper default* | *1 000 000* | *4096* |
-
-A million-triangle chair spends a frame budget where nobody looks, and a
-4K atlas is 16 MB of download per prop. Get this right **before**
-generating: a textured mesh cannot be decimated afterwards without
-throwing its UVs away, because TRELLIS.2 bakes the texture after it
-decimates.
-
-`forward_axis` is recorded as `+z` with `verified_by="heuristic"`, so
-`needs_vision_check` stays true until an agent looks. A guess labelled as
-verified is worse than no record, because it stops anyone checking.
-
-Expect a **floor** in the raw output. Image-to-3D crops its input to the
-subject's silhouette, so a standing figure touches the frame edge and the
-model infers a ground plane — a fifth of the triangle budget, and a 2.4 m
-grey pancake once scaled to a character. `funcs/mesh_cleanup.py` removes
-it as part of every run and reports what it took; it refuses when the
-diagnosis would cost more than 40% of the mesh, on the grounds that the
-object is then genuinely a flat thing.
-
-Prompts must describe **one object, facing the camera, on a plain
-background, uncropped, evenly lit**. That is not taste. Single-image
-reconstruction turns the photographed side into a fixed axis of the
-output, bakes cast shadows into the albedo permanently, invents whatever
-the image did not show, and simply ends the mesh where a crop ended the
-subject.
-
-Generation is the wrong tool for anything that must **articulate**: the
-output is one fused body, so a car's wheels cannot spin and a chest's lid
-cannot open. Generate the shell, keep moving parts as primitives driven
-by gameplay, and swap only the visual.
-
-A humanoid is the one exception, and only because the runtime works around
-it: `autoRigHumanoid` fits a skeleton to a static generated body and skins
-it, so a generated character can play the authored clip set. That is an
-approximation of `<REPO_PATH>/operators/gen_motion`, not a replacement — and it refuses
-a mesh whose proportions are not a standing figure. See **Animation**.
-
-**Download it** — `<REPO_PATH>/operators/gen_3d_object/funcs/asset_pack.py`, a
-curated, licence-checked pack of three CC0 models:
-
-```python
-from operators.gen_3d_object.funcs import fetch_asset_pack
-fetch_asset_pack(games=["game_archer_explorer"])
-```
-
-Two upstream sources have terms clear enough to use: the
-`mrdoob/three.js` example models, and `KhronosGroup/glTF-Sample-Assets`.
-Judge a candidate on three things before staging it:
-
-| Check | Why it decides the answer |
+| Control | Contract |
 |---|---|
-| Licence | CC0 and CC-BY are usable, with attribution recorded. CC-BY-**NC**, SCEA, and CryEngine terms are not. Mixamo-derived characters carry terms that do not travel with the file. |
-| File size | A 17 MB prop with a 4K texture set that occupies fifty pixels is all download and no gain. A good character is a few hundred KB. |
-| Node hierarchy | A model fused into **one mesh** cannot be animated by gameplay. A "car" whose wheels are part of the body can never steer or spin them, and looks worse than a bevelled primitive that can. |
+| sunPosition | Non-zero `{x,y,z}`/Vector3 toward the sun, not an array |
+| `createSunLight({radius,mapSize,near,far,position,target,intensity,syncEnvironment})` | Main light/shadow region; host.add registers synchronization; false disables it |
+| `createFillLight({skyColor,groundColor,intensity})` | HemisphereLight |
+| getSunPosition | Origin-relative; registered directional lights synchronize around their own targets |
+| setEnvironment({sunPosition}) | Update sky and registered lights |
+| refreshEnvironment / environmentUpdateInterval | Rebuild procedural IBL manually/on simulated interval, not imported HDRI |
+| assets.applyEnvironment(host,ref,options) | background:false preserves sky; options include environmentIntensity, backgroundReference, backgroundBlurriness, shared rotationDegrees |
+| host.setEnvironment | Use here for separate backgroundRotationDegrees/environmentRotationDegrees or showSky:false + background |
 
-Verified examples: `RobotExpressive.glb` (CC0, 456 KB, 14 clips, faces
-+Z, 1.8 m subject) is an excellent character; `ToyCar.glb` (CC0, 5.4 MB)
-is a beautiful *prop* and a useless vehicle, because it is a single mesh.
+Use sRGB color maps and linear data maps; no double gamma or display tone mapping in PMREM.
 
-Both paths end the same way: an asset task output, a public
-`ThreeClient.assets` import carrying `forward_axis` and
-`scale_hint_metres`, and a review sheet. Neither copies a file into
-`public/` itself.
+| API | Important parameters / ownership |
+|---|---|
+| `createMaterial(preset, overrides={})` | Standard/Physical PBR; unknown preset throws |
+| `createRoundedBox(options)` | width/height/depth/radius/segments/material/preset/render flags; visible bevels do not replace simple colliders |
+| `createSurfaceTextures(options)` | pattern/size/repeat/color/jointColor/roughness/cells/contrast/normalStrength/seed/renderer/anisotropy |
+| `createSurfaceMaterial(options)` | Surface textures plus normalScale/metalness/envMapIntensity; additional material overrides in options.material |
+| `createTilingTexture(texture, options)` | In-place repeat/rotation/srgb/colorSpace/anisotropy setup |
+| `createRadialGradientTexture({resolution=128,color})` | Canvas in browser, DataTexture fallback without DOM; use a CSS color string for browser color |
+| `createContactShadow({radius,opacity,...})` | Visual contact-shadow mesh; keep outside collision targets |
 
-### Loading Imported Models
+`A3GameMaterialPreset` names: METAL, GUNMETAL, PAINTED_METAL, PLASTIC, RUBBER, CLOTH, LEATHER, WOOD,
+STONE, CONCRETE, TARMAC, GRASS, SAND, GLASS, EMISSIVE (values are corresponding lowercase names).
+`A3GameSurfacePattern`: CONCRETE, STEEL_PLATE, BLOCKWORK, PAINTED_PANEL.
+Surface size is pixels; repeat is a scalar or `[u,v]`, not metres. Derive repeat from actual mesh dimensions and desired tile size.
+Texture sets return `{map,normalMap,roughnessMap,height,size,dispose}`. Use the shared height field for consistent relief.
+The set is also available as `material.userData.surface`; material.dispose alone does not dispose its textures.
+Normals affect lighting, not geometry or collision. Material roughness multiplies roughnessMap values.
 
-Two calls cover every case, and both leave the game playable with an
-empty manifest:
+`createSkyGradient(options)` supports zenith/horizon/ground, sunDirection/sunColor/sunSize/sunGlow,
+cloudCoverage/cloudOpacity/cloudScale/cloudSpeed/cloudColor/cloudShadow/cloudHeight, haze, and windField.
+Use its userData.update(dt,wind?) and setSunDirection(direction) only when not already host-driven.
+Disabling the solar disc uses sunSize=0; disc size, glow falloff, and haze are separate controls.
+
+## 7. Scene composition and reusable layout helpers
+
+- Design circulation, landmarks, hierarchy, and enclosure; keep spawns/objectives/camera routes clear.
+- Share one height source across terrain, feet, props, paths, and water. Match visual/collider transforms and dimensions.
+- Use createSeededRandom(seed); validate rotated footprints, gaps, slopes, bounds, and full divider spans.
+- Test jump reach with the actual solver; inspect both player-eye and overview frames for occlusion.
+- Separate foreground/midground/background without fogging out distant silhouettes.
+
+| Helper | Contract |
+|---|---|
+| `directionToYaw(direction)` | Accept `{x,z}`/Vector3; return atan2(-x,-z); reject zero XZ or non-finite components |
+| `yawToDirection(yaw,pitch=0,target?)` | Unit runtime forward Vector3; positive pitch looks up |
+| `footprintCorners({x,z,width,depth,rotation},margin=0)` | Four `{x,z}` corners using THREE Y-rotation; margin expands each side |
+| `distanceToPolyline(point,points,closed=false)` | XZ distance to finite segments/endpoints; empty path returns Infinity |
+| `createGroundRibbon(points,options={})` | Terrain-conforming mesh; not automatically a collider |
+| `createFacadeTexture(options={})` | Seeded sRGB DataTexture, no Canvas requirement |
+| `createDistantRange({radius,height,baseY,color,topColor,segments,roughness,seed})` | Seam-connected distant mountain ring |
+| `createCloudLayer(options={})` | Sprite cloud group; count/radius/height/size/texture/color/opacity/seed/speed/windField |
+| `createInstancedFromModel(source,count,options={})` | Single non-skinned mesh only; unsupported hierarchy returns null |
 
 ```js
-// Content whose visual is built from scratch.
-const { object, animations, source } = await assets.instantiateOrBuild(
-  'robot_expressive',
-  () => buildPrimitiveBody(),      // used when nothing is staged
-  { height: 1.8, ground: true, envMapIntensity: 1 },
-);
+import { createGroundRibbon } from '@a3game/playable';
 
-// Content that already exists and is being upgraded.
-const loaded = await assets.tryInstantiate('fox', { height: 0.85 });
-if (loaded) entity.setVisual(loaded.object, loaded.animations);
+const trail = createGroundRibbon([[0, 0], [0, -8], [5, -16]], {
+  width: 2, heightAt: terrainHeight, lift: 0.03, tileLength: 2, segments: 8,
+});
+host.add(trail, 'environment');
 ```
 
-Both run `prepareModel`, which handles the three things every imported
-model needs and no glTF can express:
+Ribbon points accept Vector3, `{x,y?,z}`, `[x,z]`, or `[x,y,z]`.
+width/lift/tileLength are metres; segments is subdivisions per source segment, maximum 1024.
+Provide at least two distinct XZ points for an open path, three for a closed path.
+UVs use metres/tileLength; `userData.pathLength` is XZ centerline length.
+heightAt projects both sides; without it, interpolate path y. Options also include closed/material/name.
+Supply enough source points for a smooth curve; sharp cusps/self-intersections need application-level handling.
 
-- **Facing.** The manifest's `orientation.forward_axis` is applied by
-  rotating the model inside a wrapper `Group`, and that wrapper is what is
-  returned. The split matters: gameplay code and world specs both assign
-  `rotation.y` on the object they are handed, so putting the correction on
-  the same node would undo it on the first frame. Pass
-  `{ forwardAxis: '+x' }` to override the manifest, or `{ orient: false }`
-  to opt out.
-- **Scale.** Every model arrives in whatever unit its author chose. Of
-  three CC0 models staged for these games, one is 4.5 units tall, one is
-  79, and one is 0.07. Pass `height`, or let the recorded
-  `scale_hint_metres` supply it — never a magic constant. Normalization and
-  grounding are retained on an inner node; the returned outer node owns game
-  transforms. A World scale of `(1,1,1)` preserves the calibrated metres;
-  `(2,2,2)` doubles them instead of overwriting the asset's normalization.
-- **Shadows.** glTF has no notion of casting shadows, so `GLTFLoader`
-  leaves `castShadow` false on every mesh. A model that lights correctly
-  but floats shadowless above the floor is the most common "why does my
-  imported asset look wrong" symptom.
+Facade defaults: width=256, height=512 pixels; columns=6, rows=12, seed=1, litRatio=.45.
+Set wallColor/windowColor/litColor; dimensions must be 16–2048 and cells at least four pixels.
+Lit windows are baked color, not light sources; use restrained emissive material settings if desired.
 
-`A3GameSceneLoader` goes through the same path, so a published World gets
-the orientation correction too.
+Cloud userData exposes update/attachToHost/dispose; attach once and do not manually update it again.
+Wind-driven clouds use the wind field rather than fixed speed drift.
+Instancing clones/bakes geometry but shares material; prepare templates at the origin before baking transforms.
+Set instanceMatrix.needsUpdate after setMatrixAt and refresh instance bounds when placements change.
+Options include castShadow/receiveShadow/frustumCulled; groups and shadow passes can still add draw calls.
+Instancing reduces calls, not triangles; use distance/detail budgets for high-poly repeated props.
 
-Also set `frustumCulled: false` on a skinned character: it is culled on
-its bind-pose bounds and otherwise blinks out at the screen edge.
+## 8. Runtime wire data, interfaces, and identity
 
-Pass `ground: true` for anything placed by its feet. A generated model's
-origin is wherever the reconstruction left it, and skipping this is why an
-imported character stands with its shins in the floor or floats above it.
+Runtime messages use camelCase plain objects. Data factories normalize known fields; they are not full validators and drop unknown top-level fields.
+Use explicit identity and increasing sequences in tests; timestampSeconds defaults to performance time, not host simulation time.
+Except `createVector3(source,fallback={x:0,y:0,z:0})`, the data factories accept `(source={})`.
 
-**A character needs one more step than a prop.** `tryInstantiate` answers
-"did a file exist"; a character also has to answer "can it move". Use
-`createAnimatedActor` for anything animated and branch on its
-`motionSource` — see **Animation**. Swapping in a clipless model destroys
-the procedural limbs the entity was posing, so the failure mode is a
-handsome statue rather than a visible error.
+| Factory | Output fields |
+|---|---|
+| `createVector3` | Plain `{x,y,z}` from an object or at least three array elements; not THREE.Vector3 |
+| `createTransform` | position/rotation/scale; defaults zero/zero/one |
+| `createRuntimeInputState` | worldId/participantId/controllerId/entityId/moveX/moveY/run/jump/yaw/pitch/sequence/timestampSeconds |
+| `createEntitySpawnRequest` | worldId/participantId/entityId/transform/parameters |
+| `createParticipantInfo` | participantId/worldId/userId/entityId/online/lastSeenSeconds |
+| `createControllerState` | controllerId/participantId/worldId/kind/online/lastSeenSeconds |
+| `createControlBinding` | controllerId/entityId/worldId/mode/priority/active |
+| `createEntitySnapshot` | entityId/objectName/position/rotation/locomotionState/motionState/persistent/lastInputTimeSeconds |
+| `locomotionStateFromInput` | jump first, then run/walk/idle using movement threshold 1e-3 |
 
-Separate the gameplay transform from the drawn body — `entity.object`
-carries position, facing, and the hit volume; `entity.visual` is a child
-that `setVisual` can replace. Swapping a model then disturbs no physics,
-and the procedural body remains the fallback that headless tests use.
+Clamp moveX/moveY independently to [-1,1], then limit the combined movement vector in gameplay to prevent faster diagonal movement.
+Factories truncate sequence/priority to integers but do not enforce monotonicity. parameters is shallow-copied.
+Controller kind defaults human; online/active/persistent default true. Add game-specific health/score state outside the fixed generic snapshot factory.
 
-Name **a list** of candidates, not one asset, wherever a game reaches for
-art: `assets.has(['explorer_ranger', 'robot_expressive'])` prefers the
-model generated for this game, accepts the CC0 stand-in, and falls through
-to the procedural body. Which of the three happens is not a decision that
-belongs in gameplay code, and a list keeps it out.
+`A3GameControlMode`: EXCLUSIVE='exclusive', PRIORITY='priority', ASSISTED='assisted', OBSERVING='observing'.
+`A3GameLocomotionState`: IDLE='idle', WALK='walk', RUN='run', JUMP='jump'.
+`A3GameRuntimeCommand`: SYNC_SESSION='sync_session', LEAVE_SESSION='leave_session', APPLY_INPUT='apply_input',
+WORLD_SNAPSHOT='world_snapshot', RESET_WORLD='reset_world', CLEAR_ENTITY='clear_entity'.
 
-### Dressing A Scene With Generated Art
+### Entity, factory, and message-handler contracts
 
-Swapping a *character* is one model. Dressing a *scene* is seventy-four
-trees, and there the naive approach — one instantiated model per
-placement — is what makes a generated game unplayable rather than
-merely plain: seventy-four draw calls and seventy-four copies of the
-geometry.
+Implement through inheritance or duck typing:
 
-`createInstancedFromModel(model, count)` turns one prepared, non-skinned
-model into an `InstancedMesh`, so a whole wood costs one draw call and one
-copy of the geometry, with the per-copy transforms on the GPU. It returns
-`null` for skinned or multi-part models rather than silently flattening
-them, so a caller can fall back to what it was already drawing.
+| Interface | Required contract |
+|---|---|
+| `A3GameControllableEntity` | getRuntimeEntityId(), setRuntimeEntityId(entityId), applyRuntimeInput(inputState) → boolean, getRuntimeSnapshot() → serializable object |
+| Optional entity hooks | tick(deltaSeconds), dispose() |
+| `A3GameEntityFactory` | spawnRuntimeEntity(request,{host,assets,session}) → entity or Promise of entity |
+| `A3GameRuntimeMessageHandler` | handleRuntimeMessage(messageType,payload) → synchronous boolean |
 
-Two rules make this safe to retrofit into a finished game:
+`CONTROLLABLE_ENTITY_METHODS/ENTITY_FACTORY_METHODS/RUNTIME_MESSAGE_HANDLER_METHODS` list required methods.
+`isControllableEntity/isEntityFactory/isRuntimeMessageHandler` check method presence;
+`assertControllableEntity/assertEntityFactory/assertRuntimeMessageHandler(candidate,label?)` return the candidate or throw TypeError.
+Do not use an async message handler: runtime extension dispatch does not await handlers.
+Factories own model creation, scene attachment, and gameplay assembly; the framework does not automatically move Object3D instances.
 
-1. **Keep the primitive as the collision volume.** Clear its `visible`
-   flag and leave it in the collision list. `Raycaster` does not test
-   visibility and `Mesh.raycast` only requires a material, so an invisible
-   box still stops an arrow — more cheaply than a 20 000-triangle prop
-   would, and more fairly: cover that looks solid on screen *is* solid in
-   the simulation.
-2. **Never add a collider that was not there before.** Pure decoration —
-   roadside palms, backdrop street furniture — must stay out of the
-   collision list, or an art pass silently retunes the gameplay.
+### Identity and runtime components
 
-The four generated games each keep this in one function
-(`dressScenery`, `dressArena`, `dressStage`, `dressTrack`) called straight
-after the world is built, and each returns a count per kind so a test can
-assert what happened.
+`A3GAME_USER_DATA_KEY='a3game'`; `A3GameIdentityComponent(object,{participantId,entityId})` stores identity in object.userData.a3game.
+Static attach reuses/updates a component; get checks the object; findInParents checks ancestors.
+setRuntimeIdentity(participantId,entityId) updates it; toJSON returns participantId/entityId/objectName/objectUuid.
 
-### Building Without Imported Assets
+`A3GameRuntimeEntityComponent(object,{entityId,participantId,persistent})` exposes static get, setRuntimeEntityId,
+onRuntimeInput(listener) → unsubscribe, applyRuntimeInput(rawInputState), setMotionState, getRuntimeSnapshot, dispose.
+It stores input, not movement; wrap it in an entity implementing getRuntimeEntityId. Snapshots use local position/rotation.
+Sequence rejection is component-wide and applies only to positive non-increasing values, not zero/negative values or authentication.
+dispose clears input state, not identity or Object3D/GPU resources.
 
-A mechanic or prototype task often has no `.glb` to import. That is a
-supported configuration:
+## 9. Input routing and session ownership
 
-- pass `requireManifest: false`, and check `assets.available` before
-  reaching for an artifact;
-- build content from three.js primitives (`createRoundedBox`,
-  `CapsuleGeometry`, `CylinderGeometry`, `ConeGeometry`, extruded
-  ribbons, displaced `PlaneGeometry`);
-- draw textures into a `<canvas>` and wrap them in `CanvasTexture` rather
-  than hard-coding an image URL — but keep that inside the build
-  function, so headless tests can import the module;
-- generate scenery from a **seeded** pseudo-random sequence
-  (`createSeededRandom`), never `Math.random`, so the world is identical
-  on every reload and in tests;
-- still declare lights. A world with no light renders every PBR material
-  black regardless of how the geometry was made.
+Use +Y up, metres, radians, seconds, and metres/second. Runtime yaw=0 faces -Z; yaw=PI/2 faces -X.
+Forward is `(-sin(yaw),0,-cos(yaw))`; right is `(cos(yaw),0,-sin(yaw))`.
+moveY=1 means forward and moveX=1 means right. Multiply normalized movement by speed and dt.
+Choose input/camera/body yaw according to FPS, free third-person, or vehicle movement rather than forcing one convention on every game.
 
-A procedurally built game also skips `A3GameSceneLoader`: it owns its own
-`buildX(host)` function and returns its own collision-target list.
+`new A3GameInputRouter({target,controllerId,keyBindings,actionBindings,pointerSensitivity=.0025,
+invertPitch=false,maxPitch=PI/2-.05,lookMode='pointer-lock',gamepadIndex=null})`.
+Use host.container as target: the default window target does not install pointer listeners.
+keyBindings merges DEFAULT_KEY_BINDINGS (WASD/arrows, Shift, Space); default mouse actions are primary/secondary.
+`A3GameLookMode`: POINTER_LOCK, DRAG, ALWAYS. Set startup/respawn view with setLook(yaw,pitch).
 
-## Framework Boundaries
+| Method | Contract |
+|---|---|
+| `enable()/disable()/reset()` | Manage listeners/held input; do not reset yaw, pitch, or sequence |
+| `setLook(yaw,pitch=this.pitch)` | Set absolute look with pitch clamping |
+| `onAction(listener)` | Local `(action,phase)` with pressed/released; returns unsubscribe |
+| `isActionHeld(action)` | Current held state |
+| `sample(identity={})` | Runtime input frame; increment sequence; jump is a press edge |
+| `pipeToSession(session,host,identity)` | Add input sampling before runtime consumption; return unsubscribe |
 
-`A3GamePlayable` provides runtime contracts and engine scaffolding only.
-It does not provide a concrete Character, Pawn, Controller, GameMode, HUD
-content, weapon, vehicle, combat rule, scoring rule, or game-specific
-input mapping.
+pipeToSession does not enable the router, create controllers, or bind entities.
+Named action events are not included in the movement wire frame; implement command transport explicitly for remote game actions.
+reset clears held actions without emitting all release callbacks; disable plus saved unsubscribe functions replaces a nonexistent router.dispose().
+Gamepad: axes0/1 move, axes2/3 look, button10 run, button0 jump, button7 primary, button6 secondary; deadzone=.15.
+Gamepad polling occurs on sample, overrides keyboard movement/run, and applies a fixed .04 look scale per sample rather than dt scaling.
 
-Generated projects own concrete gameplay implementation. The Arena
-Fighter, FPS, Racing, Explorer, and Motion/VFX example packages are
-read-only references and are not dependencies or success criteria.
-`motion-vfx-example` contains no game — only the two patterns every genre
-needs and that are easy to get wrong.
+### Participants, controllers, entities, bindings
 
-### Choosing A Reference Example By Camera Perspective
+A participant identifies a user, a controller produces input, an entity implements gameplay, and a binding connects controller to entity.
+`new A3GameWorldSessionSubsystem({worldId='world_001',inputConsumeHz=60})` exposes:
 
-`<REPO_PATH>/engine_adapters/three_js/examples/` holds four playable references, and
-they are indexed by **camera perspective rather than by genre**, because
-the camera decides far more of a game's code than the genre does. Two
-shooters with different cameras share almost nothing; a racing game and an
-exploration RPG with the same camera share their entire input and camera
-layer. Read the one whose perspective matches the brief.
+| Public method | Result / action |
+|---|---|
+| `registerParticipant(participantId,userId='')` | Participant record |
+| `markParticipantOffline(participantId)` | Mark participant/controllers offline, deactivate bindings; keep entity |
+| `createController(participantId,controllerId='',kind='human')` | Controller record |
+| `registerEntity(entityId,entity,participantId='')` | Resolved entity ID |
+| `getEntity(entityId)` | Entity or null |
+| `removeEntity(entityId,disposeEntity=true)` | Remove and optionally dispose entity |
+| `bindControllerToEntity(controllerId,entityId,mode=EXCLUSIVE,priority=0)` | Establish binding |
+| `unbindController(controllerId)` | Remove binding |
+| `await syncSession(payload,spawnEntity)` | Register/synchronize and call factory; return identity |
+| `enqueueInputState(rawInputState)` | Accept into latest-input queue, not immediate movement |
+| `consumeLatestInputs(deltaSeconds)` | Deliver queued frames at configured interval; return delivered count |
+| `getWorldStateSnapshot()` | Entity snapshot array |
+| `getSessionSnapshot()` | worldId/participants/controllers/bindings/entities |
+| `resetWorld(disposeEntities=true)` | Clear session and return cleared entity IDs; do not reload static World |
 
-| Perspective | Example | Owns the camera | Movement basis |
-| --- | --- | --- | --- |
-| First person | `fps-example` | The entity *is* the camera | Entity yaw, from the input frame |
-| Second person | `arena-fighter-example` | The match, not either fighter | The axis between the two fighters |
-| Third person, chase | `racing-example` | The vehicle's heading | Vehicle-relative |
-| Third person, orbit | `explorer-example` | The camera rig, which publishes yaw | **Camera-relative** |
+syncSession payload: `{participant:{participantId,userId},controller:{controllerId,kind},binding:{mode,priority},spawnRequest:{entityId,transform,parameters}}`.
+Return identity is `{worldId,participantId,controllerId,entityId}`. No transactional rollback is guaranteed on factory failure.
+Use explicit IDs for deterministic testing; generated IDs use time/randomness.
 
-What each perspective obliges:
+```js
+import { A3GameInputRouter } from '@a3game/playable';
 
-- **First person** (`fps-example`). The camera is parented to the player
-  pivot, aiming comes from the input frame's yaw/pitch, and no character
-  is visible. Two consequences: attaching `PointerLockControls` *as well*
-  makes both the controls and `tick()` write the same camera every frame,
-  and the game needs a **view model**. That view model is the most closely
-  inspected asset in the project — it earns a larger texture budget
-  (`TEXTURE_BUDGET_BY_ROLE.weapon` is 1536, not 1024). See *Upgrading
-  Appearance With Meshy or Tripo*.
-- **Second person** (`arena-fighter-example`). Both fighters must stay
-  framed, so the camera belongs to the match and neither entity may move
-  it. Movement is locked to the axis between the two, which is what makes
-  a fighting game read as a duel rather than as two people in a field.
-- **Third person** (`racing-example`, `explorer-example`). The camera is
-  an independent object that trails its subject, so it needs **positional
-  lag** — without it, every small correction shakes the whole screen — and
-  movement must be **camera-relative**: pressing forward means "away from
-  the camera", never "along the character's facing". The two sub-cases
-  differ only in who owns the yaw, and that is not a detail: whoever owns
-  it must *publish* it, because two objects deriving it separately drift
-  apart within seconds.
-
-`explorer-example` is additionally the reference for **walking on
-non-flat ground**. Its `terrainHeight(x, z)` is a plain exported function
-used by the mesh builder, the character, the camera, every arrow and every
-prop placement. One function with many callers is the only arrangement in
-which the player cannot walk through a hill, and it is why the example has
-a `src/world.js` ahead of its `src/explorer.js`.
-
-### Name Modules After The Game, Not After The Framework
-
-Every generated game under `<REPO_PATH>/test_data/outputs/` names its modules for
-**what the thing is in that game**, and none of them contains an
-`entity.js` or a `factory.js`:
-
-| Role | arcade-racer | archer-explorer | fps-pistol-arena | sidescroll-brawler |
-| --- | --- | --- | --- | --- |
-| The controllable | `vehicle.js` | `explorer.js` | `player.js` | `fighter.js` |
-| The space | `track.js` | `world.js` | `arena.js` | `stage.js` |
-| The opposition | `rivals.js` | — | `enemy.js` | `ai.js` |
-| Other systems | — | `arrow.js`, `chest.js` | — | — |
-| Rules | `rules.js` | `rules.js` | `rules.js` | `rules.js` |
-| Boot + spawner + camera | `index.js` | `index.js` | `index.js` | `index.js` |
-
-Follow it, for two reasons that outlast taste:
-
-- **`factory.js` and `entity.js` name a framework interface, not a thing
-  in the game.** `A3GameEntityFactory` is one method; a file named after
-  it says nothing about what gets spawned, and every game would have an
-  identically-named file with completely different contents. The spawner
-  is small and exists only to hand the runtime one object, so it lives in
-  `index.js` beside the boot function it serves — which is also where a
-  reader looking for "how does this game start" will already be.
-- **A pattern should port without renaming.** An adapted module keeps its
-  name from example to game, so a diff stays readable and nobody has to
-  work out that `entity.js` and `fighter.js` are the same idea.
-
-Split a module out when the thing **outlives or ticks independently of**
-whatever created it — `arrow.js` exists because arrows outlive the shot and
-are stepped separately from the character. Do not split by which framework
-interface a class happens to implement.
-
-`explorer-example` mirrors `game_archer_explorer` module for module and is
-the current model; `arena-fighter-example` predates the convention.
-
-## Web-Specific Obligations
-
-These have no UE5 equivalent and are the most common failure modes in
-generated three.js games:
-
-1. **Dispose explicitly.** three.js never frees GPU memory. Every entity
-   must dispose its geometries, materials, and textures; use
-   `disposeObject3D(root)`.
-2. **Never hard-code URLs.** Resolve every asset through
-   `A3GameAssetLibrary` and every world through `A3GameSceneLoader`.
-3. **Frame-rate independence.** Multiply by the tick delta. Never assume
-   60Hz. For smoothing and decay use `Math.exp(-k * delta)` rather than a
-   per-frame constant such as `value *= 0.9`.
-4. **Colour space.** Colour textures need `SRGBColorSpace`; data textures
-   (normal, roughness, metalness, AO) must not.
-5. **Lighting is required.** A world with no light and no environment map
-   renders PBR materials black. A world with lights but no environment map
-   renders them flat: `setEnvironment({ preset })` is what supplies
-   reflections.
-6. **Pointer lock needs a gesture.** Call `host.requestPointerLock()`
-   from a click or key handler, never at boot.
-7. **One camera author.** `PointerLockControls` writes the camera every
-   pointer event. A game that derives `yaw`/`pitch` from the input frame
-   must use `requestPointerLock()` instead of
-   `attachPointerLockControls()`, or the two fight each frame and the view
-   jitters.
-8. **One render loop.** Subscribe with `host.onTick`; never call
-   `requestAnimationFrame` in gameplay code.
-9. **Update the world matrix before probing.** A raycast reads
-   `matrixWorld`, and the renderer only refreshes it at render time. An
-   object that spawns or moves and is probed in the same frame must call
-   `object.updateMatrixWorld(true)` first, otherwise it is tested at the
-   origin. `overlapSphere` and `sweepSphere` handle their targets, but a
-   moving entity must maintain its own.
-10. **Tick order decides input latency.** The runtime subsystem's tick
-    consumes queued input. Register `input.pipeToSession()` and any AI
-    that enqueues frames *before* `runtime.onWorldBeginPlay()`; boot with
-    `autoBeginPlay: false` when the game needs that control. Otherwise
-    every input frame arrives one frame late.
-11. **Speed caps are not forces.** Terminal speed comes from the
-    force/drag balance, so a power-up that only raises a `maxSpeed` clamp
-    does nothing. Change the acceleration too.
-12. **An imported model is never scene-ready.** glTF carries no scale
-    convention, no shadow flags, and no facing convention, so a raw
-    `instantiate()` yields a skyscraper or a speck, casting no shadow,
-    pointing in an arbitrary direction. Go through
-    `tryInstantiate`/`instantiateOrBuild` with a `height`, and record the
-    facing axis with `three.assets.set_orientation` — never with a
-    `rotation.y += Math.PI` inside an entity, which is invisible to every
-    other consumer of that asset and is erased the moment the entity
-    assigns its own facing.
-13. **Testability over screenshots.** Assert `getRuntimeSnapshot()`,
-    `hud.getState()`, and rule state; drive input through
-    `globalThis.__A3GAME_RUNTIME__`.
-14. **A model with no clips is not an upgrade.** Generated characters
-    arrive with `animations: []` and no skeleton, and swapping one in
-    destroys the procedural limbs the entity was posing. Go through
-    `createAnimatedActor` and keep the procedural body when it reports
-    `motionSource: 'none'`.
-15. **Effects are batched or they are a leak.** One `Sprite` per spark is
-    one draw call per spark and a second render loop. Register effects on
-    an `A3GameVfxDirector`, which pools them, ticks them once, and frees
-    them in `dispose()`.
-
-## Generated Test Pattern
-
-Generated tests run under `vitest` in the `node` environment: no GPU, no
-canvas, no screenshots. The reliable shape is:
-
-1. build the entity directly against a small **host double** that
-   implements only `add`, `getRoot`, `onTick`, and `camera`;
-2. build an `A3GameCollisionProbe` over plain geometry, and call
-   `updateMatrixWorld(true)` on it;
-3. drive the entity with `createRuntimeInputState({ ..., sequence })` —
-   the sequence must increase, or the frame is dropped as out of order;
-4. step with an explicit delta;
-5. assert the observable snapshot and rule state, and assert that state
-   survives `JSON.stringify`.
-
-Make test geometry generously larger than the distance the entity can
-travel during the test. A car that drives off the edge of its test plane
-silently becomes "airborne", and every surface assertion then reports the
-wrong answer.
-
-The framework ships one test of its own,
-`packages/a3game-playable/tests/orientation.spec.js`, installed by
-`three.plugin.install_framework`. It appears in every generated project's
-report and asserts the orientation contract — including that a game
-assigning `visual.rotation.y` cannot undo a recorded facing correction.
-Generated tests do not need to duplicate it; they must not break it.
-
-## Generated Output Layout
-
-A generated playable game is a self-contained Vite project written to the
-task output directory resolved by `<REPO_PATH>/pipeline/common/paths.py`:
-
-```text
-test_data/outputs/<game_id>/<run_id>/mechanic/<task_id>/
-├── package.json          three + vite + vitest, `packages/*` workspace
-├── vite.config.jsaliases @a3game/playable and the game package
-├── index.html            #a3game-viewport, #a3game-hud, boot overlay
-├── src/main.js           imports the Gameplay Package, nothing else
-├── launch.sh             dev | build | preview | test
-├── public/assets/        manifest.json (empty when nothing is imported)
-└── packages/
-    ├── a3game-playable/  installed by three.plugin.install_framework
-    └── <game-name>/      the generated Gameplay Package + tests
+// Start from a context booted with autoBeginPlay:false and autoStart:false.
+runtime.setEntityFactory(factory);
+session.registerParticipant('local-player');
+const entity = await runtime.spawnEntity({
+  entityId: 'player-1', participantId: 'local-player',
+  transform: sceneLoader.resolveSpawnTransform(0),
+});
+const entityId = session.registerEntity('player-1', entity, 'local-player');
+const controller = session.createController('local-player', 'keyboard-1');
+session.bindControllerToEntity(controller.controllerId, entityId);
+const input = new A3GameInputRouter({ target: host.container, controllerId: controller.controllerId }).enable();
+const stopInput = input.pipeToSession(session, host, { controllerId: controller.controllerId });
+runtime.onWorldBeginPlay();
+host.start();
 ```
 
-Create the project with `three.project.create` (or
-`<REPO_PATH>/scripts/engine_install/three_js/create_project.sh`) and let
-`three.plugin.install_framework` place the framework. Never copy the
-framework by hand, and never build these paths by string concatenation.
+Supply the factory from section 8. Session delivery rules:
+- Keep the last arriving frame/controller; overwritten edges are lost. Active bindings set worldId/entityId; no authentication or sequence sorting.
+- EXCLUSIVE removes other entity bindings; OBSERVING sends no input. Others all deliver by descending priority, without winner selection or blending.
+- Consume one batch per interval and reset the accumulator; no replay of missed batches.
 
-## Serving a Game for Review
+## 10. Runtime orchestration, commands, and transport
 
-The dev server binds `127.0.0.1`, which is invisible from any other
-machine — the usual reason a reviewer "cannot open the game". Generated
-projects therefore read two environment variables:
+`new A3GameRuntimeSubsystem({host,session,assets,channel,autoConnect})`; autoConnect defaults true.
+Public API: setEntityFactory(factory), registerMessageHandler(handler), unregisterMessageHandler(handler),
+getSessionSubsystem(), onWorldBeginPlay(), deinitialize(), spawnEntity(rawRequest),
+handleRuntimeCommand(command,payload={}), dispatchExtensionMessage(messageType,payload).
+registerMessageHandler returns unsubscribe. spawnEntity and handleRuntimeCommand are async.
+spawnEntity invokes the factory only; registration/binding happens separately or through syncSession.
+onWorldBeginPlay is idempotent and consumes input before ticking registered entities.
+Do not also tick those entities manually. deinitialize unhooks ticks/channel, resets session entities, and clears handlers, not the host/assets/HUD.
+Unknown messages are offered synchronously to every registered handler, not stopped at the first true result.
 
-- `A3GAME_DEV_HOST` — set to `0.0.0.0` to accept outside connections;
-- `A3GAME_DEV_PORT` — override the per-game port.
+| Command value | Payload / result |
+|---|---|
+| sync_session | Session synchronization payload from section 9; return identity |
+| leave_session | controllerIds array and/or participantId; unbind/mark offline, keep entities |
+| apply_input | Runtime input frame; accepted means queued |
+| world_snapshot | Return complete session snapshot |
+| reset_world | Clear runtime session and report clearedEntities |
+| clear_entity | entityId, destroyObject; false skips entity.dispose but still removes registration |
+| Other strings | Offer to extension handlers; inspect handled_by and ok |
 
-`vite.config.js` also sets `allowedHosts: true`, because Vite 6 rejects a
-request whose `Host` header it does not recognise, which is exactly what
-an SSH forward or tunnel produces. Through the adapter the same switch is
-`ThreeClient(host="0.0.0.0")`, or `run.sh --dev-host 0.0.0.0`.
+### Browser channel and local bridge
 
-Nothing about this needs a GPU or a display on the server: WebGL runs in
-the reviewer's browser, and the server only serves modules. Headless
-verification of *correctness* is therefore `vitest` plus `vite build`,
-never a screenshot.
+`new A3GameRuntimeChannel({onCommand,host='127.0.0.1',port=30040,transport='local',pollIntervalMs=250,globalName='__A3GAME_RUNTIME__'})`.
+Public API: baseUrl getter, connect(), disconnect(), await dispatch(command,payload={}), getHistory().
+Precedence: options → VITE_A3GAME_RUNTIME_* → A3GAME_RUNTIME_* → defaults.
+connect installs the local bridge; websocket/polling require explicit selection and a relay (not provided by Vite).
+No fallback, reconnect, or access control. connected is not relay health; history retains200 wall-clock durationMs/at records.
 
-A **playtest recording** is the separate question of whether the game
-plays, and it does run WebGL on the server — on SwiftShader, at a fraction
-of real time. See **Playtest** above. Keep the two apart: a recording is
-review evidence and a `game_state` snapshot, not a benchmark result.
+`globalThis.__A3GAME_RUNTIME__`: channel/commands/dispatch/syncSession/applyInput/snapshot/resetWorld/clearEntity/history.
+Commands are async; history is synchronous. Use dispatch('leave_session',payload); no leaveSession helper exists.
+dispatch catches errors; direct handleRuntimeCommand can reject. Polling: GET /pending, POST /result.
+WebSocket: `{id,command,payload}` → `{id,result}`.
+
+### Python runtime sessions
+
+- Convert snake_case arguments to JS wire fields. join defaults world_001; require ready web-backed avatar/prop and motion artifacts.
+- leave unbinds/keeps entities; clear_entity removes registration; reset_world clears the session.
+- heartbeat and snapshot may reflect Python-local state. Check payload.runtime_delivery.delivered/response even if outer ok=True.
+- Delivery is HTTP POST /command, including when config accepts websocket; configure the compatible browser relay separately.
+- Sequence values are only forwarded; enforce ordering and game-action semantics in the integration.
+
+## 11. Animation and motion libraries
+
+Separate the gameplay/collision root from its replaceable animated visual.
+A motion resource is not a visible character. Preserve procedural fallback when no usable animated actor is available.
+
+```js
+import { createAnimatedActor } from '@a3game/playable';
+
+const actor = await createAnimatedActor(assets, ['hero', 'hero_fallback'], {
+  height: 1.8, states: ['idle', 'walk', 'run'], defaultState: 'idle',
+});
+const stopAnimation = actor?.animator?.attachToHost(host);
+```
+
+Attach actor.object to the visual root; unsubscribe separately from animator disposal.
+Results: motionSource=clips/imported_motion/rigged_asset/auto_rig/none, plus rig/measurement/warnings.
+Options: ground/motionReferences/motionLibrary/clipSpeed/shoulderWidth/minAspect/maxAspect/requireMotion/autoRig.
+requireMotion rejects motionless results; autoRig:false disables generated-rig fallback, not clips/imported motion.
+clipSpeed affects generated clips only; states is not a strict filter. Defaults: ground=true, envMapIntensity=1, frustumCulled=false.
+
+### A3GameAnimationDirector
+
+`new A3GameAnimationDirector(root,clips=[],{defaultFade=.2})`:
+
+| API | Behavior |
+|---|---|
+| `addClip/addClips`, `listClipNames` | Add and enumerate clips |
+| `mapState(state,clipName)`, `mapStates(mapping)` | Bind states; batch returns missing names |
+| `mapStateChain(state,candidates)`, `mapStateChains(mapping)` | Select available candidates; batch returns bound/missing |
+| `play(state,options={})` | fade/loop/timeScale/clampWhenFinished/restart; return action or null |
+| `playOnce(state,{fade,timeScale})` | Promise resolved through mixer updates |
+| `stopAll(fade=0)`, `update(dt)`, `attachToHost(host)` | Control playback; attachment returns unsubscribe |
+| `getState()`, `dispose()` | Inspect and release mixer state |
+
+Name matching is exact, case-insensitive exact, then substring. Replaying the same state without restart does not reapply all parameters.
+Keep the mixer updating for playOnce completion. Director disposal does not automatically invoke previously returned host unsubscribe functions.
+Do not infer a complete additive-layer or skeletal retargeting system from state-name crossfading.
+
+### Motion library and lower-level tools
+
+`new A3GameMotionLibrary({assets})`: available getter, listMotions(), await loadClips(reference),
+await loadForCharacter(character,{references,states,rename}) → `{clips,sources}`; inspect warnings/cache. No public dispose method.
+
+| Function | Contract |
+|---|---|
+| `createHumanoidSkeleton({height,centre,baseY,shoulderWidth})` | Return root/bones/byName/skeleton/radii; no visible character |
+| `measureHumanoid(object,{minAspect,maxAspect})` | Proportion assessment, size/centre/baseY/reason; not semantic face detection |
+| `autoRigHumanoid(object,options)` | Approximate binding or null; height/centre/baseY/shoulderWidth/maxBones/castShadow |
+| `findRiggedHumanoid(object,minimumBones=12)` | Inspect the first skeleton for canonical bone names and hips |
+| `createHumanoidClip(state,{height,speed,hipsRest})` | Generated clip; unknown state returns null |
+| `createHumanoidClipSet(states?,options)` | Default/empty states selects full set; unknown states ignored |
+| `retargetClipToSkeleton(clip,target,{boneMap,strict})` | Return clip/mapped/unmapped; track-name mapping, not bind-pose/limb-length correction |
+
+`A3GameMotionState`: IDLE, WALK, RUN, JUMP, BLOCK, PUNCH, KICK, SLASH, HIT, DEATH, AIM, SHOOT, RELOAD, DRAW.
+Values are lowercase. A3GameHumanoidBone defines canonical bones; A3GameSourceBoneAliases lists imported aliases;
+A3GAME_HUMANOID_CLIP_NAMES lists generated clip names.
+autoRigHumanoid replaces static meshes and can dispose their original geometry: do not apply it as non-destructive analysis on shared assets.
+Use at most four influences through maxBones; four-weight storage does not support arbitrary higher counts.
+Use offline retargeting for differing rest poses/axes/bone proportions; strict name mapping is not a compatibility proof.
+
+## 12. Shared wind, water, buoyancy, and surface flow
+
+### Wind
+
+`host.setWind({velocity:[3,0,1],gustStrength:.5,gustPeriod:6,spatialScale:30,response:1.5,seed:7}, immediate=false)`.
+Velocity is downwind world m/s (array/object); host advances the field once per simulation step.
+`A3GameWindField(config)`: set(config,immediate=false), sample(position,time?,target?), update(dt), getState().
+sample requires x/y/z; getState reports velocity/target/gust/time/displacement, not full config.
+Limits: heightShear defaults .05; gustStrength/heightShear≥0, gustPeriod/spatialScale≥.1, response≥.01. No obstacle-resolved flow.
+
+`bindVegetationWind(object,host,{flexibility,maxBend,response,phase})` rotates about the authored root; detach restores rest pose.
+Wind response uses `1-exp(-dt/response)`; vegetation uses `1-exp(-response*dt)`. Flutter may exceed maxBend slightly.
+Keep fixed colliders separate; attach effects once without additional manual updates.
+
+### Water surface
+
+```js
+import { createWaterSurface } from '@a3game/playable';
+
+const water = createWaterSurface({
+  size: [30, 20], position: [0, 0, 0], quality: 'standard',
+  terrainHeight: (x, z) => -2, waveHeight: 0.07,
+});
+host.add(water, 'environment');
+water.userData.attachToHost(host);
+```
+
+standard uses GPU analytic waves; low uses bounded CPU geometry and disables planar reflection/refraction.
+Water is not a solid gameplay floor. terrainHeight returns world bottom height; absent callback uses constant depth (default 5m).
+The surface does not carve terrain. waveHeight/amplitude is not mean water level.
+
+| Options | Meaning / bounds |
+|---|---|
+| size/position/quality | Plane extent, location, standard/low |
+| waves | Up to four `{direction:[u,v],wavelength,amplitude,speed,phase}`; directions use local surface axes, speed is wave phase motion |
+| segments | standard default64/max192; low default24/max32 |
+| waveHeight/windInfluence | Amplitude 0–20; influence default .15, clamped 0–1 |
+| depth/depthResolution/terrainHeight | Depth field; resolution default32, range2–128 |
+| normalMap/repeat/normalScale | Detail texture; the supplied map is configured and its offset animated in place |
+| color/shallowColor/deepColor/absorption | Surface/depth appearance; absorption has three components |
+| roughness/opacity/envMapIntensity | Optical material controls |
+| foamWidth/foamStrength/distortion | Shoreline and refraction appearance |
+| reflection/refraction | Both default false; refraction requires perspective projection |
+| reflectionResolution/reflectionUpdateRate | Defaults256/30 simulated Hz; limits64–1024 / 1–60 |
+| current | World vector or `(position,time,target)=>Vector3`; not the same as wind or texture flowSpeed |
+| rippleCapacity/rippleLifetime/maxRippleStrength | Bounded ripples; capacity standard8/low4, maximum8 |
+
+Public water.userData methods:
+
+| Method | Contract |
+|---|---|
+| `update(dt)` | Advance waves/detail/ripples |
+| `sampleHeight(x,z)`, `sampleNormal(x,z,target?)` | World surface height/normal |
+| `sampleDepth(x,z)`, `sampleBottom(x,z)` | World depth/bottom; dry depth is zero |
+| `sampleVelocity(position,time?,target?)` | Current plus vertical wave velocity; also supports position,target |
+| `addRipple(x,z,strength=.12,radius=1,{speed,frequency,decay}={})` | Boolean acceptance; radius at least .05; full pool overwrites |
+| `computeBuoyancy(settings={})` | force/torque/submergedFraction/point results |
+| `applyBuoyancy(body,settings={})` | Call body.applyForce(force,worldPoint) and return computed result |
+| `refreshDepth()` | Refresh after bottom changes |
+| `attachToHost(host)` | Return unsubscribe |
+| `getState()`, `dispose()` | Inspect and release owned effect resources |
+
+Surface queries outside the footprint return null; sampleVelocity also returns null on dry ground.
+Buoyancy settings: points/centerOfMass/velocity/angularVelocity/volume/draft/density/gravity/damping.
+Use at most 64 equal-volume column-bottom sample points; buried portions do not displace water.
+applyBuoyancy does not integrate movement; require the caller's applyForce implementation.
+Water disposal does not own an externally supplied normalMap.
+
+World water bottom priority: explicit terrain_entity_ids → entities with parameters.waterTerrain=true → World ground.
+Bridges and roofs are not automatically water bottoms. SceneLoader owns these surfaces through waterSurfaces.get(water_id).
+
+### A3GameWaterBody
+
+`new A3GameWaterBody({water,object,mass=500,volume,size=[1,1,1],velocity,onEnterWater,
+density=1000,gravity=9.81,damping,angularDamping=1.5,groundFriction=4,fixedStep=1/120})`.
+Use object origin as center of mass and metre/kilogram/second units. damping defaults mass*4.
+Public methods: update(dt), attachToHost(host), dispose(). Observe velocity/angularVelocity/force/torque/submergedFraction/grounded/elapsedSeconds/disposed.
+There are no getState/reset/applyForce methods; this class is not itself the applyBuoyancy body interface.
+Attach water before the body. fixedStep is limited to 1/240–1/30; each update caps input dt at .25 seconds.
+onEnterWater receives `{body,object,position,velocity,impactSpeed}` on a new entry, not merely construction underwater.
+Dispose detaches driving but does not dispose object/water. This is a light box-body model, not a general rigid-body or naval hydrodynamics engine.
+
+### Surface flow
+
+`createSurfaceFlow({preset,size,position,resolution,heightMap,initialDepth,viscosity,mobility,sources,...})` returns a Mesh.
+Presets are lava/blood; position is `[x,y,z]`, and heightMap returns absolute world height.
+resolution is integer4–256, default56; initialDepth may be a number or `(worldX,worldZ)=>number`.
+Additional options: coolingRate/yieldSlope/solidificationTemperature/thermalViscosity/referenceDepth/fixedStep/
+minVisibleDepth/boundary/color/roughness/emissiveIntensity.
+Viscosity is at least .0001; mobility/coolingRate/yieldSlope/thermalViscosity are non-negative; solidificationTemperature is in [0,1).
+
+userData: update(dt), addSource(source), getBedGeometry(), attachToHost(host), getState(), dispose().
+- Sources: world `{x,z,radius,volume,rate,duration,temperature}`; immediate volume, rate in volume/s, temperature0–1. Outside bounds throws.
+- Omit duration for continuous injection; Infinity is invalid. addSource returns a stop function for future injection only.
+- Closed boundary conserves volume; open records outflow. Inspect massError. fixedStep=1/120; update has no catch-up cap.
+- getState copies typed arrays; avoid full-grid runtime snapshots. getBedGeometry returns an owned clone.
+- `createSurfaceFlowTerrain(flow,materialOptions)` creates a separately owned mesh. Do not transform a created flow or attach twice.
+- Temperature/viscosity are game coefficients, not calibrated SI; no full 3D overturning/splash solver.
+
+## 13. Particle, beam, trail, and lightning effects
+
+Use visual effects for feedback, not as authoritative gameplay hit detection.
+
+```js
+import { createVfxDirector, A3GameVfxPreset } from '@a3game/playable';
+
+const vfx = createVfxDirector({
+  host, seed: 7,
+  presets: { dust: { ...A3GameVfxPreset.IMPACT_DUST, windResponse: 0.6 } },
+});
+vfx.play('dust', { position: [0, 0.1, 0], direction: [0, 1, 0], count: 12 });
+```
+
+createVfxDirector with host attaches by default; attach:false disables it. new A3GameVfxDirector requires explicit attachment.
+Custom presets replace the factory defaults; append with register/registerAll.
+Default registered names are muzzle_flash/bullet_impact/impact_dust/blood_hit/melee_impact/shock_ring/block_spark/foot_dust,
+not every constant in A3GameVfxPreset. Unregistered play returns zero.
+
+| Constant | Members |
+|---|---|
+| `A3GameEmitterShape` | POINT, BOX, SPHERE, CONE, DISK, EDGE |
+| `A3GameParticleAppearance` | DEFAULT, GRADIENT, CIRCULAR, RING |
+| `A3GameParticleBlending` | NORMAL, ADDITIVE, MULTIPLY |
+| `A3GameParticleRenderMode` | BILLBOARD, STRETCHED, MESH |
+| `A3GameVfxPreset` | MUZZLE_FLASH, BULLET_IMPACT, IMPACT_DUST, BLOOD_HIT, MELEE_IMPACT, SHOCK_RING, BLOCK_SPARK, FOOT_DUST, LIGHT_ARROW_CORE, LIGHT_ARROW_MOTES, LIGHT_ARROW_IMPACT, BLADE_SLASH, PICKUP_SPARKLE, SMOKE_PLUME, EXPLOSION, FIRE_PLUME, TYRE_SMOKE, SCRAPE_SPARK, BOOST_FLAME |
+
+### Particle system
+
+`new A3GameParticleSystem(config={})`; public methods start/stop/clear/emit/burst/update/attachToHost/getState/dispose.
+emit(count=1,options={}) returns emitted count; burst defaults to pool capacity. update(dt,camera=null) advances simulation.
+
+| Configuration group | Fields |
+|---|---|
+| Pool and lifetime | maxParticles/lifetime/size/sizeOverLife/opacityOverLife/seed |
+| Appearance | colorStart/colorEnd/intensity/appearance/blending/map/renderMode/geometry/material/depthTest/renderOrder/name |
+| Motion | speed/direction/gravity/drag/turbulence/windResponse/windField/rotation/rotationSpeed/stretchBySpeed/orientToDirection |
+| Emitter | position/emitterShape/emitterRadius/emitterAngle/emitterHeight/emitterDirection/emitterSize/surfaceOnly/startPositionAsDirection |
+| Continuous emission | emissionOverTime/looping/autoStart |
+
+Per-emission overrides: position/direction/spread/speed/size/lifetime/colorStart/colorEnd/scale.
+- Ranges are scalars/endpoints, not curves; scale affects offset/size/speed, not lifetime.
+- windResponse defaults0 (1/s); SMOKE_PLUME/FIRE_PLUME enable it. Full pools overwrite; totalEmitted differs from activeCount.
+- stop preserves live particles; clear does not stop emission; looping:false stops after the first effective update.
+- With direction specified, spread=0 falls back to .45.
+- attachToHost does not insert object3D; add it explicitly or use the director. System disposal owns custom geometry/material.
+
+### Director, beams, and trails
+
+| Class | Public contract |
+|---|---|
+| `A3GameVfxDirector({host,root='effects',seed,scale=1})` | register(name,config), registerAll(presets), get(name), play(name,options), follow(name,target,options), registerBeam(name,options), fireBeam(name,from,to,options), update(dt,camera), attachToHost(host), getState(), dispose() |
+| `A3GameBeamEffect({count=8,color,lifetime=.08,blending,name})` | fire(from,to,{lifetime,color}), update(dt), getState(), dispose() |
+| `A3GameTrailRibbon({segments=24,width=.09,color,endColor,opacity=.9,taper=true,blending,name})` | reset(position?), push(position,camera=null), dispose() |
+
+- register/registerBeam reuses existing names without reconfiguration.
+- follow(name,target,{offset,rate}) returns `{stop}`; offset is world-space. One system shares one emitterPosition; unparented non-camera targets stop following.
+- Beams use x/y/z endpoints and overwrite full pools; configurable thick-line width is unsupported.
+- Trails require manual push; history counts world-space samples, not seconds. No update/attachToHost/getState methods.
+- Align impacts with world normals; unsubscribe on teardown.
+
+`createLightningArc({from,to,segments,period,seed,width,color})` returns a Group.
+Endpoints are arrays, segments limited4–64; userData provides update/attachToHost/getState/dispose.
+Endpoints remain fixed while shape/flicker changes; wind does not advect the arc.
+
+## 14. Collision and character motion
+
+`A3GameCollisionProbe` is a simplified static-geometry solver, not a general physics engine.
+Defaults: targets=[], radius=.4, stepHeight=.6, groundOffset=0, gravity=-18, maxFallSpeed=-40.
+setTargets(targets=[]), addTarget(target), removeTarget(target) return the probe. Constructor/setTargets copy their arrays.
+Changing a SceneLoader collider array later does not automatically update a probe.
+`resolveEntityId(object)` walks parents for a3game.entityId or a3gameWorldEntity.entityId; return empty string when absent.
+
+| Query | Signature |
+|---|---|
+| Ground | sampleGround(position,{maxDrop,probeHeight,ignore,targets}) |
+| Sliding movement | resolveMove(position,displacement,{height,radius,ignore,targets}) |
+| Gravity/jump | stepCharacter(state,displacement,dt,{height,radius,jump,jumpImpulse,ignore,targets}) |
+| Ray | hitscan(origin,direction,{range,ignore,targets}) |
+| Area | overlapSphere(center,radius,{targets,ignore,requireEntityId}) |
+| Continuous sweep | sweepSphere(from,to,{radius,ignore,targets}) |
+
+state is persistent `{position:Vector3,velocityY,grounded}` with position at the feet; stepCharacter mutates it.
+Displacement is a step distance, not velocity. resolveMove returns move/blocked/normal/contacts; apply move explicitly.
+
+```js
+collision.stepCharacter(motion, displacement, dt, {
+  height: 1.8, radius: 0.35, jump: inputFrame.jump, ignore: [player],
+});
+player.updateMatrixWorld(true);
+```
+
+- Ignore the moving entity's own root; exclude cosmetics. Update matrixWorld before same-frame queries and needsUpdate after geometry edits.
+- hitscan: hit/point/normal/object/distance/entityId. overlapSphere tests bounds/markers, not exact meshes; ignore matches actual targets.
+- sweepSphere tests static faces/edges/vertices/instances; returns centre/point/normal/distance/timeOfImpact/penetrationDepth. Miss distance/TOI=Infinity.
+  Meshes are surfaces, not filled volumes; invisible geometry still collides and overriding raycast does not bypass sweeps.
+- Characters use overlapping spheres with sliding/ceiling checks. No automatic climbing, stacking, joints, or full moving-platform dynamics.
+  stepHeight controls ground probing. Use simple colliders, not animated skins.
+
+## 15. HUD and observable state
+
+Reuse context.hud or construct `new A3GameHudLayer({container})` once.
+Anchors: top-left/top-center/top-right/center/bottom-left/bottom-center/bottom-right; widgets at the same anchor stack vertically.
+
+| API | Contract |
+|---|---|
+| addText/addPanel(name,{anchor,value,className}) | Stringify values; return HTMLElement |
+| addBanner(name,{anchor,value,visible}) | Result/announcement banner; return HTMLElement |
+| addBar(name,{anchor,value,label}) | Clamp normalized value to0–1; return HTMLElement |
+| addCrosshair(name='crosshair') | Centered crosshair |
+| setValue(name,value), setValues(values) | Update one or many widgets |
+| setVisible(name,visible), remove(name) | Show/hide/remove named widgets |
+| autoHide(name,{host,after=6,fade=.8}) | Cancelable delayed fade |
+| getState(), dispose() | Observable widget state and cleanup |
+
+```js
+hud.addPanel('controls', { anchor: 'bottom-left', value: 'WASD move' });
+const cancelHide = hud.autoHide('controls', { host, after: 4, fade: 0.6 });
+```
+
+Pass host for deterministic fading: it uses explicit onRender dt. Without host it uses wall-clock time.
+after/fade must be finite non-negative seconds. setVisible cancels fades; true restores opacity; remove/dispose cancel pending work.
+Inspect getState and data-a3game-value/data-a3game-visible for assertions rather than OCR.
+Keep persistent HUD concise and legible at target viewport sizes. Do not hide gameplay UI only to make a recording appear successful.
+
+## 16. Test execution, recording, and evidence
+
+### Tests and authority
+
+Use Node host doubles, real colliders, seeds, dt, and explicit IDs/sequences. Cover spawn/reset, self-collision, speed/frame-rate variation,
+input ownership, fallback, and cleanup; assert state/events. Separately verify dev/production browser startup, framing, occlusion, and routes.
+
+`testing.run_automation_tests`: vitest/playwright; scripts test/test:e2e; filters -t/--grep.
+Reports default to `.a3game/reports/vitest-report.json` or playwright-report.json.
+Inspect matched_count/passed_count/failed_count/skipped_count/cases/failed_cases plus command status.
+Missing/stale/malformed/empty/failed reports are rejected, but **all-skipped reports or nonzero/timeout commands can still yield ok=True**.
+Require successful execution, actual passes, and expected coverage; screenshots, readiness, and dry-runs are not benchmark results.
+
+### Declared gameplay plans
+
+Expose `globalThis.__A3GAME_GAME__ = game` with host/input/getState; return serializable gameplay state, not a THREE graph.
+Expose `__A3GAME_PLAYTEST__` (or game.playtestActions) to avoid irrelevant generic actions.
+
+```js
+window.__A3GAME_PLAYTEST__ = {
+  warmup: 1, look: 'off',
+  actions: [
+    { id: 'approach', keys: ['KeyW'], duration: 2 },
+    { id: 'interact', taps: ['KeyE'], duration: 0.5 },
+    { id: 'observe', duration: 1 },
+  ],
+};
+```
+
+Use actual bindings. Discovery: declared plan → actionBindings/keyBindings → DOM → fallback; declared actions may be a function.
+External action_plan is a JSON path containing an array or `{actions,sustained,warmup,look}`; use sustained, not the declaration-only hold alias.
+
+| Field / rule | Behavior |
+|---|---|
+| keys / taps / hold | keys hold the slot; taps fire together for one frame; hold:true extends taps/mouse to slot end |
+| Conflicts | No keys/taps or sustained/taps overlap; repeated discrete actions need separate slots |
+| mouse / click | Primary pointer / DOM selector |
+| duration / seconds | Positive; round cumulative boundaries; reject sub-frame actions |
+| Budget | Unspecified durations share remainder; short plans add idle; overflow requires allow-partial-plan |
+| sustained | Begins in warmup; for capture-only holds, repeat keys in each action |
+| look | off/pan/auto; false/'false'=off; auto is off for drag/no mode, otherwise bounded pan via input.setLook |
+
+Keep probe/final fps equal. Cover the full moving-vehicle tail; idle does not mean stopped.
+Demonstrate real input, not teleports, collision bypasses, or fabricated state.
+
+### CLI, Python wrapper, modes, and media
+
+CLI entry: `engine_adapters/three_js/playtest/record.mjs`; required --url and --output-dir.
+Defaults:1280×720,20fps,14seconds. Set --duration/--fps/--width/--height; use positive even integer dimensions.
+For consistent Python/CLI use, choose a positive integer fps; the CLI validates positive finite fps while Python also enforces integrality.
+Other flags: --action-plan/--hold/--warmup/--look/--playwright-root/--browser-executable/--source-hash/--self-test.
+source-hash is an opaque label recorded as source_hash; the recorder does not calculate or verify source content.
+
+| Mode / flag | Behavior |
+|---|---|
+| --mode gameplay | Default: execute the input plan |
+| --mode overview | Tick gameplay but omit input plan; optionally apply a camera review hook |
+| --allow-partial-plan | Explicit prefix/probe capture; record unexecuted actions/frames; not full-plan evidence |
+| --preview / --poster | Equivalent PNG-only capture; no plan discovery, default pre-roll, or video encoding |
+| --self-test | Recorder's own contract checks, not gameplay benchmark validation |
+
+Optional `__A3GAME_REVIEW__({mode,time,frame,dt,duration})` runs synchronously after tick; adjust only the camera, with no awaited/serialized return.
+Overview requires look off; absent hook warns and keeps the game camera. Preview advances only explicit warmup and returns preview_completed.
+
+Python signature: section 2. warmup/look=None inherit the plan;0/False override it. source_hash is non-empty string or None.
+playwright_root must contain node_modules/playwright; other environment overrides are browser_executable/browsers_path/library_path/ffmpeg.
+Timeout defaults900s. Preserve URL trailing slashes. payload.output_dir=BASE, take_dir=new take, report_path=last stdout JSON path (None for dry-run).
+Validate contained new-take paths, source label, mode/URL, browser errors, and video metadata; never reuse BASE/report.json. Preview validates PNG separately.
+
+### Recording time and output contracts
+
+__A3GAME_RECORDING__ stops the published loop; each output frame advances1/fps via internal fixed steps or bounded external steps.
+Check initial/advanced simulation time and dropped_seconds; wall time is not simulated time or real-time performance.
+Snapshots preserve shared references and mark cycles/THREE objects; non-finite numbers become null.
+Limits: depth8, budget2048,128 entries/object or array,512 characters/string; not a lossless state dump.
+
+| Evidence | Contract |
+|---|---|
+| Directory | New unique take under BASE; preserve previous evidence |
+| Video files | report.json, manifest.json, init.png, poster.png, frames/fNNNNNN.jpg, video.mp4 |
+| Preview | png_frames=1, no video; status preview_completed |
+| Paths | Report/stdout absolute; all manifest media/report paths relative to BASE |
+| completed | MP4 plus ffprobe-verified frames/size/fps/duration and no page errors; only this updates BASE/manifest.json |
+| Gameplay | Inspect executed_actions/unexecuted_actions/partial_plan and actual game_state progress |
+| Playback | Test target-browser codecs; offer WebM when H.264 is unavailable |
+
+### Pipeline integration boundaries
+
+`pipeline.code_gen.playtest.run.record_playtest` differs from the adapter: defaults12s/640×360/warmup0/look auto;
+not all mode/preview/source_hash options are forwarded. Use the adapter for declared-plan defaults.
+recorder_root maps to Playwright root, root/browsers, root/deps/lib.
+`pipeline.code_gen.playtest.eval.evaluate_report` validates report/action/browser structure only, not media/hash/gameplay or preview/overview; authoritative_validation=False.
+
+UI viewports are positive-size objects/pairs, not automatic captures. `gamefactory3a.ui_screenshot_plan.v1` validates declared screens, not rendered viewport coverage.
+Mechanic requires schema_version, positive contract_version, matching gameplay_module, non-empty state/events/commands and workspace-contained public_api_paths.
+
+## 17. Cleanup and delivery checks
+
+1. Disable input; unsubscribe actions, pipes, ticks, renders, and animation callbacks.
+2. runtime.deinitialize disconnects the channel and disposes session entities; avoid double disposal.
+3. Dispose World/HUD/VFX/water/animation resources, then await assets.dispose and dispose host.
+
+`disposeObject3D(root)` invokes userData.dispose, detaches/clears the root, and releases resources respecting asset-ownership markers.
+It is not a general reference counter. Detaching is not GPU cleanup; release shared resources only after their users.
+
+Delivery checks: public imports, production boot, resource paths/fallbacks, visual/collider agreement, input/dt/sequence,
+camera/UI, fresh reports, complete plans, and playable media.
+
+## 18. Complete JavaScript exports and source map
+
+The following index covers all 108 named exports from `plugin/A3GamePlayable/src/index.js`.
+Keep generated imports at `@a3game/playable`; packaged subpaths are not needed for normal gameplay.
+
+| Group | Root exports |
+|---|---|
+| Version / boot | `A3GAME_PLAYABLE_API_VERSION`, `A3GAME_PLAYABLE_ENGINE`, `bootA3GameRuntime` |
+| Wire data | `A3GameControlMode`, `A3GameLocomotionState`, `A3GameRuntimeCommand`, `createControlBinding`, `createControllerState`, `createEntitySnapshot`, `createEntitySpawnRequest`, `createParticipantInfo`, `createRuntimeInputState`, `createTransform`, `createVector3`, `locomotionStateFromInput` |
+| Interfaces | `A3GameControllableEntity`, `A3GameEntityFactory`, `A3GameRuntimeMessageHandler`, `CONTROLLABLE_ENTITY_METHODS`, `ENTITY_FACTORY_METHODS`, `RUNTIME_MESSAGE_HANDLER_METHODS`, `assertControllableEntity`, `assertEntityFactory`, `assertRuntimeMessageHandler`, `isControllableEntity`, `isEntityFactory`, `isRuntimeMessageHandler` |
+| Components / sessions | `A3GAME_USER_DATA_KEY`, `A3GameIdentityComponent`, `A3GameRuntimeEntityComponent`, `A3GameRuntimeSubsystem`, `A3GameWorldSessionSubsystem` |
+| Runtime systems | `A3GameRuntimeHost`, `A3GameEnvironmentPreset`, `A3GameAssetLibrary`, `A3GameSceneLoader`, `A3GameInputRouter`, `A3GameLookMode`, `DEFAULT_KEY_BINDINGS`, `A3GameRuntimeChannel`, `A3GameHudLayer`, `A3GameCollisionProbe`, `resolveEntityId`, `disposeObject3D` |
+| Layout | `directionToYaw`, `yawToDirection`, `footprintCorners`, `distanceToPolyline`, `createGroundRibbon`, `createFacadeTexture` |
+| Model / material utilities | `A3GAME_RUNTIME_FORWARD_AXIS`, `A3GameForwardAxis`, `A3GameMaterialPreset`, `A3GameSurfacePattern`, `alignWeaponModel`, `measureWeapon`, `principalAxes`, `measureObject`, `fitToHeight`, `groundObject`, `forwardAxisYaw`, `orientModel`, `prepareModel` |
+| Visual construction | `createCloudLayer`, `createContactShadow`, `createDistantRange`, `createFillLight`, `createInstancedFromModel`, `createMaterial`, `createRadialGradientTexture`, `createRoundedBox`, `createSeededRandom`, `createSkyGradient`, `createSunLight`, `createSurfaceMaterial`, `createSurfaceTextures`, `createTilingTexture`, `createWaterSurface` |
+| Motion | `A3GAME_HUMANOID_CLIP_NAMES`, `A3GameHumanoidBone`, `A3GameMotionState`, `A3GameSourceBoneAliases`, `A3GameAnimationDirector`, `A3GameMotionLibrary`, `autoRigHumanoid`, `createAnimatedActor`, `createHumanoidClip`, `createHumanoidClipSet`, `createHumanoidSkeleton`, `findRiggedHumanoid`, `measureHumanoid`, `retargetClipToSkeleton` |
+| Wind / fluids | `A3GameWindField`, `bindVegetationWind`, `A3GameWaterBody`, `createSurfaceFlow`, `createSurfaceFlowTerrain`, `createLightningArc` |
+| VFX | `A3GameEmitterShape`, `A3GameParticleAppearance`, `A3GameParticleBlending`, `A3GameParticleRenderMode`, `A3GameVfxPreset`, `A3GameParticleSystem`, `A3GameBeamEffect`, `A3GameTrailRibbon`, `A3GameVfxDirector`, `createVfxDirector` |
+
+### Implementation lookup
+
+Paths in this table are relative to `engine_adapters/three_js/`.
+
+| Path | Authority / usage |
+|---|---|
+| `__init__.py`, `three_client.py`, `config.py`, `contracts/` | Python entry, namespace construction, configuration, operation envelopes |
+| `project/client.py`, `plugin/client.py`, `build/client.py`, `runtime/client.py` | Project/package/build/server workflows |
+| `runtime/sessions.py`, `observe/client.py` | Python session delivery and readiness checks |
+| `assets/client.py`, `bindings/client.py`, `animation/client.py`, `reflection/client.py`, `preview/client.py` | Source import, bindings, compatibility, metadata, CPU preview |
+| `world/client.py` | Draft/build/validation/publication facade; read its schema implementation for serialized-field limits, not as a public import |
+| `testing/client.py`, `playtest/client.py`, `playtest/record.mjs` | Test execution, unique-take wrapper, recorder and self-tests |
+| `plugin/A3GamePlayable/src/index.js`, `plugin/A3GamePlayable/package.json` | Runtime exports, boot, supported package/version contract |
+| `plugin/A3GamePlayable/src/data-types/runtime-types.js`, `plugin/A3GamePlayable/src/interfaces/contracts.js` | Wire records and duck-typed contracts |
+| `plugin/A3GamePlayable/src/components/`, `plugin/A3GamePlayable/src/subsystems/` | Identity, input-state component, entity/session lifecycle |
+| `plugin/A3GamePlayable/src/engine/runtime-host.js`, `plugin/A3GamePlayable/src/engine/runtime-channel.js` | Renderer/scheduling and command transport |
+| `plugin/A3GamePlayable/src/engine/asset-library.js`, `plugin/A3GamePlayable/src/engine/scene-loader.js`, `plugin/A3GamePlayable/src/engine/scene-kit.js` | Runtime assets, Worlds, generic layout helpers |
+| `plugin/A3GamePlayable/src/engine/visual-kit.js`, `plugin/A3GamePlayable/src/engine/wind-field.js`, `plugin/A3GamePlayable/src/engine/water-body.js`, `plugin/A3GamePlayable/src/engine/surface-flow.js` | Materials/sky/water/wind/fluid implementation limits |
+| `plugin/A3GamePlayable/src/engine/motion-kit.js`, `plugin/A3GamePlayable/src/engine/animation-director.js` | Rigging/motion and mixer control |
+| `plugin/A3GamePlayable/src/engine/vfx-kit.js`, `plugin/A3GamePlayable/src/engine/lightning-effect.js`, `plugin/A3GamePlayable/src/engine/collision-probe.js`, `plugin/A3GamePlayable/src/engine/input-router.js`, `plugin/A3GamePlayable/src/engine/hud-layer.js` | Effects, queries, input, UI |
+| `plugin/A3GamePlayable/tests/`, `plugin/A3GamePlayable/vitest.config.js` | Framework regression evidence; configuration also includes selected example tests |
+| `cli.py` | Public Python CLI with create-project/import-asset/run subcommands |
+| `import_generated/import_mesh.mjs` | Node GLTFLoader inspection, not staging/registry import |
+| `examples/` | Read-only fps-example, arena-fighter-example, racing-example, explorer-example, motion-vfx-example |
+
+Mesh inspector: --source, --usage asset/vfx_standalone/vfx_particle; optional --report/--draco-decoder.
+Reports loadability/geometry/materials/textures/animation/bounds/budgets without staging or registry updates.
+Install scripts: `scripts/engine_install/three_js/`, not `scripts/three_js/`. Verify wrapper cwd/environment; keep the repository root importable.
+
+### Maintaining coverage
+
+Compare Python public methods and JS root exports against sections 2/18 after API changes.
+Update signatures, contracts, limits, and indexes together; exclude implementation algorithms and investigation history.

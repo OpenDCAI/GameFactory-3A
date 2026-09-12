@@ -21,14 +21,17 @@ import { createTilingTexture, orientModel, prepareModel } from './visual-kit.js'
 export class A3GameAssetLibrary {
   /**
    * @param {{manifestUrl?: string, dracoDecoderPath?: string,
-   *          ktx2TranscoderPath?: string,
+   *          ktx2TranscoderPath?: string, baseUrl?: string,
    *          requireManifest?: boolean,
    *          renderer?: THREE.WebGLRenderer}} [options]
    */
   constructor(options = {}) {
-    this.manifestUrl = options.manifestUrl ?? '/assets/manifest.json';
-    this.dracoDecoderPath = options.dracoDecoderPath ?? '/draco/';
-    this.ktx2TranscoderPath = options.ktx2TranscoderPath ?? '/basis/';
+    const documentBase = globalThis.document?.baseURI;
+    this.baseUrl = String(options.baseUrl ?? (documentBase ? new URL('.', documentBase).pathname : '/'));
+    if (!this.baseUrl.endsWith('/')) this.baseUrl += '/';
+    this.manifestUrl = this.resolveUrl(options.manifestUrl ?? '/assets/manifest.json');
+    this.dracoDecoderPath = this.resolveUrl(options.dracoDecoderPath ?? '/draco/');
+    this.ktx2TranscoderPath = this.resolveUrl(options.ktx2TranscoderPath ?? '/basis/');
     this.renderer = options.renderer ?? null;
     // A procedurally built game imports no artifact, so a project may
     // legitimately have no manifest yet. Set `requireManifest: true`
@@ -53,16 +56,26 @@ export class A3GameAssetLibrary {
     this.releasedResources = new WeakSet();
     this.instanceResources = new WeakMap();
 
-    this.textureLoader = new THREE.TextureLoader();
-    this.hdrLoader = new HDRLoader();
-    this.audioLoader = new THREE.AudioLoader();
+    this.loadingManager = new THREE.LoadingManager();
+    this.loadingManager.setURLModifier(url => this.resolveUrl(url));
+    this.textureLoader = new THREE.TextureLoader(this.loadingManager);
+    this.hdrLoader = new HDRLoader(this.loadingManager);
+    this.audioLoader = new THREE.AudioLoader(this.loadingManager);
     this.fileLoaders = {
       glb: this.#createGltfLoader(),
       gltf: this.#createGltfLoader(),
-      fbx: new FBXLoader(),
-      obj: new OBJLoader(),
-      stl: new STLLoader(),
+      fbx: new FBXLoader(this.loadingManager),
+      obj: new OBJLoader(this.loadingManager),
+      stl: new STLLoader(this.loadingManager),
     };
+  }
+
+  /** Resolve project-root paths without rebasing external or embedded resources. */
+  resolveUrl(url) {
+    const value = String(url);
+    if (/^(?:[a-z][a-z\d+.-]*:|\/\/|#)/i.test(value)) return value;
+    if (this.baseUrl === '/' || value.startsWith(this.baseUrl)) return value;
+    return this.baseUrl + value.replace(/^(?:\.\/|\/)/, '');
   }
 
   /**
@@ -356,7 +369,7 @@ export class A3GameAssetLibrary {
    * @param {string} bindingUrl for example `/assets/bindings/<id>.json`
    */
   async applyMaterialBinding(object, bindingUrl) {
-    const response = await fetch(bindingUrl, { cache: 'no-cache' });
+    const response = await fetch(this.resolveUrl(bindingUrl), { cache: 'no-cache' });
     if (!response.ok) {
       throw new Error(
         `Material binding is unavailable at ${bindingUrl}: ` +
@@ -770,12 +783,13 @@ export class A3GameAssetLibrary {
     return { ...loaded, object, model: loaded.object, orientation };
   }
 
-  #createGltfLoader() {    const loader = new GLTFLoader();
-    const draco = new DRACOLoader();
+  #createGltfLoader() {
+    const loader = new GLTFLoader(this.loadingManager);
+    const draco = new DRACOLoader(this.loadingManager);
     draco.setDecoderPath(this.dracoDecoderPath);
     loader.setDRACOLoader(draco);
     if (this.renderer) {
-      const ktx2 = new KTX2Loader()
+      const ktx2 = new KTX2Loader(this.loadingManager)
         .setTranscoderPath(this.ktx2TranscoderPath)
         .detectSupport(this.renderer);
       loader.setKTX2Loader(ktx2);
@@ -801,7 +815,8 @@ export class A3GameAssetLibrary {
       return { buffer, entry };
     }
     if (representation === 'json') {
-      const response = await fetch(url, { cache: 'no-cache' });
+      const response = await fetch(this.resolveUrl(url), { cache: 'no-cache' });
+      if (!response.ok) throw new Error(`Asset JSON is unavailable: HTTP ${response.status}`);
       return { data: await response.json(), entry };
     }
 

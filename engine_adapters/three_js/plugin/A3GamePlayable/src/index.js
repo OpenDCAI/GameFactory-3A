@@ -17,6 +17,13 @@
  * projects own concrete gameplay.
  */
 
+import { A3GameRuntimeHost } from './engine/runtime-host.js';
+import { A3GameAssetLibrary } from './engine/asset-library.js';
+import { A3GameSceneLoader } from './engine/scene-loader.js';
+import { A3GameHudLayer } from './engine/hud-layer.js';
+import { A3GameWorldSessionSubsystem } from './subsystems/world-session-subsystem.js';
+import { A3GameRuntimeSubsystem } from './subsystems/runtime-subsystem.js';
+
 export const A3GAME_PLAYABLE_API_VERSION = 'v1';
 export const A3GAME_PLAYABLE_ENGINE = 'three_js';
 
@@ -104,6 +111,12 @@ export {
   createContactShadow,
   createDistantRange,
   createFillLight,
+  createFacadeTexture,
+  createGroundRibbon,
+  directionToYaw,
+  yawToDirection,
+  footprintCorners,
+  distanceToPolyline,
   createHumanoidClip,
   createHumanoidClipSet,
   createHumanoidSkeleton,
@@ -148,24 +161,13 @@ export {
  *
  * @param {{container: string | HTMLElement,
  *          hudContainer?: string | HTMLElement,
- *          manifestUrl?: string, worldUrl?: string,
+ *          manifestUrl?: string, worldUrl?: string, baseUrl?: string,
  *          worldId?: string, hostOptions?: object,
  *          requireManifest?: boolean, createHud?: boolean,
  *          autoBeginPlay?: boolean, autoStart?: boolean,
  *          entityFactory?: object}} options
  */
 export async function bootA3GameRuntime(options = {}) {
-  const { A3GameRuntimeHost } = await import('./engine/runtime-host.js');
-  const { A3GameAssetLibrary } = await import('./engine/asset-library.js');
-  const { A3GameSceneLoader } = await import('./engine/scene-loader.js');
-  const { A3GameHudLayer } = await import('./engine/hud-layer.js');
-  const { A3GameWorldSessionSubsystem } = await import(
-    './subsystems/world-session-subsystem.js'
-  );
-  const { A3GameRuntimeSubsystem } = await import(
-    './subsystems/runtime-subsystem.js'
-  );
-
   const host = new A3GameRuntimeHost({
     container: options.container,
     hudContainer: options.hudContainer,
@@ -174,6 +176,7 @@ export async function bootA3GameRuntime(options = {}) {
   await host.init();
 
   const assets = new A3GameAssetLibrary({
+    baseUrl: options.baseUrl,
     manifestUrl: options.manifestUrl,
     requireManifest: options.requireManifest,
     renderer: host.renderer,

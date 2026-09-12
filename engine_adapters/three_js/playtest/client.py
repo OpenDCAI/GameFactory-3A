@@ -22,6 +22,7 @@ therefore explicit parameters rather than assumptions:
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -67,44 +68,34 @@ class ThreePlaytestClient:
         url: str = "",
         action_plan: str | Path | None = None,
         hold: str | list[str] | None = None,
-        warmup: float = 0.0,
-        look: str = "auto",
+        warmup: float | None = None,
+        look: str | bool | None = None,
         playwright_root: str | Path | None = None,
         browser_executable: str | Path | None = None,
         browsers_path: str | Path | None = None,
         library_path: str | Path | None = None,
         ffmpeg: str | Path | None = None,
-        duration: float = 12.0,
+        duration: float = 14.0,
         fps: int = 20,
-        width: int = 640,
-        height: int = 360,
+        width: int = 1280,
+        height: int = 720,
         timeout: float = 900.0,
         dry_run: bool = False,
+        mode: str = "gameplay",
+        preview: bool = False,
+        allow_partial_plan: bool = False,
+        source_hash: str | None = None,
     ) -> dict[str, Any]:
-        """Record one playtest into ``output_dir``.
+        """Capture a unique take below ``output_dir`` without reusing old evidence.
 
-        Writes ``frames/f%05d.jpg``, ``video.mp4`` and ``report.json``. The
-        report is the evidence: it names every action that was found and run,
-        and carries the game's own ``getState()`` so a reviewer can see that the
-        game responded rather than merely rendered.
-
-        Args:
-            action_plan: JSON overriding discovery entirely. Either a bare array
-                of actions or ``{warmup?, hold?, look?, actions:[...]}``, where
-                an action is ``{id, keys?, taps?, mouse?, hold?, click?,
-                duration?}``. ``keys`` are held for the action's slot, ``taps``
-                are pressed for one frame, and ``hold`` turns a tap into
-                charge-and-release (draw a bow, hold a guard).
-            hold: Actions or key codes pressed for the entire take. Names are
-                resolved through the game's own bindings, so ``["accelerate"]``
-                works without knowing which key that is.
-            warmup: Seconds simulated but not captured, for opening ceremony.
-            look: ``auto`` (sweep unless the game uses drag-look), ``pan``, or
-                ``off``. A sweep starts from the game's own opening framing
-                rather than from zero.
-            timeout: Generous by default because SwiftShader is the cost here:
-                ~0.6 s/frame for a first-person arena and up to 6 s/frame for a
-                scene with a long view. A 12 s take at 20 fps is 240 frames.
+        ``warmup=None`` and ``look=None`` preserve the game's declared plan.
+        Explicit ``warmup=0`` disables pre-roll; ``look=False`` means ``off``.
+        ``mode`` is gameplay or overview; ``preview`` captures one PNG instead
+        of a video. ``allow_partial_plan`` explicitly permits a plan prefix.
+        ``source_hash`` is an opaque build label passed through unchanged.
+        Successful videos require completed status and verified video metadata;
+        PNG previews require preview_completed. The current report path comes
+        only from this invocation's final stdout JSON, never BASE/report.json.
         """
         project_dir = self._config.project_dir
         project_file = self._config.project_file
@@ -112,8 +103,18 @@ class ThreePlaytestClient:
             return self._fail("project_path must resolve to a project containing package.json")
         if not _RECORDER.is_file():
             return self._fail(f"Playtest recorder is missing: {_RECORDER}")
-        if duration <= 0 or fps <= 0 or width <= 0 or height <= 0:
-            return self._fail("duration, fps, width, and height must be positive")
+        if not all(isinstance(value, (int, float)) and not isinstance(value, bool)
+                   and math.isfinite(value) and value > 0
+                   for value in (duration, fps, width, height, timeout)):
+            return self._fail("duration, fps, width, height, and timeout must be finite and positive")
+        if int(fps) != fps or any(int(value) != value or value % 2 for value in (width, height)):
+            return self._fail("fps must be an integer; width and height must be even integers")
+        if mode not in ("gameplay", "overview"):
+            return self._fail("mode must be gameplay or overview")
+        if not isinstance(preview, bool) or not isinstance(allow_partial_plan, bool):
+            return self._fail("preview and allow_partial_plan must be boolean")
+        if source_hash is not None and (not isinstance(source_hash, str) or not source_hash):
+            return self._fail("source_hash must be a non-empty string or None")
 
         out = Path(output_dir).expanduser().resolve(strict=False)
         plan = self._resolve(action_plan)
@@ -131,15 +132,17 @@ class ThreePlaytestClient:
             return self._fail(f"browser_executable does not exist: {browser}")
         if libraries is not None and not libraries.is_dir():
             return self._fail(f"library_path is not a directory: {libraries}")
-        if look not in ("auto", "pan", "off"):
-            return self._fail(f"look must be auto, pan, or off; got {look!r}")
-        if warmup < 0:
-            return self._fail("warmup cannot be negative")
+        if look is False or look == "false":
+            look = "off"
+        if look not in (None, "auto", "pan", "off"):
+            return self._fail(f"look must be auto, pan, off, False, or None; got {look!r}")
+        if warmup is not None and (not isinstance(warmup, (int, float))
+                                   or not math.isfinite(warmup) or warmup < 0):
+            return self._fail("warmup must be finite and non-negative or None")
 
         held = [item.strip() for item in (hold.split(",") if isinstance(hold, str) else hold or [])]
         held = [item for item in held if item]
-        url = str(url or self._config.dev_server_url).rstrip("/")
-        report_path = out / "report.json"
+        url = str(url or self._config.dev_server_url)
         arguments = [
             "--url", url,
             "--output-dir", str(out),
@@ -147,10 +150,18 @@ class ThreePlaytestClient:
             "--fps", str(int(fps)),
             "--width", str(int(width)),
             "--height", str(int(height)),
-            "--look", look,
+            "--mode", mode,
         ]
-        if warmup > 0:
+        if look is not None:
+            arguments.extend(["--look", look])
+        if warmup is not None:
             arguments.extend(["--warmup", str(float(warmup))])
+        if preview:
+            arguments.append("--preview")
+        if allow_partial_plan:
+            arguments.append("--allow-partial-plan")
+        if source_hash is not None:
+            arguments.extend(["--source-hash", source_hash])
         if held:
             arguments.extend(["--hold", ",".join(held)])
         for flag, value in (
@@ -178,7 +189,12 @@ class ThreePlaytestClient:
             "url": url,
             "project_dir": str(project_dir),
             "output_dir": str(out),
-            "report_path": str(report_path),
+            "report_path": None,
+            "mode": mode,
+            "preview": preview,
+            "allow_partial_plan": allow_partial_plan,
+            "source_hash": source_hash,
+            "arguments": arguments,
             "action_plan": str(plan) if plan else None,
             "hold": held,
             "warmup": warmup,
@@ -194,8 +210,9 @@ class ThreePlaytestClient:
         if dry_run:
             return ThreeOperationResult.success(_OPERATION, payload=payload).to_dict()
 
-        out.mkdir(parents=True, exist_ok=True)
         try:
+            out.mkdir(parents=True, exist_ok=True)
+            previous_entries = {entry.name for entry in out.iterdir()}
             command = self._toolchain.run_node(
                 _RECORDER,
                 cwd=project_dir,
@@ -207,41 +224,100 @@ class ThreePlaytestClient:
             return self._fail(f"{type(exc).__name__}: {exc}", payload)
         payload["command"] = command.to_dict()
 
-        report: dict[str, Any] | None = None
-        if report_path.is_file():
-            try:
-                report = json.loads(report_path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError) as exc:
-                return self._fail(f"Invalid playtest report: {exc}", payload)
-            payload["report"] = report
-
-        if report is None:
-            reason = (
-                "Recorder timed out before writing a report"
-                if command.timed_out
-                else "Recorder produced no report.json"
-            )
-            return self._fail(reason, payload)
-        # A partial take is a real result: the recorder keeps what it captured
-        # when a renderer dies, and that is more useful than discarding it.
-        if not report.get("frames"):
-            return self._fail(
-                report.get("error") or report.get("crash") or "Recorder captured no frames",
-                payload,
-            )
-
-        artifacts = [
-            {"type": "playtest_report", "path": str(report_path)},
-            {"type": "playtest_frames", "path": str(out / "frames")},
-        ]
-        if report.get("video"):
-            artifacts.append({"type": "playtest_video", "path": str(report["video"])})
+        try:
+            lines = command.stdout.strip().splitlines()
+            if not lines:
+                raise ValueError("Recorder produced no final stdout JSON")
+            current = json.loads(lines[-1])
+            if not isinstance(current, dict):
+                raise ValueError("Final stdout JSON must be an object")
+            report_path = self._contained_path(current.get("report"), out)
+            take = self._contained_path(current.get("output_dir"), out, directory=True)
+            if take.parent != out or take.name in previous_entries:
+                raise ValueError("Recorder did not return a new take within output_dir")
+            if report_path != take / "report.json":
+                raise ValueError("Report does not belong to the current take")
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            if not isinstance(report, dict):
+                raise ValueError("Playtest report must be an object")
+            payload.update(report_path=str(report_path), take_dir=str(take), report=report)
+            if self._contained_path(report.get("output_dir"), out, directory=True) != take:
+                raise ValueError("Report output_dir does not match the current take")
+            if report.get("source_hash") != source_hash or current.get("source_hash") != source_hash:
+                raise ValueError("Recorder source_hash does not match this invocation")
+            if report.get("mode") != mode or report.get("url") != url:
+                raise ValueError("Recorder mode or URL does not match this invocation")
+            expected_status = "preview_completed" if preview else "completed"
+            if command.timed_out or command.returncode != 0:
+                raise ValueError("Recorder timed out" if command.timed_out else f"Recorder exited with code {command.returncode}")
+            if report.get("status") != expected_status or current.get("status") != expected_status:
+                raise ValueError(report.get("crash") or f"Recorder status is not {expected_status}")
+            if any(report.get(key) for key in ("crash", "page_errors", "console_errors")):
+                raise ValueError("Recorder reported browser errors")
+            if report.get("partial_plan") and not allow_partial_plan:
+                raise ValueError("Recorder returned an unrequested partial plan")
+            if not isinstance(report.get("warnings", []), list):
+                raise ValueError("Report warnings must be an array")
+            artifacts = [{"type": "playtest_report", "path": str(report_path)}]
+            if preview:
+                if report.get("preview") is not True or report.get("png_frames") != 1 or report.get("video"):
+                    raise ValueError("Invalid PNG-only preview report")
+                poster = self._contained_path(report.get("poster"), take)
+                if poster.suffix.lower() != ".png":
+                    raise ValueError("Preview poster must be a PNG")
+                artifacts.append({"type": "playtest_poster", "path": str(poster)})
+            else:
+                metadata = report.get("video_metadata")
+                if not isinstance(metadata, dict):
+                    raise ValueError("Completed video has no video_metadata")
+                frames = report.get("frames")
+                if not isinstance(frames, int) or isinstance(frames, bool) or frames <= 0:
+                    raise ValueError("Completed video has no frames")
+                expected_frames = max(1, math.floor(duration * fps + 0.5))
+                if frames != expected_frames or frames != report.get("target_frames") or frames != metadata.get("frames"):
+                    raise ValueError("Video frame counts do not match the requested duration")
+                if report.get("fps") != fps or metadata.get("fps") != fps:
+                    raise ValueError("Video fps does not match the request")
+                if report.get("viewport") != {"width": width, "height": height} or (
+                    metadata.get("width"), metadata.get("height")
+                ) != (width, height):
+                    raise ValueError("Video dimensions do not match the request")
+                if not all(isinstance(seconds, (int, float)) and math.isfinite(seconds)
+                           and math.isclose(seconds, frames / fps, rel_tol=0, abs_tol=0.002)
+                           for seconds in (metadata.get("seconds"), report.get("recorded_seconds"))):
+                    raise ValueError("Video duration does not match frame count")
+                video = self._contained_path(report.get("video"), take)
+                if video.suffix.lower() != ".mp4":
+                    raise ValueError("Completed video must be an MP4")
+                artifacts.extend([
+                    {"type": "playtest_frames", "path": str(self._contained_path(str(take / "frames"), take, directory=True))},
+                    {"type": "playtest_video", "path": str(video)},
+                ])
+                for key in ("init", "poster"):
+                    image = self._contained_path(report.get(key), take)
+                    artifacts.append({"type": f"playtest_{key}", "path": str(image)})
+        except (OSError, ValueError, TypeError, RuntimeError) as exc:
+            return self._fail(f"Invalid current playtest evidence: {exc}", payload)
         return ThreeOperationResult.success(
             _OPERATION,
             artifacts=artifacts,
             warnings=[str(item) for item in report.get("warnings", [])],
             payload=payload,
         ).to_dict()
+
+    @staticmethod
+    def _contained_path(value: Any, parent: Path, *, directory: bool = False) -> Path:
+        if not isinstance(value, str) or not value or not Path(value).is_absolute():
+            raise ValueError("Evidence paths must be absolute strings")
+        candidate = Path(value).resolve(strict=True)
+        if candidate == parent or not candidate.is_relative_to(parent):
+            raise ValueError("Evidence path escapes the current output scope")
+        if directory:
+            if not candidate.is_dir():
+                raise ValueError("Evidence directory is missing")
+        elif not candidate.is_file() or candidate.stat().st_size == 0:
+            raise ValueError("Evidence file is missing or empty")
+        return candidate
 
     @staticmethod
     def _resolve(value: str | Path | None) -> Path | None:
