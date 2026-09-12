@@ -7,6 +7,18 @@ export {
 } from './runtime-host.js';
 export { A3GameAssetLibrary } from './asset-library.js';
 export {
+  directionToYaw,
+  yawToDirection,
+  footprintCorners,
+  distanceToPolyline,
+  createGroundRibbon,
+  createFacadeTexture,
+} from './scene-kit.js';
+export { A3GameWindField, bindVegetationWind } from './wind-field.js';
+export { createLightningArc } from './lightning-effect.js';
+export { A3GameWaterBody } from './water-body.js';
+export { createSurfaceFlow, createSurfaceFlowTerrain } from './surface-flow.js';
+export {
   A3GAME_RUNTIME_FORWARD_AXIS,
   A3GameForwardAxis,
   A3GameMaterialPreset,

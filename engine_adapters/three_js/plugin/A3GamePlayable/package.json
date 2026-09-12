@@ -18,8 +18,15 @@
     "src",
     "README.md"
   ],
+  "scripts": {
+    "test": "vitest run"
+  },
   "peerDependencies": {
-    "three": ">=0.170.0"
+    "three": ">=0.185.0 <0.186.0"
+  },
+  "devDependencies": {
+    "three": "0.185.0",
+    "vitest": "2.1.9"
   },
   "sideEffects": false,
   "a3game": {

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from math import isfinite
 from typing import Any
 
 
@@ -364,6 +365,61 @@ class CameraSpec:
         }
 
 
+def _water_surface(data: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(data, dict):
+        raise ValueError("water entries must be objects")
+    result = dict(data)
+    result["water_id"] = _identifier(data.get("water_id", ""), field_name="water_id")
+    size = data.get("size", 60)
+    size = list(size) if isinstance(size, (list, tuple)) else [size, size]
+    if len(size) != 2 or any(not isfinite(float(v)) or float(v) <= 0 for v in size):
+        raise ValueError("water size must contain two finite positive lengths")
+    result["size"] = [float(v) for v in size]
+    result["position"] = _vector3(data.get("position"))
+    if not all(isfinite(v) for v in result["position"].values()):
+        raise ValueError("water position must be finite")
+    options = dict(data.get("options") or {})
+    if options.get("quality", "standard") not in ("low", "standard"):
+        raise ValueError("water quality must be low or standard")
+    result["options"] = options
+    return result
+
+
+def _wind_config(data: Any) -> dict[str, Any]:
+    if not isinstance(data, dict):
+        raise ValueError("wind must be an object")
+    result = dict(data)
+    if "velocity" in result:
+        velocity = result["velocity"]
+        if not isinstance(velocity, (list, tuple, dict)):
+            raise ValueError("wind velocity must be a vector")
+        if not isinstance(velocity, dict) and len(velocity) != 3:
+            raise ValueError("wind velocity must have three components")
+        result["velocity"] = _vector3(velocity)
+        if not all(isfinite(v) for v in result["velocity"].values()):
+            raise ValueError("wind velocity must be finite")
+    for key, minimum in (("gustStrength", 0), ("gustPeriod", 0.1),
+                         ("spatialScale", 0.1), ("response", 0.01), ("heightShear", 0)):
+        if key in result:
+            value = float(result[key])
+            if not isfinite(value) or value < minimum:
+                raise ValueError(f"Invalid wind {key}")
+            result[key] = value
+    if "seed" in result and not isfinite(float(result["seed"])):
+        raise ValueError("wind seed must be finite")
+    return result
+
+
+def _water_surfaces(data: Any) -> tuple[dict[str, Any], ...]:
+    if not isinstance(data, (list, tuple)):
+        raise ValueError("water must be a list")
+    surfaces = tuple(_water_surface(item) for item in data)
+    ids = [item["water_id"] for item in surfaces]
+    if len(ids) != len(set(ids)):
+        raise ValueError("water_id values must be unique")
+    return surfaces
+
+
 @dataclass(frozen=True)
 class EnvironmentSpec:
     #: Procedural image-based lighting: "room", "sky", "gradient", "none".
@@ -389,6 +445,11 @@ class EnvironmentSpec:
     environment_intensity: float = 1.0
     background_intensity: float = 1.0
     background_blurriness: float = 0.0
+    show_sky: bool = True
+    environment_rotation_degrees: float = 0.0
+    background_rotation_degrees: float = 0.0
+    water: tuple[dict[str, Any], ...] = ()
+    wind: dict[str, Any] = field(default_factory=dict)
     tone_mapping: str = "NeutralToneMapping"
     tone_mapping_exposure: float = 1.0
     shadows: bool = True
@@ -440,6 +501,11 @@ class EnvironmentSpec:
             background_blurriness=float(
                 payload.get("background_blurriness", 0.0)
             ),
+            show_sky=bool(payload.get("show_sky", True)),
+            environment_rotation_degrees=float(payload.get("environment_rotation_degrees", 0.0)),
+            background_rotation_degrees=float(payload.get("background_rotation_degrees", payload.get("environment_rotation_degrees", 0.0))),
+            water=_water_surfaces(payload.get("water", [])),
+            wind=_wind_config(payload.get("wind") or {}),
             tone_mapping=str(
                 payload.get("tone_mapping")
                 or "NeutralToneMapping"
@@ -467,6 +533,11 @@ class EnvironmentSpec:
             "environment_intensity": self.environment_intensity,
             "background_intensity": self.background_intensity,
             "background_blurriness": self.background_blurriness,
+            "show_sky": self.show_sky,
+            "environment_rotation_degrees": self.environment_rotation_degrees,
+            "background_rotation_degrees": self.background_rotation_degrees,
+            "water": [dict(item) for item in self.water],
+            "wind": dict(self.wind),
             "tone_mapping": self.tone_mapping,
             "tone_mapping_exposure": self.tone_mapping_exposure,
             "shadows": self.shadows,
@@ -569,6 +640,10 @@ class WorldSpec:
         for key in ("artifact_id", "texture_artifact_id",
                     "normal_artifact_id", "roughness_artifact_id"):
             reference = str(self.environment.ground.get(key) or "")
+            if reference:
+                resolved.add(reference)
+        for water in self.environment.water:
+            reference = str(water.get("normal_artifact_id") or "")
             if reference:
                 resolved.add(reference)
         return sorted(resolved)

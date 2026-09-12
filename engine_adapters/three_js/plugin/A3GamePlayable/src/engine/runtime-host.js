@@ -13,6 +13,7 @@ import { PointerLockControls } from 'three/addons/controls/PointerLockControls.j
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { Sky } from 'three/addons/objects/Sky.js';
 import { createSkyGradient } from './visual-kit.js';
+import { A3GameWindField } from './wind-field.js';
 
 /**
  * Procedural environments, so image-based lighting needs no `.hdr`.
@@ -76,7 +77,8 @@ export class A3GameRuntimeHost {
    *          cameraType?: 'perspective' | 'orthographic',
    *          frustumHeight?: number,
    *          fov?: number, near?: number, far?: number,
-   *          fixedTimeStep?: number}} options
+   *          fixedTimeStep?: number, maxSubSteps?: number,
+   *          maxFrameDelta?: number, environmentUpdateInterval?: number}} options
    */
   constructor(options = {}) {
     this.options = {
@@ -91,9 +93,22 @@ export class A3GameRuntimeHost {
       fov: 50,
       near: 0.1,
       far: 2000,
-      fixedTimeStep: 0,
+      fixedTimeStep: 1 / 60,
+      maxSubSteps: 6,
+      maxFrameDelta: 0.1,
+      environmentUpdateInterval: 0,
       ...options,
     };
+    for (const key of ['fixedTimeStep', 'maxFrameDelta', 'environmentUpdateInterval']) {
+      const value = Number(this.options[key]);
+      if (!Number.isFinite(value) || value < 0 || (key === 'maxFrameDelta' && value === 0)) {
+        throw new RangeError(`${key} must be finite and ${key === 'maxFrameDelta' ? 'positive' : 'non-negative'}`);
+      }
+      this.options[key] = value;
+    }
+    if (!Number.isInteger(this.options.maxSubSteps) || this.options.maxSubSteps < 1) {
+      throw new RangeError('maxSubSteps must be a positive integer');
+    }
     this.container = resolveElement(options.container);
     this.hudContainer = resolveElement(options.hudContainer);
 
@@ -133,6 +148,7 @@ export class A3GameRuntimeHost {
      * @type {THREE.Vector3}
      */
     this.sunDirection = new THREE.Vector3(0.35, 0.22, -1).normalize();
+    this.wind = new A3GameWindField(options.wind ?? {});
     this.clock = new THREE.Clock();
     this.raycaster = new THREE.Raycaster();
     this.pointer = new THREE.Vector2();
@@ -142,6 +158,16 @@ export class A3GameRuntimeHost {
     this.frameCount = 0;
     this.elapsedSeconds = 0;
     this.accumulator = 0;
+    this.interpolationAlpha = 0;
+    this.droppedSeconds = 0;
+    this.lastSubSteps = 0;
+    this.renderListeners = new Set();
+    this.interpolatedObjects = new Map();
+    this.sunLights = new Map();
+    this.sunConfigured = false;
+    this.environmentPresetOptions = null;
+    this.environmentAge = 0;
+    this.generatedEnvironmentTarget = null;
 
     /** @type {Set<(delta: number, elapsed: number) => void>} */
     this.tickListeners = new Set();
@@ -168,6 +194,7 @@ export class A3GameRuntimeHost {
       powerPreference: 'high-performance',
       preserveDrawingBuffer: true,
     });
+    this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.setClearColor(new THREE.Color(this.options.clearColor));
     this.renderer.setPixelRatio(
       Math.min(window.devicePixelRatio || 1, this.options.pixelRatioCap),
@@ -272,28 +299,99 @@ export class A3GameRuntimeHost {
    * @param {number} [forcedDelta] seconds
    */
   tick(forcedDelta) {
-    const delta =
-      forcedDelta === undefined
-        ? Math.min(this.clock.getDelta(), 0.1)
-        : Math.max(0, Number(forcedDelta) || 0);
-    this.elapsedSeconds += delta;
+    const requested = forcedDelta === undefined ? this.clock.getDelta() : Number(forcedDelta);
+    if (!Number.isFinite(requested) || requested < 0) {
+      throw new RangeError('tick delta must be finite and non-negative');
+    }
+    const delta = Math.min(requested, this.options.maxFrameDelta);
+    this.droppedSeconds += requested - delta;
     this.frameCount += 1;
-
+    this.lastSubSteps = 0;
     const step = this.options.fixedTimeStep;
     if (step > 0) {
       this.accumulator += delta;
-      while (this.accumulator >= step) {
-        this.#emitTick(step);
-        this.accumulator -= step;
+      while (this.accumulator + step * 1e-9 >= step && this.lastSubSteps < this.options.maxSubSteps) {
+        this.#simulate(step);
+        this.accumulator = Math.max(0, this.accumulator - step);
+        this.lastSubSteps += 1;
       }
+      if (this.accumulator >= step) {
+        const discarded = Math.floor(this.accumulator / step) * step;
+        this.droppedSeconds += discarded;
+        this.accumulator -= discarded;
+      }
+      this.interpolationAlpha = this.accumulator / step;
     } else {
-      this.#emitTick(delta);
+      this.#simulate(delta);
+      this.lastSubSteps = 1;
+      this.interpolationAlpha = 1;
     }
+    this.#renderFrame(delta);
+    return this;
+  }
 
-    if (this.controls && typeof this.controls.update === 'function') {
-      this.controls.update(delta);
+  #simulate(delta) {
+    for (const [object, previous] of this.interpolatedObjects) {
+      previous.position.copy(object.position);
+      previous.quaternion.copy(object.quaternion);
+      previous.scale.copy(object.scale);
     }
-    this.renderer?.render(this.scene, this.camera);
+    this.elapsedSeconds += delta;
+    this.#emitTick(delta);
+    this.environmentAge += delta;
+    const interval = this.options.environmentUpdateInterval;
+    if (interval > 0 && this.environmentAge >= interval && this.generatedEnvironment) {
+      this.refreshEnvironment();
+    }
+  }
+
+  #renderFrame(delta) {
+    const restored = [];
+    try {
+      for (const [object, previous] of this.interpolatedObjects) {
+        const state = previous.current;
+        state.position.copy(object.position);
+        state.quaternion.copy(object.quaternion);
+        state.scale.copy(object.scale);
+        restored.push([object, state]);
+        object.position.lerpVectors(previous.position, state.position, this.interpolationAlpha);
+        object.quaternion.slerpQuaternions(previous.quaternion, state.quaternion, this.interpolationAlpha);
+        object.scale.lerpVectors(previous.scale, state.scale, this.interpolationAlpha);
+        object.updateMatrixWorld(true);
+      }
+      for (const listener of this.renderListeners) listener(delta, this.interpolationAlpha);
+      this.controls?.update?.(delta);
+      this.renderer?.render(this.scene, this.camera);
+    } finally {
+      for (const [object, state] of restored) {
+        object.position.copy(state.position);
+        object.quaternion.copy(state.quaternion);
+        object.scale.copy(state.scale);
+        object.updateMatrixWorld(true);
+      }
+    }
+  }
+
+  /** Display-only updates after simulation; alpha interpolates the last two states. */
+  onRender(listener) {
+    if (typeof listener !== 'function') throw new TypeError('onRender requires a function');
+    this.renderListeners.add(listener);
+    return () => this.renderListeners.delete(listener);
+  }
+
+  /** Render interpolation never writes back to the simulation transform. */
+  interpolateObject(object) {
+    if (!object?.isObject3D) throw new TypeError('interpolateObject requires an Object3D');
+    const snapshot = () => ({
+      position: object.position.clone(), quaternion: object.quaternion.clone(), scale: object.scale.clone(),
+    });
+    this.interpolatedObjects.set(object, { ...snapshot(), current: snapshot() });
+    return () => this.interpolatedObjects.delete(object);
+  }
+
+  /** Reset the previous transform after teleporting or respawning. */
+  resetInterpolation(object) {
+    if (this.interpolatedObjects.has(object)) this.interpolateObject(object);
     return this;
   }
 
@@ -331,11 +429,52 @@ export class A3GameRuntimeHost {
       this.namedRoots.set(rootName, root);
     }
     root.add(object);
+    object.traverse((child) => {
+      if (child.isDirectionalLight && child.userData.a3gameSun) this.registerSunLight(child);
+    });
     return object;
   }
 
   remove(object) {
+    object?.traverse?.((child) => {
+      this.sunLights.delete(child);
+      this.interpolatedObjects.delete(child);
+    });
     object?.parent?.remove(object);
+    return this;
+  }
+
+  registerSunLight(light, distance) {
+    if (!light?.isDirectionalLight) throw new TypeError('Sun must be a DirectionalLight');
+    light.updateWorldMatrix(true, false);
+    light.target.updateWorldMatrix(true, false);
+    const span = distance ?? light.getWorldPosition(new THREE.Vector3())
+      .distanceTo(light.target.getWorldPosition(new THREE.Vector3()));
+    if (!Number.isFinite(span) || span <= 0) throw new RangeError('Sun distance must be positive');
+    this.sunLights.set(light, span);
+    if (!light.target.parent && this.scene) this.scene.add(light.target);
+    if (this.sunConfigured) this.#syncSun();
+    return () => this.sunLights.delete(light);
+  }
+
+  #syncSun() {
+    this.skyDome?.userData?.setSunDirection?.(this.sunDirection);
+    this.skyDome?.material?.uniforms?.sunPosition?.value.copy(this.sunDirection);
+    for (const [light, distance] of this.sunLights) {
+      const position = light.target.getWorldPosition(new THREE.Vector3())
+        .addScaledVector(this.sunDirection, distance);
+      if (light.parent) light.parent.worldToLocal(position);
+      light.position.copy(position);
+      light.updateMatrixWorld(true);
+    }
+  }
+
+  /** Rebuild procedural IBL on demand, never replacing an imported HDRI. */
+  refreshEnvironment() {
+    if (this.generatedEnvironment && this.environmentPresetOptions) {
+      this.#applyEnvironmentPreset(this.environmentPresetOptions, true);
+    }
+    this.environmentAge = 0;
     return this;
   }
 
@@ -491,20 +630,36 @@ export class A3GameRuntimeHost {
    *          toneMapping?: keyof typeof TONE_MAPPINGS,
    *          toneMappingExposure?: number}} options
    */
+  setWind(config, immediate = false) {
+    this.wind.set(config, immediate);
+    return this;
+  }
+
   setEnvironment(options = {}) {
     if (!this.scene) throw new Error('init() must run before setEnvironment()');
+    if (options.wind) this.setWind(options.wind);
+    let sunChanged = false;
     if (options.sunPosition) {
-      this.sunDirection
-        .set(
-          Number(options.sunPosition.x ?? 0),
-          Number(options.sunPosition.y ?? 1),
-          Number(options.sunPosition.z ?? 0),
-        )
-        .normalize();
+      const sun = new THREE.Vector3(
+        Number(options.sunPosition.x ?? 0), Number(options.sunPosition.y ?? 1), Number(options.sunPosition.z ?? 0),
+      );
+      if (!sun.toArray().every(Number.isFinite) || sun.lengthSq() < 1e-12) {
+        throw new RangeError('sunPosition must be a finite non-zero direction');
+      }
+      sun.normalize();
+      sunChanged = this.sunDirection.distanceToSquared(sun) > 1e-12;
+      this.sunDirection.copy(sun);
+      this.sunConfigured = true;
     }
     if (options.preset !== undefined) {
-      this.#applyEnvironmentPreset(options);
+      this.environmentPresetOptions = { ...options, sunPosition: this.sunDirection.clone() };
+      this.#applyEnvironmentPreset(this.environmentPresetOptions);
+      this.sunConfigured = true;
+    } else if (sunChanged && this.environmentPresetOptions) {
+      this.environmentPresetOptions.sunPosition = this.sunDirection.clone();
+      if (!options.environmentTexture) this.refreshEnvironment();
     }
+    if (this.sunConfigured) this.#syncSun();
     if (options.background !== undefined) {
       this.scene.background =
         options.background === null
@@ -554,13 +709,13 @@ export class A3GameRuntimeHost {
         0,
       );
     }
-    if (options.toneMapping && TONE_MAPPINGS[options.toneMapping]) {
-      this.renderer.toneMapping = TONE_MAPPINGS[options.toneMapping];
+    if (options.toneMapping && Object.hasOwn(TONE_MAPPINGS, options.toneMapping)) {
+      this.options.toneMapping = options.toneMapping;
+      if (this.renderer) this.renderer.toneMapping = TONE_MAPPINGS[options.toneMapping];
     }
     if (options.toneMappingExposure !== undefined) {
-      this.renderer.toneMappingExposure = Number(
-        options.toneMappingExposure,
-      );
+      this.options.toneMappingExposure = Number(options.toneMappingExposure);
+      if (this.renderer) this.renderer.toneMappingExposure = this.options.toneMappingExposure;
     }
     return this;
   }
@@ -592,11 +747,14 @@ export class A3GameRuntimeHost {
    * The resulting texture is owned by this host so `dispose()` can free
    * it — nothing else in the scene graph references it.
    */
-  #applyEnvironmentPreset(options) {
+  #applyEnvironmentPreset(options, refreshOnly = false) {
     const preset = String(options.preset ?? 'none').toLowerCase();
+    const cloudTime = this.skyDome?.userData?.uniforms?.uTime?.value ?? 0;
     if (preset === A3GameEnvironmentPreset.NONE) {
       this.#releaseGeneratedEnvironment();
+      this.#removeSkyRoot();
       this.scene.environment = null;
+      this.environmentPresetOptions = null;
       return;
     }
     if (!this.renderer) {
@@ -642,6 +800,9 @@ export class A3GameRuntimeHost {
         // PMREM source, where it lets the far side of the sphere win.
         dome.material.depthTest = true;
         dome.material.depthWrite = true;
+        dome.material.toneMapped = false;
+        dome.userData.uniforms.uTime.value = cloudTime;
+        dome.userData.update(0, this.wind);
         dome.onBeforeRender = () => {};
         source = new THREE.Scene();
         source.add(dome);
@@ -653,21 +814,26 @@ export class A3GameRuntimeHost {
             'room, sky, gradient, or none',
         );
       }
-      const texture = generator.fromScene(source, 0.04).texture;
+      const target = generator.fromScene(source, 0.04);
+      const backgroundWasGenerated = this.scene.background === this.generatedEnvironment;
       this.#releaseGeneratedEnvironment();
-      this.generatedEnvironment = texture;
-      this.scene.environment = texture;
-      if (paintsSky && options.showSky !== false) {
-        // The sky is also the backdrop, so a second instance is added to
-        // the live scene. The one above was consumed by the generator and
-        // is disposed with it.
+      this.generatedEnvironmentTarget = target;
+      this.generatedEnvironment = target.texture;
+      this.scene.environment = target.texture;
+      this.environmentAge = 0;
+      this.scene.environmentRotation.set(0, 0, 0);
+      if (refreshOnly) {
+        if (backgroundWasGenerated) this.scene.background = target.texture;
+      } else if (paintsSky && options.showSky !== false) {
         if (preset === A3GameEnvironmentPreset.GRADIENT) {
           this.#installSkyGradient(options);
+          this.skyDome.userData.uniforms.uTime.value = cloudTime;
         } else {
           this.#installSkyDome(options);
         }
-      } else if (options.background === undefined) {
-        this.scene.background = texture;
+      } else {
+        this.#removeSkyRoot();
+        if (options.background === undefined) this.scene.background = target.texture;
       }
     } finally {
       // `RoomEnvironment` is a Scene of meshes; the Sky holds a shader
@@ -734,7 +900,10 @@ export class A3GameRuntimeHost {
     sky.material.uniforms.sunPosition.value.copy(this.sunDirection);
     sky.material.uniforms.turbidity.value = Number(options.turbidity ?? 6);
     sky.material.uniforms.rayleigh.value = Number(options.rayleigh ?? 2);
+    sky.material.uniforms.mieCoefficient.value = Number(options.mieCoefficient ?? 0.005);
+    sky.material.uniforms.mieDirectionalG.value = Number(options.mieDirectionalG ?? 0.8);
     sky.name = 'A3GameSky';
+    this.skyDome = sky;
     this.add(sky, 'sky');
     this.scene.background = null;
     return sky;
@@ -742,7 +911,10 @@ export class A3GameRuntimeHost {
 
   #releaseGeneratedEnvironment() {
     if (this.generatedEnvironment) {
-      this.generatedEnvironment.dispose();
+      if (this.scene?.background === this.generatedEnvironment) this.scene.background = null;
+      if (this.generatedEnvironmentTarget) this.generatedEnvironmentTarget.dispose();
+      else this.generatedEnvironment.dispose();
+      this.generatedEnvironmentTarget = null;
       this.generatedEnvironment = null;
     }
   }
@@ -808,7 +980,7 @@ export class A3GameRuntimeHost {
 
   /** @returns {string} a PNG data URL of the current frame. */
   captureFrame() {
-    this.renderer?.render(this.scene, this.camera);
+    this.#renderFrame(0);
     return this.renderer?.domElement.toDataURL('image/png') ?? '';
   }
 
@@ -818,6 +990,9 @@ export class A3GameRuntimeHost {
     return {
       frameCount: this.frameCount,
       elapsedSeconds: Number(this.elapsedSeconds.toFixed(3)),
+      simulationSteps: this.lastSubSteps,
+      interpolationAlpha: this.interpolationAlpha,
+      droppedSeconds: this.droppedSeconds,
       drawCalls: info?.render?.calls ?? 0,
       triangles: info?.render?.triangles ?? 0,
       geometries: info?.memory?.geometries ?? 0,
@@ -833,6 +1008,10 @@ export class A3GameRuntimeHost {
     this.stop();
     this.detachControls();
     this.tickListeners.clear();
+    this.renderListeners.clear();
+    this.interpolatedObjects.clear();
+    this.sunLights.clear();
+    this.environmentPresetOptions = null;
     this.resizeListeners.clear();
     if (this.onWindowResize) {
       window.removeEventListener('resize', this.onWindowResize);
@@ -857,15 +1036,16 @@ export class A3GameRuntimeHost {
     // The sky is host-owned scenery, so the host animates it. A game that
     // had to remember to advance the cloud clock itself would forget, and
     // a frozen cloud deck is worse than none.
-    this.skyDome?.userData?.update?.(delta);
+    this.wind.update(delta);
+    this.skyDome?.userData?.update?.(delta, this.wind);
     for (const listener of this.tickListeners) {
       listener(delta, this.elapsedSeconds);
     }
   }
 
   #size() {
-    const width = this.container?.clientWidth || window.innerWidth || 1;
-    const height = this.container?.clientHeight || window.innerHeight || 1;
+    const width = this.container?.clientWidth || globalThis.window?.innerWidth || 1;
+    const height = this.container?.clientHeight || globalThis.window?.innerHeight || 1;
     return { width, height, clientWidth: width, clientHeight: height };
   }
 
@@ -971,18 +1151,25 @@ export function disposeObject3D(root) {
     'clearcoatMap',
     'sheenColorMap',
   ];
+  const disposed = new Set();
+  const release = (resource) => {
+    if (!resource || disposed.has(resource) || resource.userData?.a3AssetLibraryOwned) return;
+    disposed.add(resource);
+    resource.dispose?.();
+  };
   root.traverse((child) => {
-    if (child.geometry) child.geometry.dispose();
+    child.userData?.dispose?.();
+    if (child.userData?.disposed) return;
+    if (child.isLight) child.dispose?.();
+    release(child.geometry);
     const materials = Array.isArray(child.material)
       ? child.material
       : child.material
         ? [child.material]
         : [];
     for (const material of materials) {
-      for (const key of textureKeys) {
-        material[key]?.dispose?.();
-      }
-      material.dispose?.();
+      for (const key of textureKeys) release(material[key]);
+      release(material);
     }
   });
   root.parent?.remove(root);

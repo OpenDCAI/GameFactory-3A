@@ -22,6 +22,8 @@
 
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+import { Reflector } from 'three/addons/objects/Reflector.js';
+import { Refractor } from 'three/addons/objects/Refractor.js';
 
 /**
  * Physically plausible starting points for the materials a game needs.
@@ -194,6 +196,7 @@ export function createSunLight(options = {}) {
   const target = options.target ?? { x: 0, y: 0, z: 0 };
   light.target.position.set(target.x, target.y, target.z);
   light.name = 'A3GameSun';
+  light.userData.a3gameSun = options.syncEnvironment !== false;
 
   light.castShadow = options.castShadow !== false;
   if (light.castShadow) {
@@ -1095,6 +1098,8 @@ export function createSkyGradient(options = {}) {
     uCloudOpacity: { value: Number(options.cloudOpacity ?? 0.9) },
     uCloudScale: { value: Number(options.cloudScale ?? 1.6) },
     uCloudSpeed: { value: Number(options.cloudSpeed ?? 0.006) },
+    uWindOffset: { value: new THREE.Vector2() },
+    uWindDriven: { value: 0 },
     uHaze: { value: Number(options.haze ?? 0.35) },
     uTime: { value: 0 },
   };
@@ -1109,6 +1114,7 @@ export function createSkyGradient(options = {}) {
       void main() {
         vDirection = normalize(position);
         gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        gl_Position.z = gl_Position.w;
       }
     `,
     fragmentShader: /* glsl */ `
@@ -1116,7 +1122,8 @@ export function createSkyGradient(options = {}) {
       uniform vec3 uZenith, uHorizon, uGround, uSunColor;
       uniform vec3 uCloudColor, uCloudShadow, uSunDirection;
       uniform float uSunSize, uSunGlow, uCloudCoverage, uCloudOpacity;
-      uniform float uCloudScale, uCloudSpeed, uHaze, uTime;
+      uniform float uCloudScale, uCloudSpeed, uHaze, uTime, uWindDriven;
+      uniform vec2 uWindOffset;
       ${FBM_GLSL}
       void main() {
         vec3 dir = normalize(vDirection);
@@ -1125,7 +1132,7 @@ export function createSkyGradient(options = {}) {
         // Horizon gradient. The 0.42 exponent keeps the bright band low
         // and thin, which is what a real sky does and a linear mix does not.
         vec3 sky = mix(uHorizon, uZenith, pow(clamp(height, 0.0, 1.0), 0.42));
-        sky = mix(sky, uGround, smoothstep(0.0, -0.10, height));
+        sky = mix(sky, uGround, 1.0 - smoothstep(-0.10, 0.0, height));
 
         float sunDot = clamp(dot(dir, normalize(uSunDirection)), 0.0, 1.0);
         // Forward scattering: the whole sky warms towards the sun, most
@@ -1134,7 +1141,10 @@ export function createSkyGradient(options = {}) {
         sky += uSunColor * pow(sunDot, 6.0) * uHaze *
                (1.0 - smoothstep(0.0, 0.6, height));
         sky += uSunColor * pow(sunDot, uSunGlow) * 0.9;
-        float disc = smoothstep(1.0 - uSunSize, 1.0 - uSunSize * 0.25, sunDot);
+        float disc = 0.0;
+        if (uSunSize > 0.0) {
+          disc = smoothstep(1.0 - uSunSize, 1.0 - uSunSize * 0.25, sunDot);
+        }
         sky += uSunColor * disc * 6.0;
 
         // Clouds live on a virtual plane above the camera, so the
@@ -1142,9 +1152,10 @@ export function createSkyGradient(options = {}) {
         // cloud deck does.
         float above = max(height, 0.035);
         vec2 plane = dir.xz / above * uCloudScale;
-        vec2 drift = vec2(uTime * uCloudSpeed * 60.0, uTime * uCloudSpeed * 22.0);
+        vec2 drift = mix(vec2(uTime * uCloudSpeed * 60.0, uTime * uCloudSpeed * 22.0), uWindOffset * 0.09, uWindDriven);
         float shape = a3Fbm(plane * 0.09 + drift);
-        float detail = a3Fbm(plane * 0.31 - drift * 1.7);
+        vec2 detailDrift = mix(-drift * 1.7, uWindOffset * 0.31, uWindDriven);
+        float detail = a3Fbm(plane * 0.31 + detailDrift);
         float density = shape * 0.78 + detail * 0.22;
         float cover = smoothstep(uCloudCoverage, uCloudCoverage + 0.22, density);
         cover *= smoothstep(0.015, 0.22, height) * uCloudOpacity;
@@ -1157,6 +1168,8 @@ export function createSkyGradient(options = {}) {
 
         vec3 color = mix(sky, cloud, cover);
         gl_FragColor = vec4(color, 1.0);
+        #include <tonemapping_fragment>
+        #include <colorspace_fragment>
       }
     `,
   });
@@ -1168,10 +1181,17 @@ export function createSkyGradient(options = {}) {
   // hidden behind it regardless of the far plane.
   mesh.renderOrder = -1000;
   mesh.onBeforeRender = (renderer, scene, camera) => {
-    mesh.position.copy(camera.position);
+    camera.getWorldPosition(mesh.position);
+    if (mesh.parent) mesh.parent.worldToLocal(mesh.position);
+    mesh.updateMatrixWorld(true);
   };
-  mesh.userData.update = (delta) => {
+  mesh.userData.update = (delta, wind = options.windField) => {
     uniforms.uTime.value += Number(delta) || 0;
+    if (wind) {
+      const scale = uniforms.uCloudScale.value / Math.max(1, Number(options.cloudHeight ?? 120));
+      uniforms.uWindOffset.value.set(-wind.displacement.x * scale, -wind.displacement.z * scale);
+      uniforms.uWindDriven.value = 1;
+    }
   };
   mesh.userData.setSunDirection = (direction) => {
     uniforms.uSunDirection.value.copy(
@@ -1380,10 +1400,11 @@ export function createSurfaceTextures(options = {}) {
     // Ambient occlusion baked into the albedo: recesses are darker, which
     // survives even when a renderer's shadows do not reach them.
     const cavity = 0.72 + height[index] * 0.38;
+    shade.multiplyScalar(cavity).convertLinearToSRGB();
     const offset = index * 4;
-    colourData[offset] = Math.min(255, Math.round(shade.r * cavity * 255));
-    colourData[offset + 1] = Math.min(255, Math.round(shade.g * cavity * 255));
-    colourData[offset + 2] = Math.min(255, Math.round(shade.b * cavity * 255));
+    colourData[offset] = Math.min(255, Math.round(shade.r * 255));
+    colourData[offset + 1] = Math.min(255, Math.round(shade.g * 255));
+    colourData[offset + 2] = Math.min(255, Math.round(shade.b * 255));
     colourData[offset + 3] = 255;
     const rough = Math.min(
       1,
@@ -1420,6 +1441,9 @@ export function createSurfaceTextures(options = {}) {
 
   const build = (data, srgb) => {
     const texture = new THREE.DataTexture(data, size, size);
+    texture.magFilter = THREE.LinearFilter;
+    texture.minFilter = THREE.LinearMipmapLinearFilter;
+    texture.generateMipmaps = true;
     texture.needsUpdate = true;
     return createTilingTexture(texture, {
       repeat: options.repeat ?? 1,
@@ -1516,81 +1540,572 @@ export function createTilingTexture(texture, options = {}) {
 }
 
 /**
- * A reflective water plane with scrolling normals.
+ * Bounded analytic water, not a fluid solver. Standard quality uses GPU
+ * waves; low quality uses a bounded CPU mesh. Both expose world-space
+ * height/normal/depth sampling, pooled ripples and approximate buoyancy.
+ * Optional planar reflection/refraction targets are created on first render.
  *
- * `three/addons/objects/Water.js` needs a reflection render target, i.e.
- * a second scene pass, which is the wrong trade for a lake that fills a
- * tenth of the screen. A near-mirror `MeshStandardMaterial` reflecting
- * `scene.environment` gives the sky back for free, and two normal-map
- * layers scrolling at different speeds and scales supply the movement.
- *
- * @param {{size?: number | number[], normalMap?: THREE.Texture,
- *          color?: number|string, opacity?: number, roughness?: number,
- *          metalness?: number, flowSpeed?: number, normalScale?: number,
- *          repeat?: number, segments?: number, waveHeight?: number,
- *          renderer?: THREE.WebGLRenderer}} [options]
+ * @param {object} [options] quality, size, waves, terrainHeight, depth,
+ *   reflection/refraction, rippleCapacity and appearance settings.
  * @returns {THREE.Mesh} in the XZ plane, with `userData.update(delta)`
  */
 export function createWaterSurface(options = {}) {
-  const size = Array.isArray(options.size)
-    ? options.size
-    : [Number(options.size ?? 60), Number(options.size ?? 60)];
-  const segments = Math.max(1, Math.trunc(Number(options.segments ?? 64)));
+  const finite = (value, fallback) => Number.isFinite(Number(value)) ? Number(value) : fallback;
+  const clamp = THREE.MathUtils.clamp;
+  const quality = options.quality === 'low' ? 'low' : 'standard';
+  const inputSize = Array.isArray(options.size) ? options.size : [options.size, options.size];
+  const size = [Math.max(0.01, finite(inputSize[0], 60)), Math.max(0.01, finite(inputSize[1], finite(inputSize[0], 60)))];
+  const segments = clamp(Math.trunc(finite(options.segments, quality === 'low' ? 24 : 64)), 1, quality === 'low' ? 32 : 192);
+  const amplitude = clamp(finite(options.waveHeight, quality === 'low' ? 0.06 : 0.12), 0, 20);
+  const capacity = clamp(Math.trunc(finite(options.rippleCapacity, quality === 'low' ? 4 : 8)), 0, 8);
+  const lifetime = clamp(finite(options.rippleLifetime, 6), 0.1, 30);
+  const maxRipple = clamp(finite(options.maxRippleStrength, 0.5), 0, 5);
+  const depthResolution = clamp(Math.trunc(finite(options.depthResolution, 32)), 2, 128);
+  const defaultDepth = Math.max(0, finite(options.depth, 5));
+  const flowSpeed = finite(options.flowSpeed, 0.03);
+  const waves = [
+    new THREE.Vector4(0.35, 0, amplitude, 1.1),
+    new THREE.Vector4(0, 0.51, amplitude * 0.7, -0.8),
+    new THREE.Vector4(0.23, 0.19, quality === 'low' ? 0 : amplitude * 0.35, 0.6),
+    new THREE.Vector4(-0.61, 0.4, quality === 'low' ? 0 : amplitude * 0.18, 1.4),
+  ];
+  const phases = new THREE.Vector4(0, 0, 1.2, 2.3);
+  if (Array.isArray(options.waves)) {
+    for (let i = 0; i < 4; i += 1) {
+      const wave = options.waves[i];
+      if (!wave) { waves[i].set(0, 0, 0, 0); continue; }
+      const direction = new THREE.Vector2(finite(wave.direction?.[0], 1), finite(wave.direction?.[1], 0));
+      if (direction.lengthSq() === 0) direction.set(1, 0);
+      direction.normalize().multiplyScalar(2 * Math.PI / Math.max(0.1, finite(wave.wavelength, 12)));
+      waves[i].set(direction.x, direction.y, clamp(finite(wave.amplitude, amplitude), 0, 20), finite(wave.speed, 1));
+      phases.setComponent(i, finite(wave.phase, 0));
+    }
+  }
+  const vector = (value, target = new THREE.Vector3()) => target.set(finite(value?.[0] ?? value?.x, 0), finite(value?.[1] ?? value?.y, 0), finite(value?.[2] ?? value?.z, 0));
+  const windInfluence = clamp(finite(options.windInfluence, 0.15), 0, 1);
+  const baseAmplitudes = waves.map(wave => wave.z);
+  const windAmplitudes = waves.map((wave, i) => i < 2 ? 0 : wave.z || (!options.waves ? amplitude * 0.15 : 0));
+  const windVelocity = new THREE.Vector3();
+  const windTarget = new THREE.Vector3();
+  const localWind = new THREE.Vector3();
+  const inverseWaterMatrix = new THREE.Matrix4();
+  const windPhaseRates = [0, 0, 0, 0];
+  let attachedHost = null;
+  const ripples = Array.from({ length: Math.max(1, capacity) }, () => new THREE.Vector4(0, 0, -1e6, 0));
+  const rippleShapes = ripples.map(() => new THREE.Vector4(1, 2, 5, 0.8));
+  const depthValues = new Float32Array(depthResolution * depthResolution);
+  const depthTexture = new THREE.DataTexture(depthValues, depthResolution, depthResolution, THREE.RedFormat, THREE.FloatType);
+  depthTexture.minFilter = depthTexture.magFilter = THREE.NearestFilter;
+  depthTexture.generateMipmaps = false;
   const normalMap = options.normalMap ?? null;
-  if (normalMap) {
-    createTilingTexture(normalMap, {
-      repeat: Number(options.repeat ?? 8),
-      srgb: false,
-      renderer: options.renderer,
-    });
-  }
-  const material = new THREE.MeshStandardMaterial({
-    color: new THREE.Color(options.color ?? 0x1f4f63),
-    roughness: Number(options.roughness ?? 0.06),
-    metalness: Number(options.metalness ?? 0.35),
-    transparent: true,
-    opacity: Number(options.opacity ?? 0.9),
+  if (normalMap) createTilingTexture(normalMap, { repeat: finite(options.repeat, 8), srgb: false, renderer: options.renderer });
+  const material = new THREE.MeshPhysicalMaterial({
+    color: options.color ?? 0x1f4f63,
+    roughness: clamp(finite(options.roughness, 0.09), 0.02, 1),
+    metalness: 0,
+    ior: 1.333,
     normalMap,
-    envMapIntensity: 1.4,
+    transparent: true,
+    opacity: clamp(finite(options.opacity, 0.9), 0, 1),
+    depthWrite: false,
+    envMapIntensity: Math.max(0, finite(options.envMapIntensity, 1)),
   });
-  if (normalMap) {
-    const scale = Number(options.normalScale ?? 0.35);
-    material.normalScale.set(scale, scale);
-  }
+  material.normalScale.setScalar(finite(options.normalScale, 0.25));
   const geometry = new THREE.PlaneGeometry(size[0], size[1], segments, segments);
   const mesh = new THREE.Mesh(geometry, material);
   mesh.rotation.x = -Math.PI / 2;
-  mesh.receiveShadow = true;
   mesh.name = 'A3GameWater';
-
-  // A vertex ripple on top of the normal scroll: the normal map alone
-  // leaves a dead-flat silhouette where the water meets the shore.
-  const waveHeight = Number(options.waveHeight ?? 0.06);
-  const rest = geometry.attributes.position.array.slice();
-  const speed = Number(options.flowSpeed ?? 0.03);
-  let elapsed = 0;
-  mesh.userData.update = (delta) => {
-    elapsed += Number(delta) || 0;
-    // Read the map off the material rather than the closure: a game that
-    // stages its water normals *after* building the lake — which is the
-    // normal order, because assets load asynchronously — would otherwise
-    // get a still surface with a moving nothing.
-    const scrolling = material.normalMap;
-    if (scrolling) {
-      scrolling.offset.set(elapsed * speed, elapsed * speed * 0.6);
+  vector(options.position, mesh.position);
+  mesh.receiveShadow = true;
+  mesh.userData.isA3GameWater = true;
+  const displacementBound = waves.reduce((sum, wave, i) => sum + wave.z + windAmplitudes[i] * windInfluence * 3, 0) + capacity * maxRipple;
+  geometry.boundingBox = new THREE.Box3(new THREE.Vector3(-size[0] / 2, -size[1] / 2, -displacementBound), new THREE.Vector3(size[0] / 2, size[1] / 2, displacementBound));
+  geometry.boundingSphere = geometry.boundingBox.getBoundingSphere(new THREE.Sphere());
+  const uniforms = {
+    a3WaterTime: { value: 0 },
+    a3WaterWaves: { value: waves },
+    a3WaterPhases: { value: phases },
+    a3WaterRipples: { value: ripples },
+    a3WaterRippleShapes: { value: rippleShapes },
+    a3WaterRippleLife: { value: lifetime },
+    a3WaterSize: { value: new THREE.Vector2(...size) },
+    a3WaterDepthMap: { value: depthTexture },
+    a3WaterDepthResolution: { value: depthResolution },
+    a3WaterWorldY: { value: new THREE.Vector4() },
+    a3WaterShallow: { value: new THREE.Color(options.shallowColor ?? 0x55a99b) },
+    a3WaterDeep: { value: new THREE.Color(options.deepColor ?? options.color ?? 0x073545) },
+    a3WaterAbsorption: { value: new THREE.Vector3(...[0.45, 0.14, 0.08].map((fallback, index) => Math.max(0, finite(options.absorption?.[index], fallback)))) },
+    a3WaterFoamWidth: { value: Math.max(0.001, finite(options.foamWidth, 0.6)) },
+    a3WaterFoamStrength: { value: clamp(finite(options.foamStrength, 0.65), 0, 1) },
+    a3WaterReflection: { value: null },
+    a3WaterRefraction: { value: null },
+    a3WaterReflectionMatrix: { value: new THREE.Matrix4() },
+    a3WaterRefractionMatrix: { value: new THREE.Matrix4() },
+    a3WaterReflectionReady: { value: 0 },
+    a3WaterRefractionReady: { value: 0 },
+    a3WaterDistortion: { value: clamp(finite(options.distortion, 0.015), 0, 0.1) },
+  };
+  const waveGLSL = `
+    uniform float a3WaterTime;
+    uniform vec4 a3WaterWaves[4];
+    uniform vec4 a3WaterPhases;
+    uniform vec4 a3WaterRipples[${ripples.length}];
+    uniform vec4 a3WaterRippleShapes[${ripples.length}];
+    uniform float a3WaterRippleLife;
+    vec3 a3WaveAt(vec2 p) {
+      vec3 result = vec3(0.0);
+      for (int i = 0; i < 4; i++) {
+        vec4 w = a3WaterWaves[i];
+        float phase = dot(w.xy, p) + w.w * a3WaterTime + a3WaterPhases[i];
+        result += vec3(w.z * sin(phase), w.z * cos(phase) * w.xy);
+      }
+      for (int i = 0; i < ${ripples.length}; i++) {
+        vec4 r = a3WaterRipples[i];
+        vec4 s = a3WaterRippleShapes[i];
+        float age = a3WaterTime - r.z;
+        if (age >= 0.0 && age < a3WaterRippleLife && r.w != 0.0) {
+          vec2 offset = p - r.xy;
+          float distanceToCenter = sqrt(dot(offset, offset) + 0.000001);
+          float travel = distanceToCenter - s.y * age;
+          float q = travel / s.x;
+          float fade = 1.0 - age / a3WaterRippleLife;
+          float envelope = r.w * exp(-s.w * age - q * q) * fade * fade;
+          float phase = travel * s.z;
+          float slope = envelope * (s.z * cos(phase) - 2.0 * q / s.x * sin(phase));
+          result += vec3(envelope * sin(phase), slope * offset / distanceToCenter);
+        }
+      }
+      return result;
     }
-    if (waveHeight <= 0) return;
-    const position = geometry.attributes.position;
+  `;
+  const varyings = `
+    varying vec2 vA3WaterLocal;
+    varying vec4 vA3WaterReflection;
+    varying vec4 vA3WaterRefraction;
+  `;
+  material.onBeforeCompile = (shader) => {
+    Object.assign(shader.uniforms, uniforms);
+    shader.vertexShader = waveGLSL + varyings + `
+      uniform mat4 a3WaterReflectionMatrix;
+      uniform mat4 a3WaterRefractionMatrix;
+    ` + shader.vertexShader;
+    if (quality === 'standard') {
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <beginnormal_vertex>', '#include <beginnormal_vertex>\nvec3 a3Wave = a3WaveAt(position.xy);\nobjectNormal = normalize(vec3(-a3Wave.yz, 1.0));')
+        .replace('#include <begin_vertex>', '#include <begin_vertex>\ntransformed.z = a3Wave.x;');
+    }
+    shader.vertexShader = shader.vertexShader.replace('#include <project_vertex>', `
+      vA3WaterLocal = position.xy;
+      vA3WaterReflection = a3WaterReflectionMatrix * vec4(transformed, 1.0);
+      vA3WaterRefraction = a3WaterRefractionMatrix * vec4(transformed, 1.0);
+      #include <project_vertex>
+    `);
+    shader.fragmentShader = waveGLSL + varyings + `
+      uniform vec2 a3WaterSize;
+      uniform sampler2D a3WaterDepthMap;
+      uniform float a3WaterDepthResolution;
+      uniform vec4 a3WaterWorldY;
+      uniform vec3 a3WaterShallow;
+      uniform vec3 a3WaterDeep;
+      uniform vec3 a3WaterAbsorption;
+      uniform float a3WaterFoamWidth;
+      uniform float a3WaterFoamStrength;
+      uniform sampler2D a3WaterReflection;
+      uniform sampler2D a3WaterRefraction;
+      uniform float a3WaterReflectionReady;
+      uniform float a3WaterRefractionReady;
+      uniform float a3WaterDistortion;
+      float a3BottomAt(vec2 p) {
+        vec2 grid = clamp(p / a3WaterSize + 0.5, 0.0, 1.0) * (a3WaterDepthResolution - 1.0);
+        vec2 cell = min(floor(grid), vec2(a3WaterDepthResolution - 2.0));
+        vec2 f = grid - cell;
+        vec2 uv = (cell + 0.5) / a3WaterDepthResolution;
+        vec2 stepUV = vec2(1.0 / a3WaterDepthResolution, 0.0);
+        float a = texture2D(a3WaterDepthMap, uv).r;
+        float b = texture2D(a3WaterDepthMap, uv + stepUV.xy).r;
+        float c = texture2D(a3WaterDepthMap, uv + stepUV.yx).r;
+        float d = texture2D(a3WaterDepthMap, uv + stepUV.xx).r;
+        return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+      }
+    ` + shader.fragmentShader;
+    shader.fragmentShader = shader.fragmentShader.replace('#include <color_fragment>', `
+      #include <color_fragment>
+      float a3Height = a3WaveAt(vA3WaterLocal).x;
+      float a3Depth = dot(vec4(vA3WaterLocal, a3Height, 1.0), a3WaterWorldY) - a3BottomAt(vA3WaterLocal);
+      if (a3Depth <= 0.0) discard;
+      vec3 a3Attenuation = exp(-a3WaterAbsorption * a3Depth);
+      vec3 a3Tint = mix(a3WaterDeep, a3WaterShallow, a3Attenuation);
+      float a3Foam = (1.0 - smoothstep(0.0, a3WaterFoamWidth, a3Depth)) * a3WaterFoamStrength;
+      a3Foam *= 0.7 + 0.3 * sin(dot(vA3WaterLocal, vec2(3.1, 4.7)) - a3WaterTime * 1.7);
+      diffuseColor.rgb = mix(a3Tint, vec3(0.9, 0.97, 0.94), a3Foam);
+      diffuseColor.a *= smoothstep(0.0, 0.08, a3Depth);
+    `).replace('#include <opaque_fragment>', `
+      float a3Fresnel = 0.020373 + (1.0 - 0.020373) * pow(1.0 - clamp(dot(normal, normalize(vViewPosition)), 0.0, 1.0), 5.0);
+      if (a3WaterRefractionReady > 0.5 && vA3WaterRefraction.w > 0.0) {
+        vec2 projected = vA3WaterRefraction.xy / vA3WaterRefraction.w + normal.xy * a3WaterDistortion;
+        vec3 transmitted = texture2D(a3WaterRefraction, clamp(projected, 0.001, 0.999)).rgb;
+        transmitted = transmitted * a3Attenuation + a3Tint * (1.0 - a3Attenuation);
+        outgoingLight = mix(outgoingLight, transmitted + totalSpecular, (1.0 - a3Fresnel) * (1.0 - a3Foam));
+        diffuseColor.a = smoothstep(0.0, 0.08, a3Depth);
+      }
+      if (a3WaterReflectionReady > 0.5 && vA3WaterReflection.w > 0.0) {
+        vec2 projected = vA3WaterReflection.xy / vA3WaterReflection.w + normal.xy * a3WaterDistortion;
+        vec3 reflected = texture2D(a3WaterReflection, clamp(projected, 0.001, 0.999)).rgb;
+        outgoingLight = mix(outgoingLight, reflected, a3Fresnel * (1.0 - a3Foam));
+      }
+      #include <opaque_fragment>
+    `);
+  };
+  material.customProgramCacheKey = () => `a3-water-v1-${quality}-${ripples.length}`;
+  material.userData.waterUniforms = uniforms;
+  let elapsed = 0;
+  let cursor = 0;
+  let disposed = false;
+  let unsubscribe = null;
+  let reflector = null;
+  let refractor = null;
+  let rendering = false;
+  let lastPassTime = -Infinity;
+  let lastRenderTime = -Infinity;
+  let passCount = 0;
+  let depthDirty = true;
+  const lastCameraMatrix = new THREE.Matrix4();
+  const lastProjectionMatrix = new THREE.Matrix4();
+  const lastPassMatrix = new THREE.Matrix4();
+  const lastMatrix = new THREE.Matrix4();
+  const normalMatrix = new THREE.Matrix3();
+  const scratch = new THREE.Vector3();
+  const waveResult = new THREE.Vector3();
+
+  function evaluate(x, y, time = elapsed, target = new THREE.Vector3()) {
+    let h = 0, dx = 0, dy = 0;
+    for (let i = 0; i < 4; i += 1) {
+      const w = waves[i];
+      const phase = w.x * x + w.y * y + w.w * time + phases.getComponent(i) + windPhaseRates[i] * (time - elapsed);
+      h += w.z * Math.sin(phase);
+      const slope = w.z * Math.cos(phase);
+      dx += slope * w.x;
+      dy += slope * w.y;
+    }
+    for (let i = 0; i < capacity; i += 1) {
+      const r = ripples[i], s = rippleShapes[i];
+      const age = time - r.z;
+      if (age < 0 || age >= lifetime || r.w === 0) continue;
+      const ox = x - r.x, oy = y - r.y;
+      const distance = Math.sqrt(ox * ox + oy * oy + 0.000001);
+      const travel = distance - s.y * age;
+      const q = travel / s.x;
+      const fade = 1 - age / lifetime;
+      const envelope = r.w * Math.exp(-s.w * age - q * q) * fade * fade;
+      const phase = travel * s.z;
+      const slope = envelope * (s.z * Math.cos(phase) - 2 * q / s.x * Math.sin(phase));
+      h += envelope * Math.sin(phase);
+      dx += slope * ox / distance;
+      dy += slope * oy / distance;
+    }
+    return target.set(h, dx, dy);
+  }
+
+  function syncTransform() {
+    mesh.updateWorldMatrix(true, false);
+    if (!depthDirty && lastMatrix.equals(mesh.matrixWorld)) return;
+    options.refreshTerrain?.();
+    const e = mesh.matrixWorld.elements;
+    uniforms.a3WaterWorldY.value.set(e[1], e[5], e[9], e[13]);
+    normalMatrix.getNormalMatrix(mesh.matrixWorld);
+    for (let row = 0; row < depthResolution; row += 1) {
+      for (let col = 0; col < depthResolution; col += 1) {
+        scratch.set((col / (depthResolution - 1) - 0.5) * size[0], (row / (depthResolution - 1) - 0.5) * size[1], 0).applyMatrix4(mesh.matrixWorld);
+        const bottom = typeof options.terrainHeight === 'function' ? options.terrainHeight(scratch.x, scratch.z) : scratch.y - defaultDepth;
+        depthValues[row * depthResolution + col] = Number.isFinite(bottom) ? bottom : scratch.y - defaultDepth;
+      }
+    }
+    depthTexture.needsUpdate = true;
+    lastMatrix.copy(mesh.matrixWorld);
+    depthDirty = false;
+  }
+
+  function locate(x, z, time = elapsed) {
+    if (disposed || !Number.isFinite(x) || !Number.isFinite(z)) return null;
+    syncTransform();
+    const e = mesh.matrixWorld.elements;
+    const det = e[0] * e[6] - e[4] * e[2];
+    if (Math.abs(det) < 1e-10) return null;
+    let lx = ((x - e[12]) * e[6] - (z - e[14]) * e[4]) / det;
+    let ly = ((z - e[14]) * e[0] - (x - e[12]) * e[2]) / det;
+    for (let i = 0; i < 8; i += 1) {
+      evaluate(lx, ly, time, waveResult);
+      const fx = e[0] * lx + e[4] * ly + e[8] * waveResult.x + e[12] - x;
+      const fz = e[2] * lx + e[6] * ly + e[10] * waveResult.x + e[14] - z;
+      if (Math.abs(fx) + Math.abs(fz) < 1e-7) break;
+      const a = e[0] + e[8] * waveResult.y, b = e[4] + e[8] * waveResult.z;
+      const c = e[2] + e[10] * waveResult.y, d = e[6] + e[10] * waveResult.z;
+      const jacobian = a * d - b * c;
+      if (Math.abs(jacobian) < 1e-10) return null;
+      lx -= (fx * d - fz * b) / jacobian;
+      ly -= (fz * a - fx * c) / jacobian;
+    }
+    if (Math.abs(lx) > size[0] / 2 + 1e-7 || Math.abs(ly) > size[1] / 2 + 1e-7) return null;
+    evaluate(lx, ly, time, waveResult);
+    if (Math.abs(e[0] * lx + e[4] * ly + e[8] * waveResult.x + e[12] - x) + Math.abs(e[2] * lx + e[6] * ly + e[10] * waveResult.x + e[14] - z) > 0.001) return null;
+    return { x: lx, y: ly, height: e[1] * lx + e[5] * ly + e[9] * waveResult.x + e[13], dx: waveResult.y, dy: waveResult.z };
+  }
+
+  function bottomAt(x, y) {
+    const gx = clamp(x / size[0] + 0.5, 0, 1) * (depthResolution - 1);
+    const gy = clamp(y / size[1] + 0.5, 0, 1) * (depthResolution - 1);
+    const ix = Math.min(Math.floor(gx), depthResolution - 2), iy = Math.min(Math.floor(gy), depthResolution - 2);
+    const fx = gx - ix, fy = gy - iy;
+    const offset = iy * depthResolution + ix;
+    const a = THREE.MathUtils.lerp(depthValues[offset], depthValues[offset + 1], fx);
+    const b = THREE.MathUtils.lerp(depthValues[offset + depthResolution], depthValues[offset + depthResolution + 1], fx);
+    return THREE.MathUtils.lerp(a, b, fy);
+  }
+
+  const sampleHeight = (x, z) => locate(x, z)?.height ?? null;
+  const sampleNormal = (x, z, target = new THREE.Vector3()) => {
+    const point = locate(x, z);
+    if (!point) return null;
+    target.set(-point.dx, -point.dy, 1).applyMatrix3(normalMatrix).normalize();
+    if (target.y < 0) target.negate();
+    return target;
+  };
+  const sampleDepth = (x, z) => {
+    const point = locate(x, z);
+    return point ? Math.max(0, point.height - bottomAt(point.x, point.y)) : null;
+  };
+  const sampleBottom = (x, z) => {
+    const point = locate(x, z);
+    return point ? bottomAt(point.x, point.y) : null;
+  };
+  /** World-space current (m/s) plus analytic vertical wave velocity. */
+  const sampleVelocity = (position, time = elapsed, target = new THREE.Vector3()) => {
+    if (time?.isVector3) { target = time; time = elapsed; }
+    const point = vector(position);
+    const water = locate(point.x, point.z, finite(time, elapsed));
+    if (!water || water.height <= bottomAt(water.x, water.y)) return null;
+    target.set(0, 0, 0);
+    const current = typeof options.current === 'function' ? options.current(point, finite(time, elapsed), target) : options.current;
+    vector(current ?? target, target);
+    const before = locate(point.x, point.z, finite(time, elapsed) - 0.001);
+    const after = locate(point.x, point.z, finite(time, elapsed) + 0.001);
+    if (before && after) target.y += (after.height - before.height) / 0.002;
+    return target;
+  };
+  const updateLowGeometry = () => {
+    if (quality !== 'low') return;
+    const position = geometry.attributes.position, normals = geometry.attributes.normal;
     for (let i = 0; i < position.count; i += 1) {
-      const x = rest[i * 3];
-      const y = rest[i * 3 + 1];
-      position.array[i * 3 + 2] =
-        Math.sin(x * 0.35 + elapsed * 1.1) * waveHeight +
-        Math.sin(y * 0.51 - elapsed * 0.8) * waveHeight * 0.7;
+      evaluate(position.getX(i), position.getY(i), elapsed, waveResult);
+      position.setZ(i, waveResult.x);
+      scratch.set(-waveResult.y, -waveResult.z, 1).normalize();
+      normals.setXYZ(i, scratch.x, scratch.y, scratch.z);
     }
     position.needsUpdate = true;
-    geometry.computeVertexNormals();
+    normals.needsUpdate = true;
   };
+  const update = (delta) => {
+    if (disposed) return;
+    const dt = Math.max(0, finite(delta, 0));
+    elapsed += dt;
+    uniforms.a3WaterTime.value = elapsed;
+    syncTransform();
+    windTarget.set(0, 0, 0);
+    if (windInfluence && typeof attachedHost?.wind?.sample === 'function') {
+      const position = new THREE.Vector3().setFromMatrixPosition(mesh.matrixWorld);
+      const sampled = attachedHost.wind.sample(position, finite(attachedHost.wind.elapsedSeconds, elapsed), windTarget);
+      vector(sampled ?? windTarget, windTarget).clampLength(0, 30);
+    }
+    windVelocity.lerp(windTarget, -Math.expm1(-dt / 2));
+    inverseWaterMatrix.copy(mesh.matrixWorld).invert();
+    const e = inverseWaterMatrix.elements;
+    localWind.set(e[0] * windVelocity.x + e[4] * windVelocity.y + e[8] * windVelocity.z,
+      e[1] * windVelocity.x + e[5] * windVelocity.y + e[9] * windVelocity.z, 0);
+    const strength = Math.min(3, windVelocity.length() / 10);
+    for (let i = 2; i < 4; i += 1) {
+      waves[i].z = baseAmplitudes[i] + windAmplitudes[i] * windInfluence * strength;
+      windPhaseRates[i] = -(waves[i].x * localWind.x + waves[i].y * localWind.y) * windInfluence * 0.15;
+      phases.setComponent(i, phases.getComponent(i) + windPhaseRates[i] * dt);
+    }
+    if (material.normalMap) {
+      material.normalMap.offset.x += dt * (flowSpeed + localWind.x * windInfluence * 0.01);
+      material.normalMap.offset.y += dt * (flowSpeed * 0.6 + localWind.y * windInfluence * 0.01);
+    }
+    updateLowGeometry();
+  };
+  const addRipple = (x, z, strength = 0.12, radius = 1, rippleOptions = {}) => {
+    if (!capacity || disposed) return false;
+    const point = locate(x, z);
+    if (!point || sampleDepth(x, z) <= 0) return false;
+    const index = cursor;
+    cursor = (cursor + 1) % capacity;
+    ripples[index].set(point.x, point.y, elapsed, clamp(finite(strength, 0.12), -maxRipple, maxRipple));
+    rippleShapes[index].set(Math.max(0.05, finite(radius, 1)), Math.max(0, finite(rippleOptions.speed, 2)), Math.max(0.01, finite(rippleOptions.frequency, 5)), Math.max(0, finite(rippleOptions.decay, 0.8)));
+    updateLowGeometry();
+    return true;
+  };
+
+  /** Points are column bottoms; draft extends upwards. Only overlap with [bottom, surface] displaces water. */
+  const computeBuoyancy = (settings = {}) => {
+    const center = vector(settings.centerOfMass);
+    const points = (Array.isArray(settings.points) ? settings.points : [center]).slice(0, 64).map(point => vector(point));
+    const velocity = vector(settings.velocity), angular = vector(settings.angularVelocity);
+    const volume = clamp(finite(settings.volume, 1), 0, 1e12);
+    const draft = clamp(finite(settings.draft, 0.5), 0.001, 1e9);
+    const density = clamp(finite(settings.density, 1000), 0, 1e9);
+    const gravity = clamp(finite(settings.gravity, 9.81), 0, 1e6);
+    const damping = clamp(finite(settings.damping, 80), 0, 1e12);
+    const result = { force: new THREE.Vector3(), torque: new THREE.Vector3(), submergedFraction: 0, points: [] };
+    for (const point of points) {
+      const water = locate(point.x, point.z);
+      const bottom = water ? bottomAt(water.x, water.y) : null;
+      const depth = water ? Math.max(0, Math.min(point.y + draft, water.height) - Math.max(point.y, bottom)) : 0;
+      const fraction = clamp(depth / draft, 0, 1);
+      const force = new THREE.Vector3();
+      if (fraction > 0) {
+        const offset = point.clone().sub(center);
+        const relativeVelocity = angular.clone().cross(offset).add(velocity);
+        const fluidVelocity = sampleVelocity(new THREE.Vector3(point.x, Math.max(point.y, bottom) + depth / 2, point.z));
+        if (fluidVelocity) relativeVelocity.sub(fluidVelocity);
+        force.copy(relativeVelocity).multiplyScalar(-damping * fraction / points.length);
+        force.y += density * gravity * volume * fraction / points.length;
+        result.force.add(force);
+        result.torque.add(offset.cross(force));
+      }
+      result.submergedFraction += fraction / points.length;
+      result.points.push({ position: point, force, depth, bottom, surface: water?.height ?? null, submergedFraction: fraction });
+    }
+    return result;
+  };
+
+  const passSize = clamp(Math.trunc(finite(options.reflectionResolution, 256)), 64, 1024);
+  const passInterval = 1 / clamp(finite(options.reflectionUpdateRate, 30), 1, 60);
+  mesh.onBeforeRender = (renderer, scene, camera) => {
+    if (disposed || rendering) return;
+    syncTransform();
+    if (quality === 'low' || (!options.reflection && !options.refraction)) return;
+    camera.updateWorldMatrix(true, false);
+    const viewChanged = !lastCameraMatrix.equals(camera.matrixWorld)
+      || !lastProjectionMatrix.equals(camera.projectionMatrix) || !lastPassMatrix.equals(mesh.matrixWorld);
+    const paused = elapsed === lastRenderTime;
+    lastRenderTime = elapsed;
+    if (!(paused && viewChanged) && elapsed - lastPassTime < passInterval) return;
+    const worldNormal = new THREE.Vector3(0, 0, 1).applyMatrix3(normalMatrix).normalize();
+    const worldPosition = new THREE.Vector3().setFromMatrixPosition(mesh.matrixWorld);
+    const cameraPosition = new THREE.Vector3().setFromMatrixPosition(camera.matrixWorld);
+    if (cameraPosition.sub(worldPosition).dot(worldNormal) <= 0) return;
+    const target = renderer.getRenderTarget();
+    const cubeFace = renderer.getActiveCubeFace?.() ?? 0;
+    const mip = renderer.getActiveMipmapLevel?.() ?? 0;
+    const viewport = renderer.getViewport?.(new THREE.Vector4());
+    const scissor = renderer.getScissor?.(new THREE.Vector4());
+    const scissorTest = renderer.getScissorTest?.();
+    const xrEnabled = renderer.xr.enabled;
+    const shadowAutoUpdate = renderer.shadowMap.autoUpdate;
+    const context = renderer.getContext?.();
+    const depthMask = context?.getParameter(context.DEPTH_WRITEMASK);
+    const hidden = [];
+    rendering = true;
+    try {
+      scene.traverse((object) => {
+        if (object.userData?.isA3GameWater || object.isReflector || object.isRefractor) {
+          hidden.push([object, object.visible]);
+          object.visible = false;
+        }
+      });
+      const args = { textureWidth: passSize, textureHeight: passSize, multisample: 0, clipBias: 0.003 };
+      if (options.reflection) {
+        reflector ??= new Reflector(geometry, args);
+        reflector.matrixWorld.copy(mesh.matrixWorld);
+        reflector.onBeforeRender(renderer, scene, camera);
+        uniforms.a3WaterReflection.value = reflector.getRenderTarget().texture;
+        uniforms.a3WaterReflectionMatrix.value.copy(reflector.material.uniforms.textureMatrix.value);
+        uniforms.a3WaterReflectionReady.value = 1;
+        passCount += 1;
+      }
+      if (options.refraction && camera.isPerspectiveCamera) {
+        refractor ??= new Refractor(geometry, args);
+        refractor.matrixWorld.copy(mesh.matrixWorld);
+        refractor.onBeforeRender(renderer, scene, camera);
+        uniforms.a3WaterRefraction.value = refractor.getRenderTarget().texture;
+        uniforms.a3WaterRefractionMatrix.value.copy(refractor.material.uniforms.textureMatrix.value);
+        uniforms.a3WaterRefractionReady.value = 1;
+        passCount += 1;
+      }
+      lastPassTime = elapsed;
+      lastCameraMatrix.copy(camera.matrixWorld);
+      lastProjectionMatrix.copy(camera.projectionMatrix);
+      lastPassMatrix.copy(mesh.matrixWorld);
+    } finally {
+      renderer.xr.enabled = xrEnabled;
+      renderer.shadowMap.autoUpdate = shadowAutoUpdate;
+      renderer.setRenderTarget(target, cubeFace, mip);
+      if (viewport) renderer.setViewport(viewport);
+      if (scissor) renderer.setScissor(scissor);
+      if (scissorTest !== undefined) renderer.setScissorTest(scissorTest);
+      if (depthMask !== undefined) renderer.state.buffers.depth.setMask(depthMask);
+      for (const [object, visible] of hidden) object.visible = visible;
+      rendering = false;
+    }
+  };
+  const dispose = () => {
+    if (disposed) return;
+    disposed = true;
+    unsubscribe?.();
+    unsubscribe = null;
+    reflector?.dispose();
+    refractor?.dispose();
+    reflector = refractor = null;
+    uniforms.a3WaterReflection.value = uniforms.a3WaterRefraction.value = null;
+    uniforms.a3WaterReflectionReady.value = uniforms.a3WaterRefractionReady.value = 0;
+    depthTexture.dispose();
+    geometry.dispose();
+    material.dispose();
+    mesh.visible = false;
+    mesh.userData.disposed = true;
+  };
+  Object.assign(mesh.userData, {
+    quality,
+    update,
+    sampleHeight,
+    sampleNormal,
+    sampleDepth,
+    sampleBottom,
+    sampleVelocity,
+    addRipple,
+    computeBuoyancy,
+    applyBuoyancy: (body, settings = {}) => {
+      if (typeof body?.applyForce !== 'function') throw new TypeError('Water buoyancy needs body.applyForce(force, worldPoint)');
+      const result = computeBuoyancy({ centerOfMass: body.position, velocity: body.velocity, angularVelocity: body.angularVelocity, ...settings });
+      for (const point of result.points) if (point.submergedFraction > 0) body.applyForce(point.force, point.position);
+      return result;
+    },
+    refreshDepth: () => { if (!disposed) { depthDirty = true; syncTransform(); } },
+    attachToHost: (host) => {
+      if (disposed) throw new Error('Cannot attach disposed water');
+      if (typeof host?.onTick !== 'function') throw new TypeError('Water attachToHost needs host.onTick');
+      unsubscribe?.();
+      attachedHost = host;
+      const detach = host.onTick(update);
+      let attached = true;
+      unsubscribe = () => { if (attached) { attached = false; attachedHost = null; detach?.(); } };
+      return unsubscribe;
+    },
+    dispose,
+    getState: () => ({
+      quality,
+      elapsedSeconds: elapsed,
+      disposed,
+      rippleCapacity: capacity,
+      activeRipples: ripples.filter((r) => r.w !== 0 && elapsed >= r.z && elapsed - r.z < lifetime).length,
+      renderTargetCount: Number(Boolean(reflector)) + Number(Boolean(refractor)),
+      reflectionPasses: passCount,
+      depthResolution,
+      simulation: 'analytic-waves-approximate-buoyancy',
+    }),
+  });
+  syncTransform();
+  updateLowGeometry();
   return mesh;
 }
 
@@ -1644,11 +2159,13 @@ export function createDistantRange(options = {}) {
     colors.push(color.r, color.g, color.b);
   };
 
+  const peaks = Array.from({ length: segments }, (_, i) =>
+    baseY + height * peakAt((i / segments) * Math.PI * 2));
   for (let i = 0; i < segments; i += 1) {
     const a0 = (i / segments) * Math.PI * 2;
     const a1 = ((i + 1) / segments) * Math.PI * 2;
-    const h0 = baseY + height * peakAt(a0);
-    const h1 = baseY + height * peakAt(a1);
+    const h0 = peaks[i];
+    const h1 = peaks[(i + 1) % segments];
     // Two triangles per segment, wound so the inside of the ring is front.
     push(a0, baseY, 0);
     push(a1, baseY, 0);
@@ -1731,13 +2248,33 @@ export function createCloudLayer(options = {}) {
     sprite.userData.speed = speed * (0.6 + random() * 0.8);
     group.add(sprite);
   }
+  let windField = options.windField ?? null;
+  let unsubscribe = null;
+  const position = new THREE.Vector3(), wind = new THREE.Vector3(), localEnd = new THREE.Vector3();
+  const wrap = value => ((value + radius) % (radius * 2) + radius * 2) % (radius * 2) - radius;
   group.userData.update = (delta) => {
-    const step = Number(delta) || 0;
+    const step = Math.max(0, Number(delta) || 0);
     for (const sprite of group.children) {
-      sprite.position.x += sprite.userData.speed * step;
-      if (sprite.position.x > radius) sprite.position.x = -radius;
+      if (windField) {
+        sprite.getWorldPosition(position);
+        windField.sample(position, windField.elapsedSeconds, wind);
+        localEnd.copy(position).addScaledVector(wind, step);
+        group.worldToLocal(localEnd);
+        sprite.position.copy(localEnd);
+        sprite.position.x = wrap(sprite.position.x);
+        sprite.position.z = wrap(sprite.position.z);
+      } else {
+        sprite.position.x = wrap(sprite.position.x + sprite.userData.speed * step);
+      }
     }
   };
+  group.userData.attachToHost = (host) => {
+    unsubscribe?.();
+    windField = host.wind;
+    unsubscribe = host.onTick(group.userData.update);
+    return unsubscribe;
+  };
+  group.userData.dispose = () => { unsubscribe?.(); unsubscribe = null; material.dispose(); };
   return group;
 }
 

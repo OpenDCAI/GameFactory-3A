@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Three.js realism regression</title><style>html,body,#view{margin:0;width:100%;height:100%;overflow:hidden;background:#18212b}#label{position:absolute;left:20px;top:16px;color:white;font:14px system-ui;text-shadow:0 1px 3px #000;pointer-events:none}</style></head>
+<body><div id="view"></div><div id="label">Standard water · PBR · synchronized sun · fixed simulation</div>
+<script type="module">
+import * as THREE from 'three';
+import { A3GameRuntimeHost, A3GameSceneLoader, A3GameAssetLibrary, createRoundedBox } from '../src/index.js';
+async function main() {
+const host = new A3GameRuntimeHost({ container: '#view', pixelRatioCap: 1 });
+await host.init();
+window.shaderErrors = [];
+host.renderer.debug.onShaderError = (gl, program, vertex, fragment) => {
+  window.shaderErrors.push(gl.getProgramInfoLog(program), gl.getShaderInfoLog(vertex), gl.getShaderInfoLog(fragment));
+};
+const assets = new A3GameAssetLibrary({ renderer: host.renderer });
+const loader = new A3GameSceneLoader({ host, assets });
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(50, 50, 64, 64), new THREE.MeshStandardMaterial({ color: 0x8c9175, roughness: 0.94 }));
+ground.rotation.x = -Math.PI / 2;
+const points = ground.geometry.attributes.position;
+for (let i = 0; i < points.count; i++) {
+  const x = points.getX(i), z = -points.getY(i);
+  const r = Math.hypot(x * 0.9, z);
+  points.setZ(i, -1.8 + Math.min(2.7, Math.max(0, r - 4) * 0.5));
+}
+ground.geometry.computeVertexNormals();
+ground.receiveShadow = true;
+const sceneAsset = { entry: { asset_id: 'basin' }, object: ground, animations: [] };
+assets.tryInstantiate = async () => sceneAsset;
+await loader.buildWorld({
+  world_id: 'realism', environment: { preset: 'gradient', sun: { x: -0.5, y: 0.7, z: -0.8 }, tone_mapping: 'ACESFilmicToneMapping', tone_mapping_exposure: 0.8,
+    water: [{ water_id: 'lake', size: [30, 30], position: { x: 0, y: 0, z: 0 }, options: { quality: 'standard', waveHeight: 0.055, depth: 2, reflection: true, refraction: true, foamWidth: 0.25, foamStrength: 0.35 } }],
+  },
+  camera: { position: { x: 13, y: 9, z: 16 }, target: { x: 0, y: 0, z: 0 }, controls: 'none', near: 0.1, far: 250 },
+  lights: [{ light_id: 'sun', type: 'DirectionalLight', color: '#fff0de', intensity: 2.4, position: { x: -30, y: 50, z: -30 }, target: { x: 0, y: 0, z: 0 }, cast_shadow: true, options: { shadow_extent: 25 } }],
+  entities: [{ entity_id: 'basin', artifact_id: 'basin', collision: true, parameters: { waterTerrain: true }, transform: { position: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } } }],
+});
+const lake = loader.waterSurfaces.get('lake');
+for (let i = 0; i < 3; i++) {
+  const material = new THREE.MeshPhysicalMaterial({ color: [0x9b3e2e, 0xb4bbc3, 0x467994][i], metalness: i === 1 ? 1 : 0, roughness: [0.7, 0.17, 0.3][i], clearcoat: i === 2 ? 1 : 0 });
+  const ball = new THREE.Mesh(new THREE.SphereGeometry(1, 32, 24), material);
+  ball.position.set(-3 + 3 * i, 1.8, -7);
+  ball.castShadow = true;
+  host.add(ball);
+}
+const floating = createRoundedBox({ width: 1.2, height: 0.5, depth: 1, radius: 0.08, material: new THREE.MeshStandardMaterial({ color: 0xa06a3b, roughness: 0.8 }) });
+floating.position.set(1, 0.2, 1);
+floating.castShadow = true;
+host.add(floating);
+host.onTick(() => { if (lake) floating.position.y = (lake.userData.sampleHeight(1, 1) ?? 0) + 0.15; });
+window.realism = { host, loader, lake, floating };
+for (let i = 0; i < 90; i++) host.tick(1 / 60);
+window.ready = true;
+}
+main().catch(error => { window.bootError = String(error); console.error(error); });
+</script></body></html>
