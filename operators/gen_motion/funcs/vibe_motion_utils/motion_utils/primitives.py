@@ -1,10 +1,10 @@
+"""Apply reusable motion primitives to skeletal chains and root transforms."""
 from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable
 import numpy as np
 from .skeleton_templates import MotionClip, RolePlan, SkeletonPlan, global_rotations, quat_from_axis_angle, quat_identity, quat_slerp, resolve_role
 EASES: tuple[str, ...] = ('linear', 'smooth', 'ease_in', 'ease_out', 'anticipate', 'impact', 'snap', 'overshoot', 'settle')
-EASE_TIP_SPEED: dict[str, float] = {'linear': 1.0, 'smooth': 0.0, 'ease_in': 2.0, 'ease_out': 0.0, 'anticipate': 4.7, 'impact': 4.0, 'snap': 0.0, 'overshoot': 0.0, 'settle': 0.0}
 _BACK_S = 1.70158
 _UP = np.array([0.0, 1.0, 0.0], dtype=np.float32)
 _RIGHT = np.array([1.0, 0.0, 0.0], dtype=np.float32)

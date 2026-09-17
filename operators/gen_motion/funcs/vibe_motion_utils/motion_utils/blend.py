@@ -1,3 +1,4 @@
+"""Join motion clips with root alignment and interpolated transitions."""
 from __future__ import annotations
 import numpy as np
 from .generate import smooth

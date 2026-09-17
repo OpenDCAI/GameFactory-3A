@@ -1,3 +1,4 @@
+"""Build motion curves, rotate joints and solve limb IK constraints."""
 from __future__ import annotations
 import numpy as np
 from .units import MotionClip, SkeletonPlan, between, fk, inverse, quat_from_axis_angle, quat_mul, quat_normalize, quat_to_matrix, root_index, unit

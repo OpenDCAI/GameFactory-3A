@@ -1,3 +1,4 @@
+"""Provide shared motion types, rotation helpers and validated forward kinematics."""
 from __future__ import annotations
 import numpy as np
 from .skeleton_templates import (

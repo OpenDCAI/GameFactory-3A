@@ -1,3 +1,4 @@
+"""Represent skin weights, compute pose matrices and apply linear blend skinning."""
 from __future__ import annotations
 from dataclasses import dataclass
 import numpy as np

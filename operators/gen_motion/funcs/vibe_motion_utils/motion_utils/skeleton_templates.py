@@ -1,3 +1,4 @@
+"""Define skeleton templates, motion clips, role planning and quaternion operations."""
 from __future__ import annotations
 import re
 from collections import OrderedDict
@@ -256,14 +257,13 @@ def _build_serpentine(num_segments: int=12, length: float=2.4) -> SkeletonTempla
     roles['head'] = head
     return SkeletonTemplate(name=f'serpentine{num_segments}', morphology='serpentine', joint_names=names, parents=np.asarray(parents, np.int64), rest=np.asarray(rest, np.float32), roles=roles)
 
-def _leg(names: list[str], parents: list[int], rest: list[list[float]], host: int, hip: list[float], *, side: float, seg: list[float], tag: str) -> list[int]:
+def _leg(names: list[str], parents: list[int], rest: list[list[float]], host: int, hip: list[float], *, seg: list[float], tag: str) -> list[int]:
     """Attach a three-segment leg, hip to knee to ankle to toe; ``seg`` gives the per-segment offset."""
     x, y, z = hip
     pts = [(f'{tag}_hip', [x, y, z])]
     cy, cz = (y, z)
     for i, dy in enumerate(seg):
         cy += dy
-        cz += 0.02 * side * 0
         pts.append((f'{tag}_seg{i + 1}', [x, cy, cz]))
     pts.append((f'{tag}_toe', [x, cy - 0.04, cz + 0.1]))
     return _chain(names, parents, rest, host, pts)
@@ -290,7 +290,7 @@ def _build_biped(with_arms: bool) -> SkeletonTemplate:
     roles['head'] = head
     roles['tail'] = tail
     for side, sx, tag in (('L', 1.0, 'L'), ('R', -1.0, 'R')):
-        roles[f'limb.{side}.0'] = _leg(names, parents, rest, 0, [0.14 * sx, 0.74, 0.0], side=sx, seg=[-0.32, -0.3], tag=tag)
+        roles[f'limb.{side}.0'] = _leg(names, parents, rest, 0, [0.14 * sx, 0.74, 0.0], seg=[-0.32, -0.3], tag=tag)
     return SkeletonTemplate(name='biped', morphology='biped', joint_names=names, parents=np.asarray(parents, np.int64), rest=np.asarray(rest, np.float32), roles=roles)
 
 def _build_quadruped() -> SkeletonTemplate:
@@ -304,9 +304,9 @@ def _build_quadruped() -> SkeletonTemplate:
     roles['head'] = head
     roles['tail'] = tail
     for side, sx, tag in (('L', 1.0, 'L_front'), ('R', -1.0, 'R_front')):
-        roles[f'limb.{side}.0'] = _leg(names, parents, rest, trunk[-1], [0.12 * sx, 0.66, 0.4], side=sx, seg=[-0.3, -0.28], tag=tag)
+        roles[f'limb.{side}.0'] = _leg(names, parents, rest, trunk[-1], [0.12 * sx, 0.66, 0.4], seg=[-0.3, -0.28], tag=tag)
     for side, sx, tag in (('L', 1.0, 'L_hind'), ('R', -1.0, 'R_hind')):
-        roles[f'limb.{side}.1'] = _leg(names, parents, rest, 0, [0.12 * sx, 0.64, -0.35], side=sx, seg=[-0.3, -0.28], tag=tag)
+        roles[f'limb.{side}.1'] = _leg(names, parents, rest, 0, [0.12 * sx, 0.64, -0.35], seg=[-0.3, -0.28], tag=tag)
     return SkeletonTemplate(name='quadruped', morphology='quadruped', joint_names=names, parents=np.asarray(parents, np.int64), rest=np.asarray(rest, np.float32), roles=roles)
 
 def _build_radial(num_pairs: int, morphology: str, name: str, body_len: float) -> SkeletonTemplate:
@@ -586,7 +586,6 @@ class RolePlan:
     lift_axis: np.ndarray | None = None
     flex_axis: np.ndarray | None = None
     flex_lifts: bool = False
-    primitives: tuple[str, ...] = ()
 
 @dataclass
 class SkeletonPlan:
@@ -613,7 +612,6 @@ def _kind_of(role: str) -> str:
     if role.startswith('weapon.'):
         return 'weapon'
     return role if role in ('trunk', 'head', 'tail') else 'other'
-_KIND_PRIMITIVES: dict[str, tuple[str, ...]] = {'trunk': ('swing', 'bend', 'twist', 'traveling_wave', 'root_turn', 'root_translate', 'root_bob'), 'head': ('swing', 'aim', 'twist'), 'tail': ('swing', 'bend', 'traveling_wave', 'twist'), 'limb': ('swing', 'bend', 'twist', 'step', 'aim', 'traveling_wave'), 'weapon': ('swing', 'twist', 'aim'), 'other': ('swing', 'bend', 'twist')}
 REFERENCE_TPOSE: np.ndarray = np.array([[0.0, 0.0, 0.0], [0.06, -0.09, 0.0], [-0.06, -0.09, 0.0], [0.0, 0.12, 0.0], [0.1, -0.48, 0.0], [-0.1, -0.48, 0.0], [0.0, 0.25, 0.0], [0.1, -0.9, 0.02], [-0.1, -0.9, 0.02], [0.0, 0.38, 0.0], [0.11, -0.96, 0.12], [-0.11, -0.96, 0.12], [0.0, 0.55, 0.0], [0.08, 0.47, 0.0], [-0.08, 0.47, 0.0], [0.0, 0.66, 0.03], [0.18, 0.46, 0.0], [-0.18, 0.46, 0.0], [0.43, 0.46, 0.0], [-0.43, 0.46, 0.0], [0.68, 0.46, 0.0], [-0.68, 0.46, 0.0]], dtype=np.float32)
 
 def _snap_axis(axis: np.ndarray, tol_deg: float=20.0) -> np.ndarray:
@@ -672,7 +670,7 @@ def _rotated_tip_height(rest: np.ndarray, joints: list[int], axis: np.ndarray, d
     return float(pivot[1] + rot[1])
 
 def plan_skeleton(template: SkeletonTemplate) -> SkeletonPlan:
-    """Plan the skeleton: derive direction, length, recommended axes and applicable primitives for each chain."""
+    """Plan the skeleton: derive direction, length and recommended axes for each chain."""
     rest = template.rest
     plans: 'OrderedDict[str, RolePlan]' = OrderedDict()
     notes: list[str] = []
@@ -715,7 +713,7 @@ def plan_skeleton(template: SkeletonTemplate) -> SkeletonPlan:
         if flex is not None:
             flex_lifts = bool(_rotated_tip_height(rest, joints, flex, _FLEX_PROBE_DEG) > float(rest[joints[-1]][1]) + 0.0001)
         kind = _kind_of(role)
-        plans[role] = RolePlan(role=role, kind=kind, joints=list(joints), host=host, rest_dir=rest_dir, length=length, swing_axis=swing, bend_axis=bend, twist_axis=rest_dir.copy(), lift_axis=lift, flex_axis=flex, flex_lifts=flex_lifts, primitives=_KIND_PRIMITIVES.get(kind, ()))
+        plans[role] = RolePlan(role=role, kind=kind, joints=list(joints), host=host, rest_dir=rest_dir, length=length, swing_axis=swing, bend_axis=bend, twist_axis=rest_dir.copy(), lift_axis=lift, flex_axis=flex, flex_lifts=flex_lifts)
         if kind == 'limb' and float(rest[joints[-1]][1] - ground) < 0.12 * scale:
             support.append(role)
     if not support and template.limb_roles:

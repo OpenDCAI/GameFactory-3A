@@ -315,6 +315,68 @@ class VibeMotionTest(unittest.TestCase):
             self.assertIn("ground", report["metrics"]["failures"])
             self.assertFalse(op.eval(result, task)["artifact_valid"])
 
+    def test_metrics_checks_collision_once_on_every_frame(self):
+        from operators.gen_motion.funcs.vibe_motion_utils.motion_utils import checks, validation
+
+        plan = motion.build_plan()
+        rest = motion_utils.MotionClip.rest_clip(plan.template, 5)
+        collision = rest.copy()
+        shoulder = plan.template.joint_names.index("L_shoulder")
+        collision.quats[1, shoulder] = motion_utils.quat_from_axis_angle(
+            np.array([0.0, 0.0, 1.0]), np.deg2rad(150.0),
+        )
+        self.assertTrue(validation.check_self_collision(collision, plan, stride=2).ok)
+        full_collision = validation.check_self_collision(collision, plan, stride=1)
+        self.assertFalse(full_collision.ok)
+        self.assertEqual(full_collision.frames, [1])
+        below_ground = collision.copy()
+        below_ground.trans[:, 1] -= 1.0
+        for label, clip in (("rest", rest), ("odd_frame", collision), ("multiple_failures", below_ground)):
+            with self.subTest(case=label):
+                original_quats, original_trans = clip.quats.copy(), clip.trans.copy()
+                report = validation.validate_clip(clip, plan)
+                expected = [f.check for f in report.failures if f.check != "self_collision"]
+                if not validation.check_self_collision(clip, plan, stride=1).ok:
+                    expected.append("self_collision")
+                with (
+                    patch.object(
+                        validation, "check_self_collision", wraps=validation.check_self_collision,
+                    ) as check,
+                    patch.object(checks, "check_self_collision", check, create=True),
+                ):
+                    actual = checks.metrics(clip, plan)
+                check.assert_called_once_with(clip, plan, radius_ratio=0.035, stride=1)
+                self.assertEqual(actual["failures"], expected)
+                np.testing.assert_array_equal(clip.quats, original_quats)
+                np.testing.assert_array_equal(clip.trans, original_trans)
+
+    def test_validation_collision_stride_and_early_abort(self):
+        from operators.gen_motion.funcs.vibe_motion_utils.motion_utils import validation
+
+        plan = motion.build_plan()
+        clip = motion.generate_clip("walk", plan).clip
+        cases: tuple[tuple[dict[str, Any], int, float], ...] = (
+            ({}, 2, 0.035),
+            ({"collision_stride": 1}, 1, 0.035),
+            ({"collision_stride": 3, "radius_ratio": 0.04}, 3, 0.04),
+        )
+        for options, stride, radius in cases:
+            with self.subTest(options=options):
+                expected = validation.check_self_collision(clip, plan, stride=stride, radius_ratio=radius)
+                with patch.object(
+                    validation, "check_self_collision", wraps=validation.check_self_collision,
+                ) as check:
+                    report = validation.validate_clip(clip, plan, **options)
+                check.assert_called_once_with(clip, plan, radius_ratio=radius, stride=stride)
+                self.assertEqual([f for f in report.findings if f.check == "self_collision"], [expected])
+        with (
+            patch.object(validation, "check_finite", return_value=validation.Finding("finite", False, 1.0, "invalid pose")),
+            patch.object(validation, "check_self_collision") as check,
+        ):
+            report = validation.validate_clip(clip, plan, collision_stride=1)
+        check.assert_not_called()
+        self.assertEqual([f.check for f in report.failures], ["finite", "aborted"])
+
     def test_validation(self):
         plan = motion.build_plan()
         for frames in [0, False, 60.5]:

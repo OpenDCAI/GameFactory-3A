@@ -1,3 +1,4 @@
+"""Validate motion clips for skeletal constraints, collisions, foot sliding and continuity."""
 from __future__ import annotations
 from dataclasses import dataclass, field
 import numpy as np
@@ -204,8 +205,16 @@ def check_continuity(clip: MotionClip, plan: SkeletonPlan, *, spike_factor: floa
     ok = ratio <= spike_factor
     return Finding('continuity', ok, float(np.clip((ratio - spike_factor) / spike_factor, 0, 1)) if not ok else 0.0, f'largest isolated jump {ratio:.2f}x its neighbours (threshold {spike_factor}x, counting only frames above {large_factor}x the median; that frame moves {float(mid[k]):.4f}, median {med:.4f})' + (f', the seam is probably between frames {k + 1} and {k + 2}' if not ok else ''), [k + 1] if not ok else [])
 
-def validate_clip(clip: MotionClip, plan: SkeletonPlan, *, expect_locomotion: bool=False, max_bend_deg: float=165.0, radius_ratio: float=0.035) -> ValidationReport:
-    """Run the full set of checks."""
+def validate_clip(
+    clip: MotionClip,
+    plan: SkeletonPlan,
+    *,
+    expect_locomotion: bool = False,
+    max_bend_deg: float = 165.0,
+    radius_ratio: float = 0.035,
+    collision_stride: int = 2,
+) -> ValidationReport:
+    """Run all checks; collision_stride=1 checks self-collision on every frame."""
     report = ValidationReport()
     fin = check_finite(clip)
     report.findings.append(fin)
@@ -214,7 +223,9 @@ def validate_clip(clip: MotionClip, plan: SkeletonPlan, *, expect_locomotion: bo
         return report
     report.findings.append(check_bone_lengths(clip))
     report.findings.append(check_joint_limits(clip, plan, max_bend_deg=max_bend_deg))
-    report.findings.append(check_self_collision(clip, plan, radius_ratio=radius_ratio))
+    report.findings.append(check_self_collision(
+        clip, plan, radius_ratio=radius_ratio, stride=collision_stride,
+    ))
     report.findings.append(check_ground(clip, plan))
     report.findings.append(check_continuity(clip, plan))
     if expect_locomotion:

@@ -1,3 +1,4 @@
+"""Execute a segment's action intents to produce a standalone motion clip."""
 from __future__ import annotations
 from .skeleton_templates import MotionClip
 from .primitives import apply_primitive

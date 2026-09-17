@@ -1,3 +1,4 @@
+"""Define rigging presets and validate skeleton fitting parameter overrides."""
 from copy import deepcopy
 import numpy as np
 from .limbs import LimbGroup

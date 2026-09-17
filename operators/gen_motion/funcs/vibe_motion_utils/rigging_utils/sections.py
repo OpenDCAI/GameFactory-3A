@@ -1,3 +1,4 @@
+"""Extract mesh cross sections and sample interior candidates for joint placement."""
 from __future__ import annotations
 from dataclasses import dataclass
 import numpy as np

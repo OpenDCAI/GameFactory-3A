@@ -1,3 +1,4 @@
+"""Represent creature meshes and body frames with adjacency and distance utilities."""
 from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path

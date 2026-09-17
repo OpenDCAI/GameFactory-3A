@@ -1,3 +1,4 @@
+"""Store rigging results and convert fitted skeletons into motion templates."""
 from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any

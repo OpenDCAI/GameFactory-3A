@@ -1,3 +1,4 @@
+"""Define action intents and assemble them into reusable motion recipes."""
 from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable
@@ -23,7 +24,6 @@ class MotionSegment:
     name: str
     num_frames: int
     intents: list[ActionIntent] = field(default_factory=list)
-    blend_frames: int = 8
 Recipe = Callable[[SkeletonPlan, int], list[ActionIntent]]
 
 def _support_or_all_limbs(plan: SkeletonPlan) -> list[str]:

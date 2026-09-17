@@ -1,3 +1,4 @@
+"""Define and validate limb group parameters for skeleton fitting."""
 from __future__ import annotations
 from dataclasses import dataclass
 REACH_DIRECTIONS = ('down', 'up', 'out', 'back', 'forward')

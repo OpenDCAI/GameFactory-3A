@@ -1,3 +1,4 @@
+"""Validate rig hierarchies and assess joint placement within mesh geometry."""
 from __future__ import annotations
 import numpy as np
 

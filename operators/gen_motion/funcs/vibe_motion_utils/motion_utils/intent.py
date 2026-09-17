@@ -1,3 +1,4 @@
+"""Generate preset motions with foot contacts, hand targets and IK refinement."""
 from __future__ import annotations
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -80,7 +81,7 @@ def generate_motion(name: str, plan: SkeletonPlan, *, num_frames=None, fps=30.0,
         intents = RECIPES['boxing'](plan, n, combo=tuple(p['combo']))
     else:
         intents = RECIPES[spec.get('baseline_recipe', spec['recipe'])](plan, n)
-    baseline = realize_segment(MotionSegment(name, n, deepcopy(intents), 0), plan, fps=fps)
+    baseline = realize_segment(MotionSegment(name, n, deepcopy(intents)), plan, fps=fps)
     polish(baseline, plan)
     if name == 'chop':
         for it in intents:

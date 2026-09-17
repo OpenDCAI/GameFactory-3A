@@ -1,3 +1,4 @@
+"""Generate skinning weights from bone distances with influence pruning and mesh smoothing."""
 from __future__ import annotations
 from typing import Any
 import numpy as np
