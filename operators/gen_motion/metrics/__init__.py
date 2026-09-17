@@ -163,7 +163,33 @@ def evaluate(result: dict, task: dict) -> dict[str, Any]:
         motion = _bvh_metrics(result)
         score.update(motion)
         validations.append(bool(motion["motion_valid"]))
-    if task_type in {"retarget", "humanoid"}:
+    if task_type in {"vibe", "vibe_retarget"}:
+        import math
+
+        report = _read_json(result.get("vibe_report_path")) or {}
+        motion = _bvh_metrics(result)
+        fps = report.get("fps", 0)
+        frames = report.get("frames", 0)
+        metrics = report.get("metrics", {})
+        valid = (motion["motion_artifacts"]["motion_bvh"]
+                 and motion["motion_artifacts"]["joints_npy"]
+                 and isinstance(fps, (int, float)) and math.isfinite(fps) and fps > 0
+                 and isinstance(frames, int) and frames > 0
+                 and motion["motion_frame_count"] == frames
+                 and isinstance(metrics, dict) and metrics.get("failures") == [])
+        score.update(motion, motion_valid=bool(valid), motion_fps=fps, vibe_metrics=metrics)
+        validations.append(bool(valid))
+        if task.get("creature") is not None or task.get("target_mesh_path") or task.get("target_glb_path") or result.get("rig_path"):
+            rig = _rig_metrics(result)
+            skin_required = task.get("skin", True) or task_type == "vibe_retarget"
+            rig_valid = rig["rig_valid"] if skin_required else (
+                all(rig["rig_artifacts"].values()) and rig["joint_count"] > 0 and rig["rig_has_root"])
+            score.update(rig, rig_valid=bool(rig_valid))
+            validations.append(bool(rig_valid))
+            if skin_required:
+                skin = _read_json(result.get("skin_report_path")) or {}
+                validations.append(skin.get("passed") is True)
+    if task_type in {"retarget", "humanoid", "vibe_retarget"}:
         retarget = _retarget_metrics(result, task)
         score.update(retarget)
         validations.append(bool(retarget["retarget_valid"]))

@@ -1,3 +1,8 @@
+---
+name: motion-asset-qa
+description: Generate and validate character motion assets with Vibe Motion functions first, using Mixamo or model generation as fallbacks. Applies to rigging, skinning, procedural clips, retargeting and engine motion QA.
+---
+
 # Motion Generation Skills
 
 How an agent turns a character mesh into a usable animated FBX — and how to
@@ -17,10 +22,10 @@ This skill covers the whole motion chain in 3AGameFactory:
 character mesh (.glb/.obj/…)
         │
         ▼
-   rig  (Puppeteer)          →  rig.txt + skeleton.txt + mesh.obj
+   rig  (Vibe / Puppeteer)   →  rig.txt + skeleton.txt + mesh.obj
         │
         ▼
-   motion (MoMask | Mixamo | …) →  motion.bvh / source.fbx
+   motion (Vibe first)       →  motion.bvh; Mixamo / MoMask as fallbacks
         │
         ▼
    retarget (world-delta)    →  retargeted.fbx + animation.fbx + mapping.json
@@ -34,43 +39,152 @@ Operator: `<REPO_PATH>/operators/gen_motion/operator.py`.
 Code the agent should read before changing anything: this file, then the
 module docstrings under `<REPO_PATH>/operators/gen_motion/funcs/`.
 
-## Get the clip by download first
+## Prefer Vibe Motion functions
 
-**Text-to-motion generation quality and controllability are not good enough yet.**
-MoMask produces a plausible-looking clip from a sentence, but you cannot reliably
-control timing, style, exact limb trajectories, foot contact, or how the clip
-loops — and re-prompting rarely converges on what the plan asked for.
+**Use Vibe Motion first.** Compose motion with the functions in
+`<REPO_PATH>/operators/gen_motion/funcs/vibe_motion_utils/`: reuse parameterized
+skeleton, skinning, trajectory and IK operations across compatible characters.
+Prefer this stable, controllable route over repeated prompting: timing, stride,
+heading and contact targets are explicit parameters, with no learned weights or GPU.
 
-So for any real game deliverable, **download a clip first and prefer Mixamo**:
+1. Select a preset and a compatible skeleton; adjust parameters or compose the
+   existing functions before choosing another source.
+2. Check bone lengths, ground penetration, contact speed, IK residuals and skin
+   weights; replay the result on the target mesh. Fix reproducible function bugs
+   in `vibe_motion_utils` and rerun through `GenMotionOperator`.
+3. If the topology/action is unsupported or the result still fails QA,
+   use **Mixamo/local mocap** or **direct generation**
+   (MoMask/Tripo). Record the fallback reason, parameters and source/licence.
+   Do not silently replace the requested motion with another preset.
 
-1. **Mixamo** — the default source. Broad, consistent, game-oriented humanoid
-   library on one skeleton (`mixamorig:*`), so `SOURCE_SKELETONS` already knows
-   it and retargeting is predictable. It is login-gated, so download by hand:
-   FBX Binary, **Skin = Without Skin**, then use `task_type=retarget` with
-   `motion_source=mixamo` and `global_scale=0.01` (centimetres).
-2. **Other libraries** — MoCap Online, CMU BVH, or a local clip, per
-   [Motion sources](#when-generation-quality-is-not-enough).
-   Check each licence; Bandai-Namco is research-only.
-3. **MoMask text-to-motion** — use it when no downloadable clip fits, when the
-   motion is unusual enough that no library has it, or for a quick placeholder
-   while the game is being assembled. Say that it is the generated route, and
-   expect to review it harder.
+### Entry points and scope
 
-Do not scrape login-gated sources; that violates the licence and the fetcher
-refuses it on purpose. Always record provenance either way.
+| Function | Use |
+|---|---|
+| `skeleton.fit_skeleton`, `skinning.skin_mesh` | Fit a rig and vertex weights to a mesh |
+| `motion.build_plan`, `motion.generate_clip` | Generate a preset on a skeleton plan |
+| `motion.concatenate_clips` | Join clips sharing the same template and fps |
+| `motion_utils` | Local motion primitives: `rotate_joint`, `solve_two_bone`, `fit_feet`, `swing`, `strike` |
+| `rigging_utils` | Local cross-section fitting, weight generation and LBS functions |
+| `generate_vibe_motion` / `GenMotionOperator.run` | Produce BVH, joints, optional rig/OBJ and QA reports |
 
-## Cloud route (Tripo) — same verdict on quality
+Use `task_type="vibe"` with `preset`, `num_frames`, `fps`, `heading_deg` and
+`motion_overrides`. Supply either `target_mesh_path` or `creature="human"`;
+with neither, use `template="biped_armed"` for a clip-only task. With geometry and
+`skin=true`, `vibe` also returns `animated_glb_path`: a skinned animation that can
+be previewed directly without Blender. Inspect that GLB on the target mesh.
+For FBX, use `vibe_retarget` with geometry, `skin=true`, positive integer fps and
+a configured bpy runtime; confirm the exported FBX with the import checks below.
+
+Current motion presets: `walk`, `stride`, `boxing`, `jab`, `chop`, `turn_jump_chop`
+(plus aliases such as `walking`, `step`, `punch`, `slash`). These presets cover
+**biped humanoids**, not arbitrary
+creature motion. `biped` supports walk/stride; arm actions require `biped_armed`.
+Standalone skeleton fitting also supports `quadruped` and `axial`; do not treat that
+as support for their gait generation. Clip concatenation does not preserve foot
+contact through transitions. Numerical checks do not prove visual quality.
+
+Use Python 3.10+ with NumPy; add trimesh for input mesh files. Implementations
+live in `vibe_motion_utils/motion_utils/` and `vibe_motion_utils/rigging_utils/`;
+no external source checkout, source-root environment variable or model weights are
+needed. `creature` creates an untextured procedural fixture, not a downloaded
+character. Use `target_mesh_path` for the actual game character. For example,
+run from the repository root:
+
+```python
+from operators.gen_motion.operator import GenMotionOperator
+
+result = GenMotionOperator(run_id="vibe_qa").run({
+    "game_id": "my_game", "task_id": "walk", "task_type": "vibe",
+    "preset": "walk", "template": "biped_armed", "num_frames": 96, "fps": 30,
+    "motion_overrides": {"steps": 4, "step_length": 0.24, "foot_height": 0.12},
+})
+```
+
+### Parameterized sequences
+
+The LLM plans the action order and parameters from the mesh and requirements.
+Send the complete plan to one `GenMotionOperator.run` call. The operator delegates
+sequence generation and blending to `funcs/vibe_motion_utils`; it fits the rig and
+skin once, generates every segment on the same plan, then exports one final clip.
+Do not implement production sequencing or blending in a test script.
+
+For either `vibe` or `vibe_retarget`, pass a non-empty `segments` list instead of
+top-level `preset`, `num_frames` or `motion_overrides` (these are mutually exclusive).
+Each segment accepts only `preset`, optional `num_frames`, `heading_deg`, and
+`motion_overrides`. Omitted motion parameters come from that preset's template.
+All segments share global `fps`, geometry, rig and skin settings.
+
+Optional `transitions` has exactly one entry per adjacent pair. Each entry accepts
+`transition_frames` (non-negative integer, default 8) and `carry_facing` (boolean,
+default true). Omit the list to use these defaults at every join.
+
+- Transitions **insert** frames; total frames = sum of segment frames + sum of
+  transition frames. Zero means a hard cut; discontinuities may fail QA.
+- Global `heading_deg` defaults the world heading. With `carry_facing=true`, the
+  next segment inherits the previous endpoint yaw, including any generated turn.
+  An explicit later segment heading requires `carry_facing=false` on its incoming
+  transition; ambiguous combinations raise instead of silently losing the heading.
+- Horizontal root position is aligned. Each segment keeps its ground-relative
+  height, with pose/height interpolation between segments. No foot-lock or velocity
+  continuity guarantee is made. Authored contact masks and foot targets are aligned
+  with their segments; transition contacts are inferred from joint height.
+
+```python
+result = GenMotionOperator(run_id="vibe_qa").run({
+    "game_id": "my_game",
+    "task_id": "walk_then_boxing",
+    "task_type": "vibe",
+    "target_mesh_path": "character.glb",
+    "fps": 30,
+    "segments": [
+        {"preset": "walk", "num_frames": 120,
+         "motion_overrides": {"steps": 3, "step_length": 0.35}},
+        {"preset": "boxing", "num_frames": 96,
+         "motion_overrides": {"combo": [0, 1], "reach": 0.9}},
+    ],
+    "transitions": [{"transition_frames": 12, "carry_facing": True}],
+})
+```
+
+Use the Python operator or a task JSONL for Vibe-specific fields; do not assume
+one CLI flag exists for each field. Tests configure `MOTION_TASKS` directly in
+`test/test_vibe_motion.py` and call the same operator; no external task file is
+needed. Single-preset calls and their report fields remain compatible.
+
+Inspect `vibe_report_path`, plus `skin_report_path` and `rig_report_path` for mesh
+tasks. Sequence reports use `preset="sequence"`, `parameters=null`, and `segments`
+with canonical presets, resolved parameters, effective heading, diagnostics and
+zero-based **end-exclusive** frame ranges. `transitions` records ranges and maximum
+root/joint displacement per frame across each seam, including both endpoints.
+Final `metrics` evaluates the blended clip, including continuity, ground,
+self-collision and inferred foot skate; segment failures also propagate to the final
+failure list. Foot-target error above 0.001 metres adds `ik_target`; the threshold is
+recorded as `target_error_tolerance`. Target error and IK residuals are explicitly
+scoped to authored segments, not unsolved transitions. A successful export is not
+visual QA approval. Do not reuse artifacts from an earlier task run.
+
+### Fallback routes
+
+- **Mixamo / local mocap:** choose when a matching clip is available. Download
+  Mixamo FBX Binary, **Without Skin**, then use `task_type=retarget`,
+  `motion_source=mixamo` and initially `global_scale=0.01` for centimetre clips.
+- **MoMask / Tripo:** choose for a missing library motion or an accepted placeholder;
+  check the generated pose, timing, contacts and looping before delivery.
+- Respect access restrictions and licences; use manual downloads for login-gated
+  sources. Record provenance for every fallback.
+
+## Cloud fallback (Tripo)
 
 `task_type=cloud_rig` / `cloud_humanoid` runs rigging and animation on the
 TokenHub / Tripo backend: no weights, no Blender, no BVH step.
 Code: `<REPO_PATH>/operators/gen_motion/funcs/cloud_rig_animate.py`,
 `<REPO_PATH>/models/gen_motion/tripo_rigging_model.py`.
 
-**Tripo output is also only average.** Rigging is not deterministic — the same
-mesh and parameters can come back with one named limb chain or with four — and
-motion comes from a fixed `preset:` library, so there is no control over
-timing, style or foot contact. Treat it like MoMask: fine for a placeholder,
-not a substitute for a downloaded Mixamo clip on a real deliverable.
+Use this route only after Vibe Motion is unsuitable or fails QA. Rigging can
+vary between attempts, and animation uses a fixed preset library. Review the
+rig and clip on the target mesh rather than assuming a successful API call
+proves motion quality.
 
 Constraints to plan around:
 
@@ -120,6 +234,8 @@ path — do not bypass with a hand-rolled Blender script that never lands in
 
 | `task_type` | Needs | Produces |
 |---|---|---|
+| `vibe` | preset or segments + template or compatible mesh/creature | BVH, joints, QA report; rig/OBJ/skin report with geometry |
+| `vibe_retarget` | preset or segments + compatible geometry + skin + bpy | Vibe artifacts + retargeted FBX/animation/mapping |
 | `rig` | character mesh | `rig.txt`, `skeleton.txt`, `mesh.obj` |
 | `text_to_motion` | text prompt | `motion.bvh` (+ raw/ik/preview) |
 | `retarget` | source clip + mesh + rig | `retargeted.fbx`, `animation.fbx`, `mapping.json` |
@@ -131,7 +247,7 @@ CLI demo (single task). Load the runtime first and pass the explicit model
 arguments shown in [Runtime Environment](#6-runtime-environment)::
 
 ```bash
-# Retarget a Mixamo download onto an existing rig — the preferred route
+# Fallback: retarget a Mixamo download onto an existing rig
 python pipeline/assets_gen/gen_motion/run.py \
   --task-type retarget \
   --source-motion walk.fbx \
@@ -157,6 +273,9 @@ python pipeline/assets_gen/gen_motion/run.py --list-motion-sources
 
 ## 1. Rigging
 
+Prefer Vibe `fit_skeleton` + `skin_mesh` for compatible geometry. Use the
+Puppeteer route below when procedural fitting does not meet the task.
+
 **Model:** `<REPO_PATH>/models/gen_motion/puppeteer_model.py` (CUDA required for real runs).
 **Step:** `<REPO_PATH>/operators/gen_motion/funcs/rig_character.py`.
 
@@ -176,9 +295,9 @@ Stub-test without CUDA: inject `StubPuppeteerModel` from `<REPO_PATH>/test/harne
 **Model:** `<REPO_PATH>/models/gen_motion/momask_model.py`.
 **Step:** `<REPO_PATH>/operators/gen_motion/funcs/generate_motion.py`.
 
-Reach for this only after [Get the clip by download first](#get-the-clip-by-download-first)
-has been considered: generation is the weakest link in this chain, and a
-downloaded Mixamo clip is usually the shorter path to a shippable animation.
+Use MoMask as a fallback after [Vibe Motion](#prefer-vibe-motion-functions)
+cannot meet the task after parameter tuning and QA. Choose a matching mocap clip
+instead when it offers the required performance.
 
 - Native rate is **20 fps**. Pass that through to retarget; exporting a 20 fps
   clip as 30 fps plays too fast without looking "broken".
@@ -192,13 +311,13 @@ downloaded Mixamo clip is usually the shorter path to a shippable animation.
 
 <a id="when-generation-quality-is-not-enough"></a>
 
-### Motion sources (the preferred route)
+### Motion sources (fallback after Vibe Motion)
 
 Use `<REPO_PATH>/operators/gen_motion/funcs/fetch_motion.py` instead of fighting the prompt.
 
 | Source | Access | Skeleton | Notes |
 |---|---|---|---|
-| `mixamo` | manual (login) | Mixamo | **Preferred.** Download FBX Binary, Skin=Without Skin |
+| `mixamo` | manual (login) | Mixamo | Preferred library fallback; download FBX Binary, Skin=Without Skin |
 | `mocap_online` | manual | UE5 mannequin | Free sample packs |
 | `cmu_bvh` | direct URL | CMU BVH | Free; quality uneven |
 | `bandai_namco` | direct URL | — | CC BY-NC-ND — research only |
@@ -391,11 +510,12 @@ Run these after `inspect_fbx` / Blender import report `ok=True`:
    while holding a T-pose means the bone map dropped limb chains.
 2. **Sides.** Left arm must not drive the right. Auto-mapping uses world-X sign;
    if the source was mirrored, pass `--left-sign` / re-derive.
-3. **Feet.** Sliding feet → prefer IK BVH (`use_ik=True`) or a cleaner mocap clip.
-4. **Scale.** Humanoid height ≈ 1.6–2.0 m after import. 180 or 0.018 means units
-   were wrong (`global_scale`).
-5. **Facing.** Pipeline exports Y-up / -Z forward. Record facing for the game
-   asset if the character looks sideways in the first playable spawn (see
+3. **Feet.** For Vibe, inspect contact targets and IK residuals, then correct the
+   parameters or transition. Use MoMask IK (`use_ik=True`) or mocap as fallback.
+4. **Scale.** Humanoid height ≈ 1.6–2.0 m after import. Check source units before
+   setting `global_scale`; Vibe BVH uses metres, not Mixamo centimetres.
+5. **Facing.** Vibe BVH preserves its template axes (Y-up, +Z forward by default).
+   Verify exported FBX and engine facing separately; record any correction (see
    `<REPO_PATH>/agent_skills/asset_qa/3d_object/orientation_review.md`).
 6. **Licence.** Check the model, dataset, and source-motion terms before
    shipping. Mixamo / MoCap Online / Bandai each have separate terms; retain
@@ -403,7 +523,10 @@ Run these after `inspect_fbx` / Blender import report `ok=True`:
 
 ## 6. Runtime Environment
 
-Install the three isolated Linux environments and selected weights once:
+For Vibe-only BVH generation, use the Python/NumPy source setup above; no model
+weights or GPU environment is needed. Configure bpy additionally for FBX retargeting.
+Install the following Linux environments only for the model-backed fallback and
+retarget routes:
 
 ```bash
 bash scripts/asset_env_setup/gen_motion/install.sh
@@ -461,18 +584,13 @@ build_all("/tmp/mofix", mesh_format=".glb")
 
 ## 7. What An Agent Should Do, In Order
 
-1. Read this skill and `<REPO_PATH>/operators/gen_motion/funcs/retarget_utils/__init__.py`.
-2. Prefer a downloaded clip — Mixamo first — and run `task_type=retarget`. Use
-   `task_type=humanoid` with MoMask only when no library clip fits or a
-   placeholder is enough.
-3. `--list-motion-sources` to see the registry; download manual sources by hand,
-   then set `fetch_motion` / `motion_source` on the task.
-4. Never invent a bone map for a new Puppeteer rig — omit mapping and let
-   `mapping_auto` run, or generate one with the bpy `mapping_auto` module.
-5. If retarget/import fails for a real format or skeleton the operator should
-   support → patch `retarget_utils` (and tests), then re-run through the
-   operator.
-6. After FBX lands, run Blender `--kind motion` import (or `inspect_fbx`) and
-   refuse assets with `pose_animated=false`.
-7. Import into UE only after Blender validation passes; use `--kind motion`.
-8. Record licence / facing / scale notes next to the artifact.
+1. Read this skill and the required functions in `vibe_motion_utils`.
+2. Try Vibe Motion first: choose a compatible plan, generate or compose the motion,
+   tune parameters and inspect numerical reports plus target-mesh playback.
+3. Fix function defects in-repo and rerun. If Vibe remains unsuitable or fails QA,
+   select Mixamo/local mocap or direct generation and record the fallback reason.
+4. Run retarget through the operator when FBX is required. Derive the bone map for
+   the actual source and target; do not reuse an unrelated character's mapping.
+5. Validate the exported pose with `inspect_fbx` or Blender motion import, then
+   inspect playback in the target engine. Do not treat root travel as limb motion.
+6. Save source, parameters, reports, licence, facing and scale beside the artifact.

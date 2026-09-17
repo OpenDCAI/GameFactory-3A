@@ -10,6 +10,7 @@ _EXPORTS = {
     "generate_motion": "generate_motion",
     "retarget_motion": "retarget_motion",
     "rig_character": "rig_character",
+    "generate_vibe_motion": "vibe_motion_utils.pipeline",
 }
 
 __all__ = sorted(_EXPORTS)
