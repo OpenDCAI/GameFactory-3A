@@ -7,15 +7,32 @@ from .mesh import CreatureMesh, point_to_segment_distance
 from .skin_templates import resolve_skin_preset
 from .skin_units import SkinWeights, validate_weights
 
-def bone_distances(mesh: CreatureMesh, rig: RigResult) -> np.ndarray:
-    'Per-vertex distance ``(V,J)`` to every bone.'
+def bone_distances(
+    mesh: CreatureMesh, rig: RigResult, *, convention: str = "incoming",
+) -> np.ndarray:
+    """Per-vertex distances (V,J); incoming retains the historical helper API.
+
+    Outgoing assigns each joint its child segments (leaves become points), matching
+    the rotation pivots used by FK, LBS and glTF. It generates new distance weights;
+    it must not be used to remap existing artist-authored weights.
+    """
+    if convention not in ("incoming", "outgoing"):
+        raise ValueError("bone convention must be incoming or outgoing")
     joints = np.asarray(rig.joints, float)
     parents = np.asarray(rig.parents, np.int64)
     out = np.empty((mesh.num_vertices, len(joints)))
     for j in range(len(joints)):
-        p = int(parents[j])
-        head = joints[p] if p >= 0 else joints[j]
-        out[:, j] = point_to_segment_distance(mesh.vertices, head, joints[j])
+        if convention == "incoming":
+            p = int(parents[j])
+            head = joints[p] if p >= 0 else joints[j]
+            out[:, j] = point_to_segment_distance(mesh.vertices, head, joints[j])
+        else:
+            children = np.flatnonzero(parents == j)
+            tips = children if len(children) else [j]
+            out[:, j] = np.minimum.reduce([
+                point_to_segment_distance(mesh.vertices, joints[j], joints[c])
+                for c in tips
+            ])
     return out
 
 def distance_weights(distances: np.ndarray, *, kernel: str='inverse', falloff: float=4.0, radius: float=np.inf, floor: float=0.0) -> np.ndarray:
@@ -75,15 +92,18 @@ def smooth_weights(weights: np.ndarray, adjacency: list[np.ndarray], *, iteratio
     w, _ = prune_to_k(w, dist, max_influences=max_influences)
     return w
 
-def skin_mesh(mesh: CreatureMesh, rig: RigResult, preset: str, **overrides: Any) -> SkinWeights:
-    'Main entry point: mesh plus rig plus preset name to per-vertex weights.'
+def skin_mesh(
+    mesh: CreatureMesh, rig: RigResult, preset: str,
+    *, bone_convention: str = "outgoing", **overrides: Any,
+) -> SkinWeights:
+    """Generate pivot-correct weights; incoming explicitly reproduces old weights."""
     spec = resolve_skin_preset(preset, **overrides)
     p = spec['params']
     radius = float(p['radius_scale']) * mesh.scale
-    dist = bone_distances(mesh, rig)
+    dist = bone_distances(mesh, rig, convention=bone_convention)
     raw = distance_weights(dist, kernel=p['kernel'], falloff=p['falloff'], radius=radius, floor=p['floor'])
     weights, fallback = prune_to_k(raw, dist, max_influences=p['max_influences'])
-    notes: list[str] = []
+    notes: list[str] = [f'bone_convention={bone_convention}']
     if fallback:
         notes.append(f'{fallback}/{mesh.num_vertices} vertices fell outside every bone radius and were bound to the nearest bone; consider raising radius_scale')
     if p['smooth_iterations'] > 0:

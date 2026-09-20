@@ -82,6 +82,53 @@ MOTION_PRESETS: dict[str, dict[str, Any]] = {
             'elbow_deg': 52.0,
             'strike_start': 0.48,
             'strike_ratio': 0.18,
+            'torso_twist_deg': 0.0,
+            'torso_lean_deg': 0.0,
+            'arm_clearance': 0.0,
+        },
+    },
+    'turn_jump_chop_tuned': {
+        'recipe': 'turn_jump_chop_tuned',
+        'frames': 96,
+        'params': {
+            'turn_deg': 180.0,
+            'travel': 0.3,
+            'takeoff_ratio': 0.30,
+            'jump_height': 0.24,
+            'gravity_ratio': 6.5,
+            'crouch': 0.14,
+            'landing_crouch': 0.18,
+            'torso_twist_deg': 16.0,
+            'torso_lean_deg': 10.0,
+            'hand_clearance': 0.24,
+            'strike_reach': 0.86,
+            'foot_tuck': 0.10,
+            'push_seconds': 0.25,
+            'settle_seconds': 0.22,
+            'recover_seconds': 0.6,
+            'attack_flight_ratio': 0.36,
+            'impact_flight_ratio': 0.92,
+            'primary_hand_keys': [
+                [0.28, -0.42, 0.42], [1.0, 0.72, 0.12],
+                [1.0, 0.72, 0.12], [0.20, -0.12, 1.0],
+                [0.24, -0.40, 0.62], [0.28, -0.42, 0.42],
+            ],
+            'guard_hand_keys': [[0.32, -0.48, 0.24], [0.40, -0.28, 0.28],
+                                [0.42, -0.36, 0.28], [0.32, -0.48, 0.24]],
+            'blade_keys': [[0., .7, .7], [0., 1., -.1], [0., 1., -.1],
+                           [0., -.3, .95], [0., .7, .7]],
+            'elbow_pole': [1., -.20, -.30],
+        },
+    },
+    'task_space': {
+        'recipe': 'task_space',
+        'frames': 96,
+        'params': {
+            'root_positions': None,
+            'root_yaw': {'times': [0., 1.], 'values': [0., 0.]},
+            'rotations': [],
+            'targets': [],
+            'plant_feet': False,
         },
     },
 }
@@ -131,8 +178,24 @@ def resolve_preset(
     if not np.isfinite([fps, heading_deg]).all() or fps <= 0:
         raise ValueError('fps/heading_deg are invalid')
 
-    # Every parameter except the punch pattern must be a finite real scalar.
+    if name == 'task_space':
+        from .task_space import validate_task_space
+        validate_task_space(p, int(n))
+        spec.update(name=name, frames=int(n))
+        return spec
+
+    arrays = {'primary_hand_keys': (6, 3), 'guard_hand_keys': (4, 3),
+              'blade_keys': (5, 3), 'elbow_pole': (3,)}
     for key, value in p.items():
+        if name == 'turn_jump_chop_tuned' and key in arrays:
+            raw = np.asarray(value)
+            if raw.shape != arrays[key] or raw.dtype.kind not in 'iuf' or not np.isfinite(raw).all():
+                raise ValueError(f'{key} must contain finite numbers with shape {arrays[key]}')
+            if key == 'elbow_pole' and np.linalg.norm(raw) < 1e-8:
+                raise ValueError('elbow_pole must be nonzero')
+            if key == 'blade_keys' and np.any(np.linalg.norm(raw, axis=1) < 1e-8):
+                raise ValueError('blade_keys must contain nonzero directions')
+            continue
         if key == 'combo':
             continue
         if (
@@ -141,6 +204,29 @@ def resolve_preset(
             or not np.isfinite(value)
         ):
             raise ValueError(f'{key} must be a finite numeric scalar')
+
+    if name == 'turn_jump_chop_tuned':
+        ranges = {
+            'turn_deg': (-360.0, 360.0), 'travel': (0.0, 0.6),
+            'takeoff_ratio': (0.2, 0.4), 'jump_height': (0.12, 0.4),
+            'gravity_ratio': (4.0, 10.0), 'crouch': (0.05, 0.2),
+            'landing_crouch': (0.07, 0.24), 'torso_twist_deg': (0.0, 25.0),
+            'torso_lean_deg': (0.0, 18.0), 'hand_clearance': (0.16, 0.42),
+            'strike_reach': (0.65, 0.93), 'foot_tuck': (0.02, 0.16),
+            'push_seconds': (0.05, 1.0), 'settle_seconds': (0.05, 1.0),
+            'recover_seconds': (0.05, 2.0),
+            'attack_flight_ratio': (0.0, 1.0), 'impact_flight_ratio': (0.0, 1.0),
+        }
+        for key, (low, high) in ranges.items():
+            if not low <= p[key] <= high:
+                raise ValueError(f'{key} must lie in [{low},{high}]')
+        if not p['attack_flight_ratio'] < p['impact_flight_ratio'] < 1:
+            raise ValueError('attack_flight_ratio must precede impact_flight_ratio before landing')
+        duration = (int(n) - 1) / fps
+        if n < 60 or p['takeoff_ratio'] * duration <= p['push_seconds']:
+            raise ValueError('tuned jump needs at least 60 frames and enough time for anticipation')
+        spec.update(name=name, frames=int(n))
+        return spec
 
     if not 0 <= p['crouch'] <= 0.2:
         raise ValueError('crouch must lie in [0,.2]')
@@ -178,6 +264,9 @@ def resolve_preset(
             raise ValueError('chop angles or durations fall outside the validated range of this preset')
 
     if name == 'turn_jump_chop':
+        for key, upper in (('torso_twist_deg', 25.0), ('torso_lean_deg', 18.0), ('arm_clearance', 0.1)):
+            if not 0 <= p[key] <= upper:
+                raise ValueError(f'{key} must lie in [0,{upper}]')
         if (
             not -360 <= p['turn_deg'] <= 360
             or not 0.08 <= p['jump_height'] <= 0.6

@@ -31,4 +31,13 @@ class RigResult:
 def to_motion_template(rig: RigResult, *, name: str | None=None):
     'Convert to a motion ``SkeletonTemplate`` so the rig can drive motion generation.'
     from ..motion_utils.skeleton_templates import template_from_skeleton
-    return template_from_skeleton(np.asarray(rig.parents, np.int64), np.asarray(rig.joints, np.float32), list(rig.joint_names), name=name or rig.name)
+    template = template_from_skeleton(np.asarray(rig.parents, np.int64), np.asarray(rig.joints, np.float32), list(rig.joint_names), name=name or rig.name)
+    if template.morphology == 'biped_armed':
+        trunk = set(template.roles.get('trunk', []))
+        for role in template.limb_roles:
+            joints = template.roles[role]
+            if len(joints) == 3 and all(rig.joint_names[j].startswith('arm.') for j in joints):
+                parent = int(template.parents[joints[0]])
+                if parent in trunk:
+                    template.roles[role] = [parent, *joints]
+    return template

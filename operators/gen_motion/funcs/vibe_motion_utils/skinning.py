@@ -40,7 +40,9 @@ def skin_mesh(
     """Compute per-vertex weights and return ``SkinWeights``.
 
     Weights index the mesh that was rigged, so vertices must not be reordered
-    between rigging and skinning.
+    between rigging and skinning. New distance weights use outgoing bone segments
+    to match FK/LBS joint pivots; bone_convention="incoming" reproduces legacy
+    weights. This does not convert or modify artist-authored weights.
     """
     if preset not in SKIN_PRESETS:
         raise ValueError(

@@ -76,13 +76,51 @@ be previewed directly without Blender. Inspect that GLB on the target mesh.
 For FBX, use `vibe_retarget` with geometry, `skin=true`, positive integer fps and
 a configured bpy runtime; confirm the exported FBX with the import checks below.
 
-Current motion presets: `walk`, `stride`, `boxing`, `jab`, `chop`, `turn_jump_chop`
+Current motion presets: `walk`, `stride`, `boxing`, `jab`, `chop`, `turn_jump_chop`,
+`turn_jump_chop_tuned`, `task_space`
 (plus aliases such as `walking`, `step`, `punch`, `slash`). These presets cover
 **biped humanoids**, not arbitrary
 creature motion. `biped` supports walk/stride; arm actions require `biped_armed`.
 Standalone skeleton fitting also supports `quadruped` and `axial`; do not treat that
 as support for their gait generation. Clip concatenation does not preserve foot
 contact through transitions. Numerical checks do not prove visual quality.
+
+New distance-generated skin weights default to `bone_convention="outgoing"` so
+upper-arm vertices follow the shoulder pivot, not the elbow. To reproduce legacy
+weights, pass `skin_overrides={"bone_convention": "incoming"}`. This does not remap
+artist-authored weights. The skin report records the convention; mesh-ground and
+triangle-intersection review are still needed beyond skeleton-only metrics.
+
+`turn_jump_chop` uses geometric flight. Optional `torso_twist_deg` (0–25),
+`torso_lean_deg` (0–18) and `arm_clearance` (0–0.1 of skeleton scale) default to zero.
+
+Use `preset="turn_jump_chop_tuned"` for a ballistic jump with task-space
+wind-up/accelerating strike/recovery for both arms, outward elbow poles, wrist-led
+blade direction, ballistic root flight, velocity-matched takeoff/landing and foot
+tuck with planted contacts. It accepts `turn_deg`, `travel`, `takeoff_ratio`,
+`jump_height`, `gravity_ratio`, `crouch`, `landing_crouch`, `torso_twist_deg`,
+`torso_lean_deg`, `hand_clearance`, `strike_reach`, `foot_tuck`; see template defaults.
+`hand_clearance` is in arm lengths, unlike the legacy `arm_clearance` in skeleton
+scale. Do not mix old angle or landing/strike-ratio parameters into this preset:
+they are rejected. Reports record derived seconds and gravity under `timing`.
+Duration/sampling must accommodate the flight and recovery; impossible requests
+raise rather than silently changing fps or timing. Blade control requires a wrist
+attachment. This is analytic animation, not whole-body dynamics or collision solving.
+
+For three-joint arms (shoulder/elbow/wrist), pass `rig_overrides={"motion_ready": False}`; the motion
+adapter reuses the existing chest parent as role metadata without adding joints.
+The historical default still fits four arm joints, 21 total. Different elbow
+pivots can change skin collisions substantially: compare on the SAME rig/weights,
+and inspect actual mesh intersections, not only skeleton QA. Neither topology
+is universally collision-free; the procedural fixture can still fail QA.
+
+For explicit comparison exports, call `export_refinement_preview` in
+`test/test_vibe_motion.py` with `output_dir`, `mesh_path`, `stage` and `task_inputs`.
+`MOTION_COMPARE_TASKS` defines `legacy_motion`, `partial_motion`, `full_motion` at
+96 frames/30 fps with fixed outgoing weights. Compare stages once on the default
+rig and again with the same 19-joint rig. All action settings come from task_inputs;
+stage only names the output folder. Paths are repository-relative. Existing folders
+are not overwritten. Normal unit tests do not write visualizations.
 
 Use Python 3.10+ with NumPy; add trimesh for input mesh files. Implementations
 live in `vibe_motion_utils/motion_utils/` and `vibe_motion_utils/rigging_utils/`;
@@ -100,6 +138,15 @@ result = GenMotionOperator(run_id="vibe_qa").run({
     "motion_overrides": {"steps": 4, "step_length": 0.24, "foot_height": 0.12},
 })
 ```
+
+### Custom motion tracks
+
+`preset="task_space"` accepts `root_positions`, `root_yaw`, `rotations`, `targets`
+and `plant_feet` through `motion_overrides`. Curves use normalized `times` (0–1),
+`values` and optional `modes`. Root positions use skeleton scale; target positions
+use chain lengths relative to the shoulder, in body axes. Rotations use degrees.
+See `GESTURE_TASKS` in the test for forward-reach and wave inputs. Conflicting
+controls and overlapping or dependent IK chains are rejected.
 
 ### Parameterized sequences
 

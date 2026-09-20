@@ -168,6 +168,7 @@ def generate_vibe_motion(
             artifacts["skin_report_json"] = json.dumps(
                 {
                     "preset": skin_preset,
+                    "bone_convention": skin_overrides.get("bone_convention", "outgoing"),
                     "passed": skinning_step.report_passed(report),
                     "stats": skinning_step.weight_stats(skin_weights),
                     "findings": [
@@ -229,6 +230,8 @@ def generate_vibe_motion(
         metrics = motion_step.clip_metrics(result, plan)
         residuals = motion_step.residual_summary(result)
         notes += list(result.notes or [])
+        if result.timing:
+            sequence_report["timing"] = result.timing
     if rig is not None and skin:
         from .rigging_utils.export import animated_glb
         artifacts["animated_glb_bytes"] = animated_glb(source_mesh, rig, skin_weights, clip)

@@ -12,7 +12,7 @@ from . import motion_utils as branch
 TEMPLATES = ("biped_armed", "biped")
 
 
-ARM_PRESETS = ("boxing", "jab", "chop", "turn_jump_chop")
+ARM_PRESETS = ("boxing", "jab", "chop", "turn_jump_chop", "turn_jump_chop_tuned")
 
 
 def list_presets() -> list[str]:
@@ -65,6 +65,16 @@ def clip_metrics(result: Any, plan: Any) -> dict:
         contacts=result.contacts,
         targets=result.foot_targets,
     )
+    if result.hand_targets or result.residuals:
+        positions, _ = branch.fk(result.clip)
+        hand_error = max((
+            float(np.linalg.norm(positions[:, plan.roles[role].joints[-1]] - target, axis=-1).max())
+            for role, target in result.hand_targets.items()
+        ), default=0.0)
+        metrics["hand_target_error_max"] = hand_error
+        metrics["ik_residual_max"] = max(residual_summary(result).values(), default=0.0)
+        if max(hand_error, metrics["target_error_max"], metrics["ik_residual_max"]) > 0.001:
+            metrics["failures"] = list(dict.fromkeys([*metrics["failures"], "ik_target"]))
     return {
         key: (
             float(value)
@@ -170,6 +180,7 @@ def _generate_sequence(specs: list[dict], transitions: list[dict], plan: Any, *,
             "start_frame": start, "end_frame": end,
             "metrics": clip_metrics(result, plan), "residuals": segment_residuals,
             "notes": list(result.notes),
+            **({"timing": result.timing, "timing_origin_seconds": start / fps} if result.timing else {}),
         })
         notes.extend(f"segments[{index}]: {note}" for note in result.notes)
 

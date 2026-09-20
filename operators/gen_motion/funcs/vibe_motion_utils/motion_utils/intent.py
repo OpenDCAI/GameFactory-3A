@@ -8,7 +8,7 @@ from .primitives import _taper_weights, apply_primitive, polish
 from .recipes import MotionSegment, RECIPES
 from .generate import curve, fit_feet, rotate_joint, smooth, solve_two_bone, strike, swing
 from .templates import resolve_preset
-from .units import MotionClip, SkeletonPlan, fk, quat_from_axis_angle, quat_mul, quat_to_matrix, root_index
+from .units import MotionClip, SkeletonPlan, fk, inverse, quat_from_axis_angle, quat_mul, quat_to_matrix, root_index
 
 @dataclass
 class MotionResult:
@@ -20,6 +20,7 @@ class MotionResult:
     hand_targets: dict[str, np.ndarray] = field(default_factory=dict)
     residuals: dict[str, np.ndarray] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
+    timing: dict[str, float] = field(default_factory=dict)
 
 def _foot_tracks(plan, n, steps, length, height, *, end=0.88):
     """Foot targets in world space stay exactly fixed through the support phase, with continuous position, velocity and acceleration through the swing phase. Lengths are ratios of limb length."""
@@ -70,6 +71,16 @@ def generate_motion(name: str, plan: SkeletonPlan, *, num_frames=None, fps=30.0,
     """Parameters must be declared by the matching preset. Unknown parameters raise, and the result is an independent copy."""
     spec = resolve_preset(name, num_frames=num_frames, fps=fps, heading_deg=heading_deg, **overrides)
     name, n, p = (spec['name'], spec['frames'], spec['params'])
+    if name == 'task_space':
+        from .task_space import generate_task_space
+        return MotionResult(**generate_task_space(
+            plan, num_frames=n, fps=fps, heading_deg=heading_deg, parameters=p,
+        ))
+    if name == 'turn_jump_chop_tuned':
+        from .fine_tune import generate_tuned_jump_chop
+        return MotionResult(**generate_tuned_jump_chop(
+            plan, num_frames=n, fps=fps, heading_deg=heading_deg, parameters=p,
+        ))
     arms = [r for r in plan.template.limb_roles if r not in plan.support_roles]
     if len(plan.support_roles) != 2 or any((len(plan.roles[r].joints) != 4 for r in plan.support_roles)):
         raise ValueError('these recipes support bipeds with four-joint legs only; other morphologies are unverified')
@@ -99,7 +110,7 @@ def generate_motion(name: str, plan: SkeletonPlan, *, num_frames=None, fps=30.0,
     result = MotionResult(clip, baseline, deepcopy(p))
     root = root_index(plan.template)
     if name == 'turn_jump_chop':
-        result.notes.append('the baseline is a stepping chop reference rather than the same motion, so it is not an ablation comparison for the turning jump chop')
+        result.notes.append('baseline contains a stepping chop, not the generated jump.')
         result.notes.append('the airborne trajectory is smooth geometric animation, not a gravity or collision simulation')
     else:
         if name in ('boxing', 'jab'):
@@ -118,6 +129,8 @@ def generate_motion(name: str, plan: SkeletonPlan, *, num_frames=None, fps=30.0,
         _fit_boxing(result, plan, arms, p)
     elif name in ('walk', 'stride'):
         _fit_walk_arms(clip, plan, arms, p)
+    elif name == 'turn_jump_chop' and p['arm_clearance'] > 0:
+        _refine_jump_chop_arms(result, plan, arms, p)
     if heading_deg:
         q = quat_from_axis_angle(np.array([0.0, 1.0, 0.0]), np.deg2rad(heading_deg))
         rot = quat_to_matrix(q)
@@ -180,7 +193,69 @@ def _turn_jump_chop(plan, arms, n, fps, p):
         rp = plan.roles[arm]
         rotate_joint(clip, rp.joints[1], rp.lift_axis, -58.0 * smooth(u / ready))
         rotate_joint(clip, rp.joints[2], rp.flex_axis, 46.0 * smooth(u / ready))
+    if p['torso_twist_deg'] or p['torso_lean_deg']:
+        settle = landing + (1 - landing) * 0.35
+        times = [0.0, takeoff * 0.55, takeoff, attack, hit, settle, 1.0]
+        twist = p['torso_twist_deg'] * np.sign(p['turn_deg']) * curve(
+            times, [0.0, -1.0, -0.6, 0.0, 0.4, 0.0, 0.0], u,
+        )
+        lean = p['torso_lean_deg'] * curve(
+            times, [0.0, 1.0, -0.3, -0.3, 0.8, 1.0, 0.0], u,
+        )
+        trunk = [j for j in plan.roles['trunk'].joints if j != root]
+        for joint in trunk:
+            rotate_joint(clip, joint, [0, 1, 0], twist / len(trunk), space='body')
+            rotate_joint(clip, joint, [1, 0, 0], lean / len(trunk), space='body')
+        if trunk and 'head' in plan.roles:
+            head = plan.roles['head'].joints[0]
+            rotate_joint(clip, head, [0, 1, 0], -0.35 * twist, space='body')
+            rotate_joint(clip, head, [1, 0, 0], -0.35 * lean, space='body')
     return (clip, targets, contacts)
+
+
+def _refine_jump_chop_arms(result, plan, arms, params):
+    """Refine only the guard arm; preserve the primary arm's authored swing.
+
+    Weapon attachment selects the primary arm. Clearance uses skeleton scale;
+    wrist orientation, root motion and foot targets are preserved.
+    """
+    clip = result.clip
+    source_pos, source_q = fk(clip)
+    rotation = quat_to_matrix(source_q[:, root_index(clip.template)])
+    ready = smooth(np.linspace(0, 1, clip.num_frames) / (params['takeoff_ratio'] * 0.9))
+    primary = arms[0]
+    if plan.template.weapon_roles:
+        host = plan.roles[plan.template.weapon_roles[0]].host
+        primary = next(role for role in arms if host in plan.roles[role].joints)
+    for role in arms:
+        if role == primary:
+            continue
+        shoulder, elbow, wrist = js = plan.roles[role].joints[-3:]
+        side = 1.0 if '.L.' in role else -1.0
+        delta = source_pos[:, wrist] - source_pos[:, shoulder]
+        body = np.einsum('tji,tj->ti', rotation, delta)
+        rest = clip.template.rest
+        reach = np.linalg.norm(rest[elbow] - rest[shoulder]) + np.linalg.norm(rest[wrist] - rest[elbow])
+        available = np.sqrt(np.maximum((reach * (1 - 2e-6)) ** 2 - np.sum(body[:, 1:] ** 2, axis=-1), 0.0))
+        clearance = np.minimum(params['arm_clearance'] * plan.scale, available)
+        offset = np.maximum(clearance - side * body[:, 0], 0.0)
+        shift = np.zeros_like(body)
+        shift[:, 0] = side * offset * ready
+        target = source_pos[:, wrist] + np.einsum('tij,tj->ti', rotation, shift)
+        direction = delta / np.maximum(np.linalg.norm(delta, axis=-1, keepdims=True), 1e-10)
+        original_pole = source_pos[:, elbow] - source_pos[:, shoulder]
+        original_pole -= np.sum(original_pole * direction, axis=-1, keepdims=True) * direction
+        norm = np.linalg.norm(original_pole, axis=-1, keepdims=True)
+        outward = np.einsum('tij,j->ti', rotation, np.array([side, -0.35, 0.25]))
+        original_pole = np.where(norm > 1e-8, original_pole / np.maximum(norm, 1e-8), outward)
+        pole = (1 - ready[:, None]) * original_pole + ready[:, None] * outward
+        clip.quats[:, [shoulder, elbow]] = [1, 0, 0, 0]
+        result.residuals[role] = solve_two_bone(clip, js, target, pole)
+        _, global_q = fk(clip)
+        clip.quats[:, wrist] = quat_mul(inverse(global_q[:, elbow]), source_q[:, wrist])
+        result.hand_targets[role] = target
+    result.notes.append('Arm clearance and outward elbow IK reduce axial twist; mesh collisions still require visual review.')
+
 
 def _fit_walk_arms(clip, plan, arms, params):
     """Drive the counter-swinging arms from the actual thigh swing angle on the same side, so changing the step count does not keep a stale cadence."""
