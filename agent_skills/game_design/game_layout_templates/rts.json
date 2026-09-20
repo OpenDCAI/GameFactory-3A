@@ -1,0 +1,142 @@
+{
+  "schema_version": "gamefactory3a.genre_layout.v2",
+  "canvas": {"width": 1600, "height": 900, "units": "percent"},
+  "genre": "rts",
+  "name": "Real-time strategy",
+  "design_intent": "An isometric battlefield with persistent economy information and a compact, dense command dock.",
+  "palette": {
+    "ground": "#566542", "ground_light": "#687951", "ground_dark": "#3D503C",
+    "path": "#8C805C", "water": "#4D7274", "tree": "#263D31", "tree_light": "#405C3B",
+    "stone": "#8E9285", "stone_light": "#B6B7A4", "stone_dark": "#535E57",
+    "roof": "#334F6C", "roof_light": "#52799B", "unit": "#7392B5",
+    "ink": "#141A18", "panel": "#242B27", "panel_light": "#343D34",
+    "gold": "#C2A675", "gold_dim": "#756B50", "text": "#E9E1CD", "muted": "#A0AA97",
+    "health": "#8FAE62", "mana": "#6F9BA9", "selection": "#B7CF6B"
+  },
+  "scenes": {
+    "login": {
+      "camera": {"projection": "isometric", "pitch_degrees": 35, "focus": [69, 42]},
+      "terrain": "grassland", "horizon": false,
+      "paths": [[[44, 0], [52, 28], [68, 42], [79, 65], [91, 100]]],
+      "forest": [{"rect": [4, 0, 32, 100], "count": 38, "seed": 4}, {"rect": [75, 0, 25, 27], "count": 22, "seed": 8}, {"rect": [83, 63, 17, 37], "count": 14, "seed": 9}],
+      "objects": [
+        {"kind": "keep", "at": [71, 53], "scale": 2.15},
+        {"kind": "tower", "at": [58, 65], "scale": 1.5},
+        {"kind": "tower", "at": [85, 49], "scale": 1.6},
+        {"kind": "house", "at": [53, 40], "scale": 1.05},
+        {"kind": "banner", "at": [61, 54], "scale": 1.5},
+        {"kind": "banner", "at": [83, 64], "scale": 1.5}
+      ]
+    },
+    "in_game": {
+      "camera": {"projection": "isometric", "pitch_degrees": 35, "focus": [52, 38]},
+      "terrain": "grassland", "horizon": false,
+      "paths": [[[0, 60], [25, 52], [45, 43], [64, 42], [100, 12]], [[34, 0], [38, 24], [45, 43], [68, 74]]],
+      "forest": [{"rect": [0, 2, 24, 40], "count": 32, "seed": 22}, {"rect": [64, 0, 36, 25], "count": 31, "seed": 32}, {"rect": [80, 42, 20, 32], "count": 18, "seed": 34}, {"rect": [2, 64, 24, 12], "count": 12, "seed": 13}],
+      "objects": [
+        {"kind": "mine", "at": [25, 27], "scale": 1.1},
+        {"kind": "keep", "at": [41, 37], "scale": 1.22},
+        {"kind": "house", "at": [32, 48], "scale": 0.75},
+        {"kind": "house", "at": [43, 56], "scale": 0.8},
+        {"kind": "tower", "at": [64, 32], "scale": 0.8},
+        {"kind": "banner", "at": [50, 31], "scale": 0.75},
+        {"kind": "squad", "at": [58, 52], "scale": 1.0},
+        {"kind": "worker", "at": [30, 30], "scale": 0.8},
+        {"kind": "worker", "at": [28, 35], "scale": 0.8},
+        {"kind": "worker", "at": [33, 34], "scale": 0.8}
+      ]
+    }
+  },
+  "templates": [
+    {
+      "id": "rts_login", "name": "RTS · Login / entry", "screen": "login", "scene": "login",
+      "notes": ["Full-screen world backdrop, not a website hero card.", "A vertical menu has one primary route into play.", "Account entry is optional and distinct from local play."],
+      "regions": [
+        {"id": "menu_backdrop", "type": "shade", "rect": [0, 0, 43, 100], "layer": 1},
+        {"id": "genre_label", "type": "text", "rect": [8, 11, 32, 5], "layer": 2, "style": "eyebrow", "text": "GENRE LAYOUT / 01"},
+        {"id": "title", "type": "text", "rect": [8, 20, 38, 23], "layer": 2, "style": "rts_title", "text": "REAL-TIME\nSTRATEGY"},
+        {"id": "menu", "type": "menu", "rect": [8, 49, 29, 33], "layer": 2, "style": "framed", "items": [
+          {"label": "Continue campaign", "action": "navigate:rts_in_game", "primary": true},
+          {"label": "Custom match", "action": "navigate:rts_in_game"},
+          {"label": "Settings", "action": "settings"},
+          {"label": "Exit", "action": "exit"}
+        ]},
+        {"id": "profile", "type": "button", "rect": [8, 89, 31, 5], "layer": 2, "style": "quiet", "text": "LOCAL PROFILE   /   SIGN IN", "action": "account"},
+        {"id": "status", "type": "text", "rect": [76, 90, 20, 5], "layer": 2, "style": "eyebrow", "text": "OFFLINE · INTERFACE STUDY"}
+      ],
+      "required_bindings": {"state": ["profile", "campaign_save", "connection_status"], "commands": ["continue_campaign", "create_match", "open_settings", "account_sign_in", "exit_game"]}
+    },
+    {
+      "id": "rts_in_game", "name": "RTS · In-game", "screen": "in_game", "scene": "in_game",
+      "protected_view": [19, 9, 62, 60],
+      "notes": ["Top strip: menus and resource economy.", "Bottom left: minimap. Bottom center: selected-unit portrait and statistics.", "Bottom right: inventory and a hotkey command grid.", "Keep production information out of the game HUD."],
+      "regions": [
+        {"id": "top_strip", "type": "strip", "rect": [0, 0, 100, 6.5], "layer": 2},
+        {"id": "navigation", "type": "toolbar", "rect": [1.5, 0.5, 35, 5.5], "layer": 3, "items": [{"label": "Menu  F10", "action": "pause"}, {"label": "Objectives  F9", "action": "objectives"}, {"label": "Allies", "action": "allies"}]},
+        {"id": "time", "type": "text", "rect": [46, 1, 9, 4.5], "layer": 3, "style": "clock", "text": "09:42  /  DAY"},
+        {"id": "resources", "type": "resources", "rect": [64, 0.6, 34, 5.3], "layer": 3, "items": [{"label": "Gold", "value": "1,280", "icon": "gold"}, {"label": "Timber", "value": "640", "icon": "wood"}, {"label": "Supply", "value": "36 / 60", "icon": "supply"}]},
+        {"id": "hero_shortcut", "type": "hero_shortcut", "rect": [1.6, 10, 5.5, 10], "layer": 3, "key": "F1", "action": "select_unit"},
+        {"id": "command_dock", "type": "dock", "rect": [0, 75, 100, 25], "layer": 2},
+        {"id": "minimap", "type": "minimap", "rect": [1.4, 77, 16.3, 21.5], "layer": 3, "action": "map_ping"},
+        {"id": "portrait", "type": "portrait", "rect": [19, 76, 12.4, 22.5], "layer": 3, "text": "CAPTAIN", "key": "LEVEL 4"},
+        {"id": "selection", "type": "unit_stats", "rect": [33, 78, 21, 20.5], "layer": 3, "name": "Guard captain", "subtitle": "Human · Melee", "health": 0.86, "mana": 0.65, "stats": ["Damage  24–30", "Armor  5", "Movement  290"]},
+        {"id": "inventory", "type": "slots", "rect": [56, 77.5, 15.5, 21], "layer": 3, "title": "INVENTORY", "columns": 3, "items": ["potion", "shield", "scroll", "boots", "ring", "empty"], "action": "item"},
+        {"id": "commands", "type": "command_grid", "rect": [74, 77, 24.5, 21.5], "layer": 3, "columns": 4, "items": [
+          {"label": "Move", "key": "M", "icon": "move"}, {"label": "Stop", "key": "S", "icon": "stop"}, {"label": "Hold", "key": "H", "icon": "shield"}, {"label": "Patrol", "key": "P", "icon": "patrol"},
+          {"label": "Ability 1", "key": "Q", "icon": "spark"}, {"label": "Ability 2", "key": "W", "icon": "wave"}, {"label": "Ability 3", "key": "E", "icon": "sun"}, {"label": "Ability 4", "key": "R", "icon": "shield"},
+          {"label": "Build", "key": "B", "icon": "build"}, {"label": "Train", "key": "T", "icon": "unit"}, {"label": "Upgrade", "key": "U", "icon": "up"}, {"label": "Cancel", "key": "Esc", "icon": "cancel"}
+        ], "action": "command"}
+      ],
+      "required_bindings": {"state": ["resources", "selected_units", "unit_stats", "inventory", "available_commands", "minimap", "world_time"], "commands": ["select_units", "issue_order", "use_item", "move_camera", "pause"]}
+    },
+    {
+      "id": "rts_roster", "name": "RTS · Units / heroes", "screen": "roster", "scene": "login",
+      "content_source": "roster", "inspection_only": true,
+      "notes": ["A dedicated character gallery, not a small battlefield portrait.", "Left: searchable roster. Center: fit-to-frame model or honest missing-model placeholder. Right: source-authorized statistics and traits.", "Discovery, ownership and faction playability are separate states; inspection never recruits a unit."],
+      "regions": [
+        {"id": "background", "type": "inspection_background", "rect": [0, 0, 100, 100], "layer": 1},
+        {"id": "header", "type": "inspection_header", "rect": [4, 3, 92, 8], "layer": 2, "text": "UNIT ARCHIVE", "subtitle": "Inspect characters, creatures and faction entities"},
+        {"id": "roster", "type": "asset_browser", "rect": [4, 16, 24, 71], "layer": 2, "source": "roster", "search": true, "filters": ["All", "Infantry", "Scout", "Construct", "Unknown"]},
+        {"id": "model", "type": "asset_viewer", "rect": [31, 16, 37, 62], "layer": 2, "source": "selected_asset", "frame": "full_body", "fit_to_bounds": true, "placeholder_label": "Model pending · flat-color silhouette"},
+        {"id": "viewer_controls", "type": "viewer_controls", "rect": [31, 80, 37, 7], "layer": 2, "actions": ["zoom_out", "reset_view", "zoom_in"]},
+        {"id": "details", "type": "asset_details", "rect": [71, 16, 25, 71], "layer": 2, "fields": ["name", "category", "discovery", "base_stats", "traits", "source"], "overflow": "scroll"},
+        {"id": "footer", "type": "inspection_footer", "rect": [4, 91, 92, 6], "layer": 2, "text": "INSPECTION ONLY / No recruitment, unlock or inventory changes"}
+      ],
+      "required_bindings": {"state": ["authorized_roster", "discovery_state", "selected_entity", "base_stats", "effective_stats", "asset_descriptor", "trait_descriptions"], "commands": ["inspect_entity", "filter_roster", "close_inspection"]},
+      "acceptance": ["Selecting a row updates model, identity and stats together.", "Unknown entries do not leak hidden stats or traits.", "Large, flying and non-corporeal entities use suitable framing or effect previews.", "Empty and missing-model states remain explicit."]
+    },
+    {
+      "id": "rts_equipment", "name": "RTS · Equipment / loadout", "screen": "equipment", "scene": "login",
+      "content_source": "equipment", "inspection_only": true,
+      "notes": ["Inspect equipment at object scale with an owner-aware loadout and compatible comparison.", "Left: item browser. Center: model close-up and assembly slots. Right: effects and source-authorized comparison.", "Three-part assembly and companion slots are optional project bindings, not universal RTS rules."],
+      "regions": [
+        {"id": "background", "type": "inspection_background", "rect": [0, 0, 100, 100], "layer": 1},
+        {"id": "header", "type": "inspection_header", "rect": [4, 3, 92, 8], "layer": 2, "text": "EQUIPMENT ARCHIVE", "subtitle": "Owner: sample loadout · read-only preview"},
+        {"id": "items", "type": "asset_browser", "rect": [4, 16, 24, 71], "layer": 2, "source": "equipment", "search": true, "filters": ["All", "Weapon", "Armor", "Companion"]},
+        {"id": "model", "type": "asset_viewer", "rect": [31, 16, 37, 45], "layer": 2, "source": "selected_asset", "frame": "object_closeup", "fit_to_bounds": true, "placeholder_label": "Model pending · flat-color silhouette"},
+        {"id": "viewer_controls", "type": "viewer_controls", "rect": [31, 63, 37, 7], "layer": 2, "actions": ["zoom_out", "reset_view", "zoom_in"]},
+        {"id": "loadout", "type": "loadout_slots", "rect": [31, 73, 37, 14], "layer": 2, "slots": ["Platform", "Energy", "Ammunition", "Companion"], "read_only": true},
+        {"id": "details", "type": "asset_details", "rect": [71, 16, 25, 42], "layer": 2, "fields": ["name", "slot", "effects", "compatibility", "source"], "overflow": "scroll"},
+        {"id": "comparison", "type": "asset_comparison", "rect": [71, 61, 25, 26], "layer": 2, "actions": ["pin_comparison"], "same_slot_only": true},
+        {"id": "footer", "type": "inspection_footer", "rect": [4, 91, 92, 6], "layer": 2, "text": "READ-ONLY / Equip and assembly require a real owner and validated game commands"}
+      ],
+      "required_bindings": {"state": ["visible_items", "owner", "equipped_slots", "slot_compatibility", "item_effects", "asset_descriptor", "comparison_values", "assembly_options"], "commands": ["inspect_item", "compare_item", "close_inspection"]},
+      "acceptance": ["Unknown, locked, incompatible and missing-model states are distinct.", "Compare only compatible slots with explicit units; do not invent bonuses.", "No automatic equipping when an item is inspected.", "A fairy-like companion can be an equipment slot without becoming a roster unit."]
+    }
+  ],
+  "inspection_samples": {
+    "disclaimer": "Generic layout fixtures only; values are not imported from any project or balance sheet.",
+    "roster": [
+      {"id": "infantry", "name": "Infantry", "category": "Infantry", "discovery": "known", "model": "humanoid", "base_stats": {"HP": "100", "Range": "1 cell", "Footprint": "1 cell"}, "traits": ["Ground movement", "Single-unit inspection"], "source": "Layout fixture"},
+      {"id": "scout", "name": "Scout", "category": "Scout", "discovery": "known", "model": "humanoid", "base_stats": {"HP": "70", "Vision": "12 cells", "Footprint": "1 cell"}, "traits": ["Reconnaissance role"], "source": "Layout fixture"},
+      {"id": "construct", "name": "Heavy construct", "category": "Construct", "discovery": "known", "model": "construct", "base_stats": {"HP": "400", "Footprint": "4 cells"}, "traits": ["Non-humanoid framing", "Prototype model is not available"], "source": "Layout fixture"},
+      {"id": "unknown", "name": "Undiscovered entity", "category": "Unknown", "discovery": "unknown", "model": null, "source": "Layout fixture"}
+    ],
+    "equipment": [
+      {"id": "blade", "name": "Training blade", "category": "Weapon", "discovery": "known", "slot": "Platform", "model": "sword", "stats": {"Power": 12, "Weight": 3}, "units": {"Power": "fixture points", "Weight": "kg"}, "effects": ["Sample melee platform"], "compatibility": "Platform slot", "source": "Layout fixture"},
+      {"id": "staff", "name": "Practice staff", "category": "Weapon", "discovery": "known", "slot": "Platform", "model": "staff", "stats": {"Power": 8, "Weight": 2}, "units": {"Power": "fixture points", "Weight": "kg"}, "effects": ["Sample channeling platform"], "compatibility": "Platform slot", "source": "Layout fixture"},
+      {"id": "shield", "name": "Guard plate", "category": "Armor", "discovery": "locked", "slot": "Armor", "model": "shield", "stats": {"Defense": 5}, "units": {"Defense": "fixture points"}, "effects": ["Not compatible with platform comparison"], "compatibility": "Armor slot required", "source": "Layout fixture"},
+      {"id": "companion", "name": "Companion token", "category": "Companion", "discovery": "known", "slot": "Companion", "model": null, "stats": {}, "effects": ["An equipment slot, not a recruitable unit"], "compatibility": "Compatible owner required", "source": "Layout fixture"}
+    ]
+  }
+}

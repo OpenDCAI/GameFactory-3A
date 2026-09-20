@@ -44,27 +44,34 @@ generation before the game has a plan.
    and acceptance criteria. If the user did not specify an engine or visual
    style, ask for them before planning. If only one choice is missing, state a
    reasonable default and ask the user to confirm it before implementation.
-2. **Plan the game.** Write a concise, testable plan: core loop; controls;
-   camera; player and enemy/vehicle roles; level flow; UI; asset list; motion,
-   audio, VFX, and lighting needs; engine integration; and validation scenes.
-   Each planned asset must name its purpose, style, source route, and acceptance
-   criteria. Keep the plan aligned with the user's requested style.
-3. **Produce and review assets.** Generate the planned assets, then run the
-   applicable asset QA before integration. For mature asset types, especially
-   3D objects, prefer capable closed-source/cloud generation APIs when they are
-   available and permitted by the user's budget and privacy constraints. For
-   less mature generation types—especially motion and 3D scenes—prefer suitable
-   licensed assets from the chosen engine's asset library when that produces a
-   more reliable, shippable result. Record provenance and licence information.
-4. **Build the game in the selected engine.** Read
-   `<REPO_PATH>/agent_skills/engine_context/engine_overview.md`; it routes you to
-   the applicable CodeGen Skill and then the one matching engine API. Use only
-   that API and the minimum relevant same-engine reference code to create the
-   scene, gameplay, UI, materials, animation, effects, and engine-specific
-   project structure.
-5. **Validate, play, and iterate.** Build, launch, play, record, and review the
-   game, then fix and repeat. This step is not optional and is not satisfied by a
-   successful compile. Follow the dedicated section
+2. **Plan the game.** Read
+   `<REPO_PATH>/agent_skills/game_design/SKILL.md`. Turn requirements and any script
+   into a story and chronological chapter flow. Separate estimated play time from
+   fictional time; specify chapter goals, beats, branches and entry/exit conditions.
+   Derive each chapter's characters, environments, props, motion, audio, VFX and
+   frontend screens, reusing shared assets. Review JSON page layouts with basic
+   colors before final art. Detail the next playable chapter into dependency-aware
+   tasks and maintain chapter-linked TODO records throughout generation.
+3. **Build a playable whitebox.** Follow step 2's chapter TODOs and dependencies.
+   Read `<REPO_PATH>/agent_skills/engine_context/engine_overview.md` for CodeGen
+   and the selected engine API. Use simple geometry and placeholder feedback to
+   connect scenes, gameplay, UI and chapter transitions into a working player loop.
+   Distinguish major functions or attributes with consistent colors and non-color
+   cues; keep stable asset IDs for later replacement. Build, launch and play the
+   core loop, fix blockers and update TODO evidence without waiting for final art.
+4. **Refine assets in the whitebox.** Read
+   `<REPO_PATH>/agent_skills/asset_qa/README.md`, then the relevant asset-type Skills
+   for generation, sourcing and QA. Prioritize remaining TODOs using whitebox
+   feedback. Prefer capable cloud APIs for mature types within budget/privacy
+   limits and with spending approval; prefer licensed engine-library motion/scenes
+   when more reliable. Pass structural and visual QA before replacing placeholders,
+   preserving asset IDs and gameplay/UI contracts. Check scale, facing, attachments,
+   collision and animation in-game; re-test affected flows. Record provenance,
+   licences and validation evidence in the TODOs.
+5. **Validate, play, and iterate on the refined game.** Repeat build, launch,
+   play, record and review after asset integration; fix and repeat. Earlier
+   whitebox checks do not replace this final pass, and a successful compile is
+   insufficient. Follow the dedicated section
    [Validate, play, and iterate](#validate-play-and-iterate) below.
 
 ## Start with the task requirement
@@ -118,7 +125,10 @@ permission to edit them.
 
 ## Asset decision policy
 
-For every requested asset, follow this order:
+Apply this policy to production assets in step 4 or to standalone asset requests.
+Step 3 may use simple procedural placeholders to validate gameplay without waiting
+for production assets. Track those placeholders as pending replacement, not as
+finished assets. For each production asset, follow this order:
 
 1. **Generate it** from the requirement. Prefer a suitable cloud model when it
    is available; use a local/open model when the requirement, budget, privacy,
@@ -141,7 +151,10 @@ wrong direction, have implausible scale, or be visually unusable.
 
 ## Validate, play, and iterate
 
-Step 5 of the workflow, and the only stage that produces playability evidence.
+Step 5 is the full acceptance pass after asset refinement. Apply the relevant
+playability checks during step 3's whitebox work and after step 4's asset replacements
+as well; record evidence at each stage. Whitebox evidence does not establish final
+asset or presentation quality.
 "It compiles", "it launches", or "no errors in the log" is **not** validation.
 
 1. **Build, launch, and actually play.** Use the selected engine's documented

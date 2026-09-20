@@ -1,0 +1,119 @@
+{
+  "schema_version": "gamefactory3a.genre_layout.v2",
+  "canvas": {"width": 1600, "height": 900, "units": "percent"},
+  "genre": "action_rpg",
+  "name": "Third-person action RPG",
+  "design_intent": "A third-person environment fills the frame; small corner HUD clusters leave movement and encounters unobstructed.",
+  "palette": {
+    "sky": "#9CA8A5", "mist": "#82928B", "mountain_far": "#6A7C76", "mountain": "#4B615C",
+    "rock": "#4A5145", "rock_light": "#747760", "rock_dark": "#303D36",
+    "ground": "#626B51", "path": "#9A9275", "tree": "#1F342F", "tree_light": "#344B3E",
+    "stone": "#797D6C", "stone_light": "#A6A38A", "stone_dark": "#404E45",
+    "cloth": "#485C58", "cloth_light": "#758378", "skin": "#AD9B7C",
+    "panel": "#1C2522", "gold": "#BAA57B", "text": "#EEE8D9", "muted": "#B6B9A9",
+    "health": "#E1DED1", "mana": "#7197A0", "stamina": "#B4A76E", "enemy": "#A98565"
+  },
+  "scenes": {
+    "login": {
+      "camera": {"projection": "perspective", "view": "wide environmental vista", "horizon_y": 38, "focus": [66, 43]},
+      "terrain": "mountain_pass", "hero": {"at": [67, 79], "scale": 0.9},
+      "ruin": {"at": [74, 41], "scale": 1.1},
+      "foreground_trees": [{"at": [92, 75], "scale": 2.2}, {"at": [84, 59], "scale": 1.4}],
+      "rocks": [{"at": [49, 85], "scale": 1.6}, {"at": [84, 83], "scale": 1.5}],
+      "path": [[55, 100], [60, 75], [70, 54], [74, 40]]
+    },
+    "in_game": {
+      "camera": {"projection": "perspective", "view": "third_person_rear", "horizon_y": 35, "focus": [53, 47]},
+      "terrain": "mountain_pass", "hero": {"at": [49, 83], "scale": 1.25},
+      "ruin": {"at": [59, 36], "scale": 0.7},
+      "foreground_trees": [{"at": [7, 83], "scale": 2.5}, {"at": [17, 60], "scale": 1.5}, {"at": [91, 84], "scale": 2.4}, {"at": [79, 58], "scale": 1.1}],
+      "rocks": [{"at": [25, 79], "scale": 1.25}, {"at": [74, 77], "scale": 1.8}, {"at": [65, 48], "scale": 0.6}],
+      "path": [[39, 100], [47, 75], [53, 53], [59, 35]],
+      "encounter": {"at": [57, 49], "scale": 0.65, "visible_when": "combat"}
+    }
+  },
+  "templates": [
+    {
+      "id": "action_rpg_login", "name": "Action RPG · Login / entry", "screen": "login", "scene": "login",
+      "notes": ["The environment and character silhouette establish the scene before play.", "Use a restrained vertical menu over the world, not a framed web form.", "Continue/new game are local entry actions; sign-in is an optional platform feature."],
+      "regions": [
+        {"id": "menu_backdrop", "type": "shade", "rect": [0, 0, 46, 100], "layer": 1},
+        {"id": "genre_label", "type": "text", "rect": [10, 12, 33, 5], "layer": 2, "style": "eyebrow", "text": "GENRE LAYOUT / 02"},
+        {"id": "title", "type": "text", "rect": [10, 21, 42, 19], "layer": 2, "style": "action_title", "text": "ACTION\nROLE-PLAYING"},
+        {"id": "menu", "type": "menu", "rect": [10, 47, 28, 33], "layer": 2, "style": "minimal", "items": [
+          {"label": "Continue", "action": "navigate:action_rpg_in_game", "primary": true},
+          {"label": "New journey", "action": "navigate:action_rpg_in_game"},
+          {"label": "Settings", "action": "settings"},
+          {"label": "Exit", "action": "exit"}
+        ]},
+        {"id": "input_hint", "type": "text", "rect": [10, 90, 39, 4], "layer": 2, "style": "eyebrow", "text": "↑ ↓  SELECT     ENTER  CONFIRM"},
+        {"id": "profile", "type": "button", "rect": [75, 90, 21, 5], "layer": 2, "style": "quiet", "text": "LOCAL SAVE / SIGN IN", "action": "account"}
+      ],
+      "required_bindings": {"state": ["save_slots", "profile", "input_device"], "commands": ["continue_game", "new_game", "open_settings", "account_sign_in", "exit_game"]}
+    },
+    {
+      "id": "action_rpg_in_game", "name": "Action RPG · In-game", "screen": "in_game", "scene": "in_game",
+      "protected_view": [27, 11, 46, 65],
+      "notes": ["The player silhouette sits below center, looking into the scene depth.", "Bottom left: recovery item, health, mana and stamina; quick items sit just above.", "Bottom right: small skill icons and a secondary charge indicator.", "No permanent minimap, quest dashboard or opaque bottom dock.", "The lower-center encounter bar appears only during combat."],
+      "regions": [
+        {"id": "pause", "type": "button", "rect": [3, 3, 12, 4], "layer": 2, "style": "quiet", "text": "ESC  MENU", "action": "pause"},
+        {"id": "currency", "type": "text", "rect": [86, 4, 10, 4], "layer": 2, "style": "currency", "text": "◇  2,460"},
+        {"id": "quick_items", "type": "quick_items", "rect": [3.5, 77, 18, 7], "layer": 2, "items": ["scroll", "potion", "ring", "empty"], "action": "item"},
+        {"id": "recovery", "type": "recovery", "rect": [3.2, 86, 4.3, 10], "layer": 2, "value": "5", "action": "recover"},
+        {"id": "vitals", "type": "vitals", "rect": [8.5, 87.5, 21, 8], "layer": 2, "bars": [{"label": "Health", "value": 0.86, "color": "health"}, {"label": "Mana", "value": 0.63, "color": "mana"}, {"label": "Stamina", "value": 0.91, "color": "stamina"}]},
+        {"id": "skills", "type": "skills", "rect": [77, 81, 19, 9], "layer": 2, "items": [{"label": "Skill 1", "key": "1", "icon": "spark"}, {"label": "Skill 2", "key": "2", "icon": "wave"}, {"label": "Skill 3", "key": "3", "icon": "unit"}, {"label": "Skill 4", "key": "4", "icon": "sun"}], "action": "skill"},
+        {"id": "charge", "type": "charge", "rect": [85, 92, 11, 4], "layer": 2, "filled": 2, "count": 4},
+        {"id": "encounter_bar", "type": "encounter", "rect": [35, 88, 32, 7], "layer": 2, "text": "ELITE ENCOUNTER", "value": 0.72, "visible_when": "combat"}
+      ],
+      "required_bindings": {"state": ["health", "mana", "stamina", "quick_items", "recovery_charges", "skill_cooldowns", "charge_level", "encounter_target"], "commands": ["use_item", "recover", "cast_skill", "pause"]}
+    },
+    {
+      "id": "action_rpg_roster", "name": "Action RPG · Character / traits", "screen": "roster", "scene": "login",
+      "content_source": "roster", "inspection_only": true,
+      "notes": ["A large character silhouette is the focal point, with traits and effective values beside it.", "Keep the roster or form list narrow; reserve full-body space instead of cropping to a portrait.", "Preview is read-only and does not select a playable faction or unlock a character."],
+      "regions": [
+        {"id": "background", "type": "inspection_background", "rect": [0, 0, 100, 100], "layer": 1},
+        {"id": "header", "type": "inspection_header", "rect": [5, 3, 90, 8], "layer": 2, "text": "CHARACTER", "subtitle": "Identity, form and attributes"},
+        {"id": "roster", "type": "asset_browser", "rect": [5, 17, 21, 69], "layer": 2, "source": "roster", "search": true, "filters": ["All", "Character", "Form", "Unknown"]},
+        {"id": "model", "type": "asset_viewer", "rect": [29, 13, 40, 65], "layer": 2, "source": "selected_asset", "frame": "full_body", "fit_to_bounds": true, "placeholder_label": "Model pending · flat-color silhouette"},
+        {"id": "viewer_controls", "type": "viewer_controls", "rect": [29, 80, 40, 6], "layer": 2, "actions": ["zoom_out", "reset_view", "zoom_in"]},
+        {"id": "details", "type": "asset_details", "rect": [72, 17, 23, 69], "layer": 2, "fields": ["name", "base_stats", "effective_stats", "traits", "discovery"], "overflow": "scroll"},
+        {"id": "footer", "type": "inspection_footer", "rect": [5, 91, 90, 6], "layer": 2, "text": "INSPECTION ONLY / Final model, camera orbit and gameplay bindings are not connected"}
+      ],
+      "required_bindings": {"state": ["visible_characters", "selected_character", "forms", "traits", "base_stats", "effective_stats", "asset_descriptor"], "commands": ["inspect_character", "filter_characters", "close_inspection"]},
+      "acceptance": ["Keep unknown form information hidden.", "Fit character height and attachments inside the viewer.", "Show unavailable model and empty search states explicitly."]
+    },
+    {
+      "id": "action_rpg_equipment", "name": "Action RPG · Equipment / inventory", "screen": "equipment", "scene": "login",
+      "content_source": "equipment", "inspection_only": true,
+      "notes": ["Left: inventory categories and items. Center: large equipment close-up and current owner slots. Right: attributes and comparison.", "Compare compatible equipment for the same owner; separate inspection from equip confirmation.", "Do not create shop, upgrade or purchase controls unless those systems exist."],
+      "regions": [
+        {"id": "background", "type": "inspection_background", "rect": [0, 0, 100, 100], "layer": 1},
+        {"id": "header", "type": "inspection_header", "rect": [5, 3, 90, 8], "layer": 2, "text": "EQUIPMENT", "subtitle": "Inspect, compare and plan a loadout"},
+        {"id": "items", "type": "asset_browser", "rect": [5, 17, 23, 69], "layer": 2, "source": "equipment", "search": true, "filters": ["All", "Weapon", "Armor", "Charm"]},
+        {"id": "model", "type": "asset_viewer", "rect": [31, 14, 36, 48], "layer": 2, "source": "selected_asset", "frame": "object_closeup", "fit_to_bounds": true, "placeholder_label": "Model pending · flat-color silhouette"},
+        {"id": "viewer_controls", "type": "viewer_controls", "rect": [31, 64, 36, 6], "layer": 2, "actions": ["zoom_out", "reset_view", "zoom_in"]},
+        {"id": "loadout", "type": "loadout_slots", "rect": [31, 74, 36, 12], "layer": 2, "slots": ["Weapon", "Armor", "Charm"], "read_only": true},
+        {"id": "details", "type": "asset_details", "rect": [70, 17, 25, 40], "layer": 2, "fields": ["name", "slot", "effects", "compatibility", "source"], "overflow": "scroll"},
+        {"id": "comparison", "type": "asset_comparison", "rect": [70, 60, 25, 26], "layer": 2, "actions": ["pin_comparison"], "same_slot_only": true},
+        {"id": "footer", "type": "inspection_footer", "rect": [5, 91, 90, 6], "layer": 2, "text": "READ-ONLY / Values below are layout samples, not a game's balance data"}
+      ],
+      "required_bindings": {"state": ["inventory", "selected_item", "owner", "equipped_slots", "requirements", "comparison_values", "asset_descriptor"], "commands": ["inspect_item", "compare_item", "close_inspection"]},
+      "acceptance": ["Show compatible/incompatible and locked/available separately.", "Comparison uses the same owner and units.", "Inspecting or comparing does not equip, buy or upgrade an item."]
+    }
+  ],
+  "inspection_samples": {
+    "disclaimer": "Generic layout fixtures only; not project balance values or generated assets.",
+    "roster": [
+      {"id": "traveler", "name": "Traveler", "category": "Character", "discovery": "known", "model": "humanoid", "base_stats": {"Health": "100", "Stamina": "80"}, "traits": ["Full-body framing", "Read-only character inspection"], "source": "Layout fixture"},
+      {"id": "guardian", "name": "Guardian form", "category": "Form", "discovery": "locked", "model": "construct", "base_stats": {"Health": "160", "Stamina": "60"}, "traits": ["Known form; unlock requirement not fulfilled"], "source": "Layout fixture"},
+      {"id": "unknown", "name": "Undiscovered form", "category": "Unknown", "discovery": "unknown", "model": null, "source": "Layout fixture"}
+    ],
+    "equipment": [
+      {"id": "blade", "name": "Training blade", "category": "Weapon", "discovery": "known", "slot": "Weapon", "model": "sword", "stats": {"Power": 12, "Weight": 3}, "units": {"Power": "fixture points", "Weight": "kg"}, "effects": ["Sample light weapon"], "compatibility": "Weapon slot", "source": "Layout fixture"},
+      {"id": "staff", "name": "Practice staff", "category": "Weapon", "discovery": "known", "slot": "Weapon", "model": "staff", "stats": {"Power": 8, "Weight": 2}, "units": {"Power": "fixture points", "Weight": "kg"}, "effects": ["Sample two-handed weapon"], "compatibility": "Weapon slot", "source": "Layout fixture"},
+      {"id": "plate", "name": "Guard plate", "category": "Armor", "discovery": "locked", "slot": "Armor", "model": "shield", "stats": {"Defense": 5}, "units": {"Defense": "fixture points"}, "effects": ["Cannot compare across weapon and armor slots"], "compatibility": "Armor slot", "source": "Layout fixture"},
+      {"id": "charm", "name": "Plain charm", "category": "Charm", "discovery": "known", "slot": "Charm", "model": null, "stats": {}, "effects": ["No model asset is supplied"], "compatibility": "Charm slot", "source": "Layout fixture"}
+    ]
+  }
+}
