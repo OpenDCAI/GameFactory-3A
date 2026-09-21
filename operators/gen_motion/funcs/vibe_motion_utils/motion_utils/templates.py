@@ -39,6 +39,7 @@ MOTION_PRESETS: dict[str, dict[str, Any]] = {
             'combo': (0, 1),
             'reach': 0.9,
             'guard_height': 0.1,
+            'guard_reach': 0.42,
             'crouch': 0.015,
         },
     },
@@ -49,6 +50,7 @@ MOTION_PRESETS: dict[str, dict[str, Any]] = {
             'combo': (0,),
             'reach': 0.9,
             'guard_height': 0.1,
+            'guard_reach': 0.42,
             'crouch': 0.015,
         },
     },
@@ -252,8 +254,9 @@ def resolve_preset(
             n * 0.8 / len(combo) < 10
             or not 0.5 <= p['reach'] <= 0.95
             or not 0 <= p['guard_height'] <= 0.2
+            or not 0.2 <= p['guard_reach'] < p['reach']
         ):
-            raise ValueError('not enough frames for the punches, or reach/guard_height out of range')
+            raise ValueError('not enough frames for the punches, or reach/guard_height/guard_reach out of range')
 
     if name in ('chop', 'turn_jump_chop'):
         if (

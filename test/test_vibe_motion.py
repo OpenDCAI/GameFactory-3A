@@ -22,6 +22,7 @@ from operators.gen_motion.funcs.vibe_motion_utils import (
     bvh,
     motion,
     motion_utils,
+    pipeline,
     rigging_utils,
     skeleton,
     skinning,
@@ -135,6 +136,67 @@ GESTURE_TASKS: tuple[dict[str, Any], ...] = (
         },
     },
 )
+
+
+_KICK_SEGMENT: dict[str, Any] = {
+    'plant_feet': False, 'root_yaw': None,
+    'root_positions': {
+        'times': [0., .18, .30, .50, .70, .82, 1.],
+        'values': [[0, 0, 0], [0, .01, .02], [0, .09, .14], [0, .22, .34],
+                   [0, .08, .54], [0, .01, .62], [0, 0, .66]],
+        'modes': ['smooth', 'return', 'smooth', 'smooth', 'impact', 'smooth']},
+    'rotations': [
+        {'role': 'limb.L.1', 'at': 0, 'axis': [-1., 0, 0], 'times': [0., .18, .30, .50, .70, 1.],
+         'values': [0., -10., 45., 78., 26., 0.],
+         'modes': ['smooth', 'return', 'impact', 'smooth', 'smooth']},
+        {'role': 'limb.L.1', 'at': 1, 'axis': [1., 0, 0], 'times': [0., .18, .30, .50, .70, 1.],
+         'values': [0., 28., 55., 4., 30., 2.],
+         'modes': ['smooth', 'smooth', 'impact', 'smooth', 'smooth']},
+        {'role': 'limb.R.1', 'at': 0, 'axis': [-1., 0, 0], 'times': [0., .18, .50, .82, 1.],
+         'values': [0., -6., -26., -4., 0.], 'modes': ['return', 'smooth', 'smooth', 'smooth']},
+        {'role': 'limb.R.1', 'at': 1, 'axis': [1., 0, 0], 'times': [0., .18, .50, .82, 1.],
+         'values': [0., 22., 70., 22., 2.], 'modes': ['smooth', 'smooth', 'smooth', 'smooth']}],
+    'targets': [
+        {'role': 'limb.L.0', 'times': [0., .18, .30, .50, .70, 1.],
+         'values': [[.30, -.42, .30], [.32, -.34, .36], [.30, -.18, .46],
+                    [.28, -.12, .50], [.30, -.30, .40], [.30, -.42, .30]],
+         'pole': [1., -.2, -.3]},
+        {'role': 'limb.R.0', 'times': [0., .18, .30, .50, .70, 1.],
+         'values': [[-.30, -.42, .30], [-.32, -.30, .34], [-.30, -.08, .44],
+                    [-.28, .00, .48], [-.30, -.26, .38], [-.30, -.42, .30]],
+         'pole': [-1., -.2, -.3]}],
+}
+
+_PUNCH_SEGMENT: dict[str, Any] = {
+    'plant_feet': False, 'root_yaw': None,
+    'root_positions': {'times': [0., .30, .55, .80, 1.],
+                       'values': [[0, 0, 0], [0, 0, .02], [0, 0, .03], [0, 0, .02], [0, 0, 0]]},
+    'rotations': [
+        {'role': 'trunk', 'at': 1, 'axis': [0., 1., 0.], 'times': [0., .30, .55, .80, 1.],
+         'values': [0., -9., 9., -6., 0.], 'modes': ['smooth', 'impact', 'impact', 'smooth']},
+        {'role': 'limb.L.1', 'at': 1, 'axis': [1., 0, 0], 'times': [0., .5, 1.], 'values': [2., 4., 2.]},
+        {'role': 'limb.R.1', 'at': 1, 'axis': [1., 0, 0], 'times': [0., .5, 1.], 'values': [2., 4., 2.]}],
+    'targets': [
+        {'role': 'limb.L.0', 'times': [0., .12, .30, .42, .62, .80, 1.],
+         'values': [[.30, -.42, .30], [.26, -.20, .44], [.24, -.14, .86], [.26, -.18, .48],
+                    [.24, -.16, .46], [.25, -.18, .46], [.30, -.42, .30]],
+         'modes': ['smooth', 'impact', 'return', 'smooth', 'smooth', 'smooth'], 'pole': [1., -.2, -.3]},
+        {'role': 'limb.R.0', 'times': [0., .12, .30, .52, .68, .86, 1.],
+         'values': [[-.30, -.42, .30], [-.26, -.18, .42], [-.26, -.20, .46], [-.24, -.14, .86],
+                    [-.26, -.18, .48], [-.25, -.20, .44], [-.30, -.42, .30]],
+         'modes': ['smooth', 'smooth', 'impact', 'return', 'smooth', 'smooth'], 'pole': [-1., -.2, -.3]}],
+}
+
+# Flying kick then punch combo. Both segments use task_space so the seam poses
+# match; the kick leaves the ground, the punch keeps a standing stance.
+FLYING_KICK_COMBO: dict[str, Any] = {
+    'task_type': 'vibe', 'task_id': 'flying_kick_punch', 'creature': 'human', 'fps': 30.,
+    'segments': [
+        {'preset': 'task_space', 'num_frames': 96, 'motion_overrides': _KICK_SEGMENT},
+        {'preset': 'task_space', 'num_frames': 96, 'motion_overrides': _PUNCH_SEGMENT},
+    ],
+    'transitions': [{'transition_frames': 8, 'carry_facing': True}],
+}
 
 
 class VibeMotionTest(unittest.TestCase):
@@ -443,6 +505,39 @@ class VibeMotionTest(unittest.TestCase):
         for invalid in invalid_cases:
             with self.subTest(invalid=invalid), self.assertRaises(ValueError):
                 motion.generate_clip('turn_jump_chop_tuned', plan, **invalid)
+
+    def test_flying_kick_then_punch_combo(self):
+        task = deepcopy(FLYING_KICK_COMBO)
+        with tempfile.TemporaryDirectory() as directory:
+            result = GenMotionOperator(output_dir=directory).run(task)
+            report = json.loads(Path(result['vibe_report_path']).read_text())
+            joints = np.load(result['joints_npy_path'])
+        self.assertEqual(task, FLYING_KICK_COMBO)
+        self.assertEqual(report['frames'], 200)
+        self.assertEqual(report['metrics']['failures'], [])
+        for record in report['segments']:
+            self.assertEqual(record['metrics']['failures'], [])
+        self.assertLess(report['transitions'][0]['joint_step_max'], 1e-5)
+        plan = motion.build_plan(skeleton.to_motion_template(
+            skeleton.fit_skeleton(skeleton.creature_mesh('human'))))
+        ground = plan.ground
+        hip = plan.roles['limb.L.1'].joints[0]
+        toe = plan.roles['limb.L.1'].joints[-1]
+        wrists = [plan.roles[r].joints[-1] for r in ('limb.L.0', 'limb.R.0')]
+        # Airborne: every foot leaves the ground during the kick.
+        clearance = joints[:96, [toe, plan.roles['limb.R.1'].joints[-1]], 1].min(axis=1) - ground
+        self.assertGreater(float(clearance.max()), .2 * plan.support_length)
+        self.assertLess(float(clearance[0]), .01 * plan.support_length)
+        # The kicking foot extends forward, then the combo returns to a stance.
+        self.assertGreater(float(joints[:96, toe, 2].max() - joints[0, toe, 2]), .5 * plan.support_length)
+        self.assertLess(float(clearance[-1]), .05 * plan.support_length)
+        # Punches reach further forward than the guard pose, on both arms.
+        start = report['segments'][1]['start_frame']
+        for wrist in wrists:
+            guard = float(joints[start, wrist, 2])
+            self.assertGreater(float(joints[start:, wrist, 2].max() - guard), .2 * plan.support_length)
+        forward = joints[-1, hip, 2] - joints[0, hip, 2]
+        self.assertGreater(float(forward), .5 * plan.support_length)
 
     def test_parameterized_operator_tasks(self):
         for task in MOTION_TASKS:
@@ -841,22 +936,22 @@ def export_refinement_preview(output_dir, *, mesh_path, task_inputs, stage="afte
         task.pop("creature", None)
         task["target_mesh_path"] = source_path
         captured = {}
-        original_skin, original_generate = skinning.skin_mesh, motion.generate_clip
+        original_skin = skinning.skin_mesh
+        original_bvh = pipeline.clip_to_bvh_bytes
 
         def capture_skin(mesh, rig, **kwargs):
             weights = original_skin(mesh, rig, **kwargs)
             captured.update(mesh=mesh, skin=weights)
             return weights
 
-        def capture_clip(preset, plan, **kwargs):
-            generated = original_generate(preset, plan, **kwargs)
-            captured.update(clip=generated.clip)
-            return generated
+        def capture_exported(clip):
+            captured.update(clip=clip)
+            return original_bvh(clip)
 
         op = GenMotionOperator(output_dir=str(destination / task["task_id"]))
         with (
             patch.object(skinning, "skin_mesh", side_effect=capture_skin),
-            patch.object(motion, "generate_clip", side_effect=capture_clip),
+            patch.object(pipeline, "clip_to_bvh_bytes", side_effect=capture_exported),
         ):
             result = op.run(task)
         report = json.loads(Path(result["vibe_report_path"]).read_text())
@@ -868,7 +963,7 @@ def export_refinement_preview(output_dir, *, mesh_path, task_inputs, stage="afte
                 for key, value in result.items() if key.endswith("_path") and value
             },
         }
-        if "segments" not in task:
+        if "skin" in captured:
             mesh, clip, weights = captured["mesh"], captured["clip"], captured["skin"].weights
             joints, quats = fk(clip)
             rotations = quat_to_matrix(quats)

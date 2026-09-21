@@ -286,7 +286,8 @@ def _fit_boxing(result, plan, arms, p):
         sh, elbow, wrist = js
         length = np.linalg.norm(plan.template.rest[elbow] - plan.template.rest[sh]) + np.linalg.norm(plan.template.rest[wrist] - plan.template.rest[elbow])
         offset = plan.template.rest[sh] - plan.template.rest[root]
-        guard = offset + np.array([-0.025 if side == 0 else 0.025, p['guard_height'], 0.21])
+        guard_z = p['guard_reach'] * length
+        guard = offset + np.array([(-0.05 if side == 0 else 0.05) * length, p['guard_height'], guard_z])
         target = np.repeat(guard[None], n, axis=0)
         ready = smooth(u / 0.16)
         start = plan.template.rest[wrist] - plan.template.rest[root]
@@ -296,7 +297,7 @@ def _fit_boxing(result, plan, arms, p):
                 continue
             a, b = (0.2 + 0.8 * k / len(p['combo']), 0.2 + 0.8 * (k + 1) / len(p['combo']))
             profile = curve([0, 0.28, 0.34, 0.86, 1], [0, 1, 1, 0, 0], np.clip((u - a) / (b - a), 0, 1), ['impact', 'smooth', 'return', 'smooth'])
-            target[:, 2] += (p['reach'] * length - 0.21) * profile
+            target[:, 2] += (p['reach'] - p['guard_reach']) * length * profile
         target += root_pos[:, root]
         pole = np.array([0.2 if side == 0 else -0.2, -1.0, 0.0])
         result.hand_targets[role] = target
