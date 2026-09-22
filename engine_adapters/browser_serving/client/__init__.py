@@ -1,6 +1,6 @@
 """Public Browser Serving Python SDK."""
 
-from .client import BrowserServingClient
+from .client import BrowserServingClient, CgVideoClient
 from .exceptions import (
     BrowserServingClientError,
     BrowserServingConnectionError,
@@ -11,6 +11,7 @@ from .http import HTTPTransport, Transport
 
 __all__ = [
     "BrowserServingClient",
+    "CgVideoClient",
     "BrowserServingClientError",
     "BrowserServingConnectionError",
     "BrowserServingHTTPError",

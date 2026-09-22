@@ -98,7 +98,7 @@ asks for multiple independent deliverables.
 | Rig, generate, fetch, or retarget motion | `<REPO_PATH>/agent_skills/asset_qa/motion/SKILL.md` | the selected engine API before importing the motion |
 | Prepare a character image or T-pose | `<REPO_PATH>/agent_skills/asset_qa/image/SKILL.md` | the selected 3D-object or motion skill after preprocessing |
 | Generate dialogue or sound effects | `<REPO_PATH>/agent_skills/asset_qa/audio/SKILL.md` | the selected engine API before in-game integration |
-| Generate CG video | `<REPO_PATH>/agent_skills/asset_qa/cg_video/SKILL.md` | the selected engine API when the video is used in-game |
+| Generate CG video | `<REPO_PATH>/agent_skills/asset_qa/cg_video/SKILL.md` | `<REPO_PATH>/agent_skills/asset_qa/cg_video/game-cg-director/SKILL.md` when the plan defines a clip's purpose but not yet a model-ready prompt; the selected engine API when the video is used in-game |
 | Generate gameplay mechanics | `<REPO_PATH>/agent_skills/engine_context/engine_overview.md` | `<REPO_PATH>/agent_skills/code_gen/mechanic/game_generation.md`, then the selected engine API |
 | Generate UI or browser play | `<REPO_PATH>/agent_skills/engine_context/engine_overview.md` | `<REPO_PATH>/agent_skills/code_gen/ui/game_ui_generation.md`, then the selected engine API and `<REPO_PATH>/agent_skills/engine_context/browser_serving_api.md` |
 | Build a full game slice | this file, then `<REPO_PATH>/agent_skills/engine_context/engine_overview.md` | the required asset Skills, CodeGen Skills, and selected engine context routed by those documents |

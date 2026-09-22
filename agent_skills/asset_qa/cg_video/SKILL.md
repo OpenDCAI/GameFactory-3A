@@ -21,6 +21,10 @@ Game plan → game-cg-director → cg_tasks.jsonl
 | Harness | `<REPO_PATH>/test/harness/` | CPU-only, network-free chain validation |
 | Director sub-Skill | `<REPO_PATH>/agent_skills/asset_qa/cg_video/game-cg-director/` | Model-specific storyboard prompts and validated task rows |
 
+Paths in this Skill are written from the repository root. Resolve every
+`<REPO_PATH>/...` from there, and run every `bash` and `python` command below
+with `<REPO_PATH>/` as the working directory.
+
 Standard artifact layout:
 
 ```text
@@ -29,6 +33,14 @@ test_data/outputs/<game_id>/<run_id>/assets/cg_video/<task_id>/
 └── meta.json
 ```
 
+A game that plays a clip through the Browser Serving gateway loads it by task
+identity at play time, and that request serves a stored artifact rather than
+creating one. Generate every clip named in the game plan during production, and
+run the play-time gateway with `A3GAME_BROWSER_CG_VIDEO_PREBUILT_ONLY=1`, so a
+clip that was never generated is reported as failed instead of being generated
+inside a page load. Where the served bytes have to stay fixed, pin the producing
+`run_id`: an unpinned lookup answers with the newest matching artifact.
+
 Do not pass local image paths into a model directly. The task/JSONL uses local
 paths; the operator resolves them and converts images to `PIL.Image.Image`.
 Python callers with images already in memory may pass image objects, but never
@@ -36,11 +48,23 @@ provide both an image object and its corresponding path field.
 
 ## Directing sub-Skill and Harness handoff
 
-Use `game-cg-director/SKILL.md` when the approved game plan defines the purpose
-of a CG clip but does not yet provide a model-ready prompt. It is a child
-capability of this Skill, not an alternative generation backend. The child
-creates and validates one directing envelope per output clip and never invokes
-a model.
+Use `<REPO_PATH>/agent_skills/asset_qa/cg_video/game-cg-director/SKILL.md` when
+the approved game plan defines the purpose of a CG clip but does not yet provide
+a model-ready prompt. It is a child capability of this Skill, not an alternative
+generation backend. The child creates and validates one directing envelope per
+output clip and never invokes a model.
+
+Read it and the files it selects, then validate every envelope it hands back
+before that row is used — a non-zero exit is blocking:
+
+```bash
+python3 <REPO_PATH>/agent_skills/asset_qa/cg_video/game-cg-director/scripts/validate_output.py <envelope.json>
+```
+
+Validation is the only check between a prompt and a paid generation. The
+pipeline and the Browser Serving gateway accept any row whose execution fields
+are well-formed, so an envelope that never passed the validator reaches a
+backend unchallenged.
 
 Select the input workspace before calling the child:
 

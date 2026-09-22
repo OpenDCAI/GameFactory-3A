@@ -362,6 +362,63 @@ class SessionsClient:
         )
 
 
+class CgVideoClient:
+    """Client for browser-triggered CG-video generation jobs."""
+
+    def __init__(self, transport: Transport, engine: str = "") -> None:
+        self._transport = transport
+        self._engine = engine
+
+    def generate(
+        self,
+        game_id: str,
+        task_id: str,
+        *,
+        run_id: str = "auto",
+        backend: str = "",
+        engine: str = "",
+        session_id: str = "",
+        trigger_id: str = "",
+        idempotency_key: str = "",
+        options: Mapping[str, Any] | None = None,
+        playback: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Submit one canonical CG-video task for asynchronous generation."""
+
+        return self._transport.request(
+            "POST",
+            "/api/cg-video",
+            json_body={
+                "game_id": game_id,
+                "task_id": task_id,
+                "run_id": run_id,
+                "backend": backend,
+                "engine": engine or self._engine,
+                "session_id": session_id,
+                "trigger_id": trigger_id,
+                "idempotency_key": idempotency_key,
+                "options": dict(options or {}),
+                "playback": dict(playback or {}),
+            },
+        )
+
+    def status(
+        self,
+        request_id: str,
+        *,
+        engine: str = "",
+    ) -> dict[str, Any]:
+        """Read one queued, running, ready, or failed request."""
+
+        selected = engine or self._engine
+        query = {"engine": selected} if selected else None
+        return self._transport.request(
+            "GET",
+            f"/api/cg-video/{quote(str(request_id), safe='')}",
+            query=query,
+        )
+
+
 class BrowserServingClient:
     def __init__(
         self,
@@ -381,6 +438,7 @@ class BrowserServingClient:
         self.assets = AssetsClient(self._transport, self.default_engine)
         self.worlds = WorldsClient(self._transport, self.default_engine)
         self.sessions = SessionsClient(self._transport, self.default_engine)
+        self.cg_video = CgVideoClient(self._transport)
 
     def health(self) -> dict[str, Any]:
         return self._transport.request("GET", "/api/health")

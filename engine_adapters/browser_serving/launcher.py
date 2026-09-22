@@ -11,7 +11,6 @@ import urllib.request
 import uvicorn
 
 from .config import BrowserServingConfig
-from .frontend import launch_admin
 from .gateway import create_app
 
 
@@ -45,6 +44,8 @@ def _wait_for_gateway(config: BrowserServingConfig) -> None:
 
 def run_all(config: BrowserServingConfig | None = None) -> None:
     resolved = config or BrowserServingConfig.from_environment()
+    from .frontend import launch_admin
+
     gateway_thread = threading.Thread(
         target=run_gateway,
         args=(resolved,),
@@ -75,6 +76,8 @@ def main(argv: list[str] | None = None) -> None:
     if args.service == "gateway":
         run_gateway(config)
     elif args.service == "admin":
+        from .frontend import launch_admin
+
         launch_admin(config)
     else:
         run_all(config)

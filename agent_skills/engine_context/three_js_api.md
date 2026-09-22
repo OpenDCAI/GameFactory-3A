@@ -763,6 +763,33 @@ WebSocket: `{id,command,payload}` → `{id,result}`.
 - Delivery is HTTP POST /command, including when config accepts websocket; configure the compatible browser relay separately.
 - Sequence values are only forwarded; enforce ordering and game-action semantics in the integration.
 
+### Cinematic playback and clip handoff
+
+Play a canonical CG-video clip from inside a running game — a checkpoint cutscene or a mid-run transition — not at boot.
+`A3GameCinematicPlayer` owns the request and one temporary `<video>` element; gameplay owns the trigger, the poses, and the handoff.
+The gateway serves a stored clip rather than generating one (`browser_serving_api.md`), so its first and last frames are fixed at generation time: capture them as the task's `first_frame_path` and `last_frame_path` with the runtime's own camera, so the seam is a re-render rather than an approximation. Re-version those files when you recapture them; `meta.json` stores paths, not content hashes.
+
+Converge inside one tick: a camera lerping to a teleported entity renders it sliding into place, so the captured frame would depend on camera history. `host` is `A3GameRuntimeHost`, `input` is `A3GameInputRouter`, `seize` is the game's own.
+
+```js
+input.disable();                          // stop accepting new input
+seize(entity, poseA);                     // position and heading, not position.y
+host.stop();                              // safe inside a tick: the next handle is cancelled
+for (let i = 0; i < steps; i += 1) host.tick(1 / 60);
+host.tick(0);                             // pure redraw: the framebuffer now holds the frame
+```
+
+Do not write `position.y`; the entity lerps toward sampled ground height, so set `x`/`z`/heading only.
+Derive `steps` from the game's own camera lerp rate: a camera easing at `1 - exp(-k * delta)` has decayed by `exp(-k * steps / 60)` after the loop.
+
+Clear the input state the game mirrors onto the entity, not only the router's: `disable()` resets the router's axes, but a stale throttle field keeps the entity accelerating through the clip. Assign the resume speed after convergence, where drag cannot shave it off.
+
+Hand over on the element's `ended`, not on `play()` resolving, which resolves when playback starts. Add an `error` path and a `duration * 1000 + 2000` watchdog: a stalled element never fires `ended`, and a frozen game with no controls is worse than a missed clip. Resuming is `host.start()` and `input.enable()`.
+
+Trigger on the game's own progress cursor rather than on geometry, diffed frame to frame: it increments before it reports, and an entity spawned inside a trigger volume reports it on the first frame.
+
+Two limits are inherited: `disable()` drops the router's `window` listeners, so a key the player is holding delivers nothing when `enable()` restores them; and convergence stalls the main thread, so time the request with Resource Timing (`entry.duration`) rather than around an `await fetch(...)`.
+
 ## 11. Animation and motion libraries
 
 Separate the gameplay/collision root from its replaceable animated visual.
@@ -1166,7 +1193,7 @@ Keep generated imports at `@a3game/playable`; packaged subpaths are not needed f
 | Wire data | `A3GameControlMode`, `A3GameLocomotionState`, `A3GameRuntimeCommand`, `createControlBinding`, `createControllerState`, `createEntitySnapshot`, `createEntitySpawnRequest`, `createParticipantInfo`, `createRuntimeInputState`, `createTransform`, `createVector3`, `locomotionStateFromInput` |
 | Interfaces | `A3GameControllableEntity`, `A3GameEntityFactory`, `A3GameRuntimeMessageHandler`, `CONTROLLABLE_ENTITY_METHODS`, `ENTITY_FACTORY_METHODS`, `RUNTIME_MESSAGE_HANDLER_METHODS`, `assertControllableEntity`, `assertEntityFactory`, `assertRuntimeMessageHandler`, `isControllableEntity`, `isEntityFactory`, `isRuntimeMessageHandler` |
 | Components / sessions | `A3GAME_USER_DATA_KEY`, `A3GameIdentityComponent`, `A3GameRuntimeEntityComponent`, `A3GameRuntimeSubsystem`, `A3GameWorldSessionSubsystem` |
-| Runtime systems | `A3GameRuntimeHost`, `A3GameEnvironmentPreset`, `A3GameAssetLibrary`, `A3GameSceneLoader`, `A3GameInputRouter`, `A3GameLookMode`, `DEFAULT_KEY_BINDINGS`, `A3GameRuntimeChannel`, `A3GameHudLayer`, `A3GameCollisionProbe`, `resolveEntityId`, `disposeObject3D` |
+| Runtime systems | `A3GameRuntimeHost`, `A3GameEnvironmentPreset`, `A3GameAssetLibrary`, `A3GameSceneLoader`, `A3GameInputRouter`, `A3GameLookMode`, `DEFAULT_KEY_BINDINGS`, `A3GameCinematicPlayer`, `A3GameRuntimeChannel`, `A3GameHudLayer`, `A3GameCollisionProbe`, `resolveEntityId`, `disposeObject3D` |
 | Layout | `directionToYaw`, `yawToDirection`, `footprintCorners`, `distanceToPolyline`, `createGroundRibbon`, `createFacadeTexture` |
 | Model / material utilities | `A3GAME_RUNTIME_FORWARD_AXIS`, `A3GameForwardAxis`, `A3GameMaterialPreset`, `A3GameSurfacePattern`, `alignWeaponModel`, `measureWeapon`, `principalAxes`, `measureObject`, `fitToHeight`, `groundObject`, `forwardAxisYaw`, `orientModel`, `prepareModel` |
 | Visual construction | `createCloudLayer`, `createContactShadow`, `createDistantRange`, `createFillLight`, `createInstancedFromModel`, `createMaterial`, `createRadialGradientTexture`, `createRoundedBox`, `createSeededRandom`, `createSkyGradient`, `createSunLight`, `createSurfaceMaterial`, `createSurfaceTextures`, `createTilingTexture`, `createWaterSurface` |
