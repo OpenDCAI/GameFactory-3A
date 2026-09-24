@@ -166,86 +166,66 @@ Ownership is separated:
 A run is the smallest reproducible publication unit:
 
 ```text
-Task Packet -> UI Generation -> Native UI And Browser Play
-            -> Assembly -> Playable Product -> Evaluation
+Task Packet -> UI Generation (Engine Native + Browser Play)
+            -> Finalized UI Workspace -> Evaluation
 ```
 
-All run-owned data belongs under:
+Every artifact is addressed by `(game_id, run_id, task_kind, task_id)` and
+lands in the shared per-game output tree described by
+`<REPO_PATH>/test_data/outputs/README.md`:
 
 ```text
-test_data/outputs/<game_id>/runs/<run_id>/
-|-- run.json
-|-- inputs.lock.json
-|-- artifacts/ui/<task_id>/
-|-- products/<pipeline_task_id>/
-|   `-- {native,browser_play,launch,assembly_manifest.json,product_manifest.json}
-|-- evaluation/<pipeline_task_id>/
-|   `-- {build,tests,screenshots,browser_smoke,logs,result.json}
-`-- _pipeline/{packets,attempts,prompts,snapshots}/
+test_data/outputs/<game_id>/
+|-- latest -> <run_id>/             # symlink to the most recent run
+`-- <run_id>/
+    |-- run_meta.json               # run provenance, Pipeline-owned
+    |-- ui_results_summary.json     # Pipeline-owned
+    |-- ui/<task_id>/               # the prepared UI workspace
+    `-- eval/ui/<task_id>/          # metrics.json, Pipeline-owned
 ```
 
-`<REPO_PATH>/pipeline/common/paths.py` owns these paths; do not construct them manually.
-Published runs are immutable. A content repair creates a new run and records
-`parent_run_id`, `repair_of`, and the failure digest. Keep unpublished retries
-under `_pipeline/attempts/` and promote only the selected attempt.
+`<REPO_PATH>/pipeline/common/paths.py` owns these paths; do not construct them
+manually. The Pipeline prepares `ui/<task_id>/` and hands the Agent its path;
+the Agent writes only inside that workspace.
 
-The published UI artifact is:
+The UI workspace is:
 
 ```text
-artifacts/ui/<task_id>/
-|-- native/
-|-- browser_play/
-|-- bindings/
-|-- fixtures/
-|-- tests/
-|-- screenshot_plan.json
-|-- context_used.json
-`-- manifest.json
+ui/<task_id>/
+|-- meta.json       # Pipeline-owned identity and status
+|-- generated_ui/   # all task-owned UI output (see Outputs, Provenance, And Tests)
+`-- demo_outputs/   # Pipeline-owned, reserved
+    |-- code_gen/   # task_packet.json · instructions.md ·
+    |               # workspace_snapshot.json · finalize_result.json
+    `-- repairs/attempt_NN/  # re-prepared packet for repair attempt N
 ```
 
-`native/` is the cross-Engine UI boundary: for example
-`native/Plugins/GameUI/` in Unreal, `native/Assets/UI/` in Unity, or
-`native/addons/game_ui/` in Godot, or `native/src/components/` in Three.js.
-Upper layers must not assume Unreal.
-`native/` and `browser_play/` are source artifacts; product copies are
-read-only assembly output. Framework Browser Serving code is never copied into
-a game artifact. Keep `Binaries/`, `Intermediate/`, `Saved/`, Derived Data
-Cache, `__pycache__/`, and other mutable output under `.tmp`.
+The engine-native UI inside `generated_ui/` keeps its Engine's own layout —
+for example `Plugins/GameUI/` in Unreal, `Assets/UI/` in Unity,
+`addons/game_ui/` in Godot, or `src/components/` in Three.js — so upper layers
+must not assume Unreal. Framework Browser Serving code is never copied into a
+game artifact. Keep `Binaries/`, `Intermediate/`, `Saved/`, Derived Data
+Cache, `__pycache__/`, and other mutable output out of the workspace.
 
-Every published artifact includes `manifest.json` using
-`gamefactory3a.artifact_manifest.v1` with:
+`meta.json`, `demo_outputs/`, and `evaluation/` are reserved: never create,
+modify, or delete them. `workspace_snapshot.json` records the SHA256 and size
+of every workspace file, split into `task_files` and `protected_files`;
+finalization re-derives the manifest, rejects protected-path changes, and
+reports the task-owned diff.
 
-- `artifact_version`;
-- identity: `game_id`, `run_id`, `task_kind=ui`, and `task_id`;
-- artifact path, `tree_sha256`, and file count;
-- producer `git_sha` and `packet_sha256`.
+Published workspaces are immutable. A structured failure triggers a repair:
+the Pipeline re-prepares the same workspace with the failure digest and
+previous result under `demo_outputs/repairs/attempt_NN/`, and the Agent
+changes only UI-owned source, manifests, fixtures, and tests. A fresh start
+uses a new `run_id`; it never overwrites a published run. Evaluation scores
+the finalized workspace at `eval/ui/<task_id>/` and records `metrics.json`
+there.
 
-Keep schema, artifact, contract/binding, and content versions distinct.
-Calculate `tree_sha256` from sorted POSIX-relative paths plus each file's
-SHA256 and byte size, excluding the manifest and mutable output. Publish only
-run-relative paths, never machine-local absolute paths.
-
-Assembly must record and recalculate both finalized Mechanic and UI manifest
-digests and `tree_sha256` values in an
-`gamefactory3a.assembly_manifest.v1` manifest, fail on mismatch, and produce a
-new assembly/product digest when Mechanic, native UI, or Browser Play source
-changes. Evaluation must pin `subject.product_manifest` and
-`subject.product_manifest_sha256`; native builds/tests, screenshots, logs, and
-Browser smoke evidence apply only to that product.
-
-Track separate status:
-
-```json
-{
-  "generation_status": "generated",
-  "assembly_status": "not_run",
-  "verification_status": "not_run"
-}
-```
-
-UI generation may set only generation status. Assembly alone sets `assembled`;
-execution/evaluation alone sets `verified`. Source generation, static
-validation, or artifact-presence checks must not claim playability.
+Finalization alone writes `ui_results_summary.json`, refreshes
+`run_meta.json`, and repoints `latest`; only the Pipeline updates `meta.json`
+status. A finalized workspace proves generation only — source generation,
+static validation, or artifact-presence checks must not claim playability;
+only execution and evaluation evidence may.
 
 ## Repair And Completion
 

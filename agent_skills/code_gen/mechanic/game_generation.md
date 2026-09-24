@@ -158,83 +158,68 @@ documents it. Import or map-load success alone is not proof of playability.
 A run is the smallest reproducible publication unit:
 
 ```text
-Task Packet -> Mechanic Generation -> Mechanic Artifact
-            -> Assembly -> Playable Product -> Evaluation
+Task Packet -> Mechanic Generation -> Finalized Mechanic Workspace
+            -> Evaluation
 ```
 
-All run-owned data belongs under:
+Every artifact is addressed by `(game_id, run_id, task_kind, task_id)` and
+lands in the shared per-game output tree described by
+`<REPO_PATH>/test_data/outputs/README.md`:
 
 ```text
-test_data/outputs/<game_id>/runs/<run_id>/
-|-- run.json
-|-- inputs.lock.json
-|-- artifacts/mechanic/<task_id>/
-|-- products/<pipeline_task_id>/
-|   `-- {native,browser_play,launch,assembly_manifest.json,product_manifest.json}
-|-- evaluation/<pipeline_task_id>/
-|   `-- {build,tests,screenshots,browser_smoke,logs,result.json}
-`-- _pipeline/{packets,attempts,prompts,snapshots}/
+test_data/outputs/<game_id>/
+|-- latest -> <run_id>/                 # symlink to the most recent run
+`-- <run_id>/
+    |-- run_meta.json                   # run provenance, Pipeline-owned
+    |-- mechanic_results_summary.json   # Pipeline-owned
+    |-- mechanic/<task_id>/             # the prepared Mechanic workspace
+    `-- eval/mechanic/<task_id>/        # metrics.json, Pipeline-owned
 ```
 
-`<REPO_PATH>/pipeline/common/paths.py` owns these paths; do not construct them manually.
-Published runs are immutable. A content repair creates a new run and records
-`parent_run_id`, `repair_of`, and the failure digest. Keep unpublished retries
-under `_pipeline/attempts/` and promote only the selected attempt.
+`<REPO_PATH>/pipeline/common/paths.py` owns these paths; do not construct them
+manually. The Pipeline prepares `mechanic/<task_id>/` and hands the Agent its
+path; the Agent writes only inside that workspace.
 
-The published Mechanic artifact is:
+The Mechanic workspace is:
 
 ```text
-artifacts/mechanic/<task_id>/
-|-- native/
-|-- contract/
-|-- tests/
-|-- traces/
-|-- context_used.json
-`-- manifest.json
+mechanic/<task_id>/
+|-- meta.json                # Pipeline-owned identity and status
+|-- mechanic_contract.json   # published by the Agent at the workspace root
+|-- context_used.json        # published by the Agent at the workspace root
+|-- launch*                  # task-required launch/replay/trace source
+|-- project/                 # engine-native gameplay source, adapter, tests
+`-- demo_outputs/            # Pipeline-owned, reserved
+    |-- code_gen/            # task_packet.json · instructions.md ·
+    |                        # workspace_snapshot.json · finalize_result.json
+    `-- repairs/attempt_NN/  # re-prepared packet for repair attempt N
 ```
 
-`native/` is the cross-Engine boundary: for example
-`native/Plugins/GameMechanic/` in Unreal,
-`native/Assets/Mechanics/` in Unity,
-`native/addons/game_mechanic/` in Godot, or
-`native/src/mechanics/` in Three.js. Upper layers must not assume Unreal.
-`native/` is the source of truth; product copies are read-only assembly output.
-Keep `Binaries/`, `Intermediate/`, `Saved/`, Derived Data Cache,
-`__pycache__/`, and other mutable output under `.tmp`.
+The engine-native project keeps its Engine's own layout — for example
+`Plugins/GameMechanic/` in Unreal, `Assets/Mechanics/` in Unity,
+`addons/game_mechanic/` in Godot, or `src/mechanics/` in Three.js — so upper
+layers must not assume Unreal. Keep `Binaries/`, `Intermediate/`, `Saved/`,
+Derived Data Cache, `__pycache__/`, and other mutable engine output out of
+the workspace.
 
-Every published artifact includes `manifest.json` using
-`gamefactory3a.artifact_manifest.v1` with:
+`meta.json`, `demo_outputs/`, and `evaluation/` are reserved: never create,
+modify, or delete them. `workspace_snapshot.json` records the SHA256 and size
+of every workspace file, split into `task_files` and `protected_files`;
+finalization re-derives the manifest, rejects protected-path changes, and
+reports the task-owned diff.
 
-- `artifact_version`;
-- identity: `game_id`, `run_id`, `task_kind=mechanic`, and `task_id`;
-- artifact path, `tree_sha256`, and file count;
-- producer `git_sha` and `packet_sha256`.
+Published workspaces are immutable. A structured failure triggers a repair:
+the Pipeline re-prepares the same workspace with the failure digest and
+previous result under `demo_outputs/repairs/attempt_NN/`, and the Agent
+changes only game-owned source and tests. A fresh start uses a new `run_id`;
+it never overwrites a published run. Evaluation scores the finalized workspace
+at `eval/mechanic/<task_id>/` and records `metrics.json` there.
 
-Keep schema, artifact, public contract, and content versions distinct.
-Calculate `tree_sha256` from sorted POSIX-relative paths plus each file's
-SHA256 and byte size, excluding the manifest and mutable output. Publish only
-run-relative paths, never machine-local absolute paths.
-
-Assembly must record and recalculate the Mechanic manifest digest and
-`tree_sha256` in an `gamefactory3a.assembly_manifest.v1` manifest, fail on
-mismatch, and produce a new assembly/product digest when source changes.
-Evaluation must pin `subject.product_manifest` and
-`subject.product_manifest_sha256`; builds, tests, screenshots, logs, and
-Browser Play evidence apply only to that product.
-
-Track separate status:
-
-```json
-{
-  "generation_status": "generated",
-  "assembly_status": "not_run",
-  "verification_status": "not_run"
-}
-```
-
-Mechanic generation may set only generation status. Assembly alone sets
-`assembled`; execution/evaluation alone sets `verified`. Static generation or
-artifact-presence checks must not claim playability.
+Finalization alone writes `mechanic_results_summary.json`, refreshes
+`run_meta.json`, and repoints `latest`; only the Pipeline updates `meta.json`
+status. A finalized workspace proves generation only — static generation or
+artifact-presence checks must not claim playability; only execution and
+evaluation evidence may.
 
 ## Repair And Completion
 

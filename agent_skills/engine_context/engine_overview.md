@@ -59,6 +59,12 @@ a shipped game runtime. Do not mix primary Engine APIs or Examples. Browser
 Serving and VFX are supplemental contexts selected only when the task requires
 them.
 
+For Mechanic and UI packet preparation,
+`<REPO_PATH>/pipeline/common/code_mapping.py` is the registration gate: `ue5`,
+`unity3d`, and `godot` are enabled, while `blender` and `three_js` are
+registered but disabled — `run.py prepare` rejects a disabled Engine with
+`Engine is registered but disabled`.
+
 ## Engine Version Compatibility
 
 Each Engine API document declares a `Validated engine baseline` — the exact
