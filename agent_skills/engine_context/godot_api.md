@@ -545,7 +545,7 @@ keyboard mode, and a Godot smoke script that advances live physics. The RPG
 smoke also proves that Godot instantiated a mesh and skeleton from glTF and is
 advancing its imported bone animation. Their
 `mechanic_contract.json` maps to reviewer copies under
-`test_data/outputs/gameXXX/godot/`.
+`test_data/outputs/<game_id>/<run_id>/mechanic/<task_id>/`.
 
 ## 6. Coordinate system
 
