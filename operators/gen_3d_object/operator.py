@@ -206,6 +206,8 @@ class Gen3DObjectOperator:
                   OR image (PIL.Image): pre-loaded image
                   OR spec (dict): a part spec, which builds the mesh instead
                   of inferring it (see `funcs/code_asset.py`)
+                - compose (dict): combine_avatar arguments, including caller-defined
+                  socket_definitions, grip_templates and optional slot_definitions
                 - game_id (str, optional): game project this task belongs to;
                   inferred from `image_path` when omitted
                 - task_id (str, optional): used to name the output file / directory
@@ -220,6 +222,10 @@ class Gen3DObjectOperator:
                 - elapsed_sec (float)
                 - game_id (str), task_kind (str), output_dir (str)  ← additive
         """
+        if inp.get("compose") is not None:
+            if inp.get("spec") is not None:
+                raise ValueError("provide compose or spec, not both")
+            return self._run_compose(inp)
         if inp.get("spec") is not None:
             return self._run_spec(inp)
 
@@ -321,6 +327,30 @@ class Gen3DObjectOperator:
         return result
 
     # --------------------------------------------------------------------------
+
+    def _run_compose(self, inp: dict) -> dict:
+        """Resolve caller-configured attachments, then build through the spec route."""
+        import json
+        from .funcs.code_asset_templates.human_template.combine import (
+            combine_avatar, write_report,
+        )
+
+        task_id = inp.get("task_id", f"task_{int(time.time())}")
+        _, _, out_path = self._resolve_out_path(inp, task_id)
+        directory = out_path.parent / f"{out_path.stem}_compose"
+        config = dict(inp["compose"])
+        config.setdefault("parts_dir", directory / "parts")
+        started = time.time()
+        combined = combine_avatar(**config)
+        result = self._run_spec({**inp, "task_id": task_id, "spec": combined["spec"]})
+        report_path = write_report(combined["report"], directory / "report.json")
+        sockets_path = directory / "sockets.json"
+        sockets_path.write_text(json.dumps(combined["report"]["sockets"], indent=2),
+                                encoding="utf-8")
+        result["compose"] = {**combined["report"], "report_path": report_path,
+                             "sockets_path": str(sockets_path)}
+        result["elapsed_sec"] = round(time.time() - started, 2)
+        return result
 
     def _run_spec(self, inp: dict) -> dict:
         """Build the asset from a declarative spec rather than an image.

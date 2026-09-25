@@ -1,105 +1,20 @@
-"""Build a 3D asset by evaluating a declarative spec, instead of inferring one.
+"""Build GLB assets from declarative part specs.
 
-Image-to-3D is the wrong tool for a class of assets that games are full of.
-A crate, a road sign, a rifle, a wheel, a railing: these are exactly
-describable, and a reconstruction of one arrives fused, unarticulated,
-without a stated size, without a stated facing, and with whatever the
-input photograph failed to show invented behind it. ``mesh_cleanup`` and
-``orientation_review`` exist to clean up after those failures.
+Specs combine primitives and imported meshes with explicit units, transforms
+and part names. Validation checks geometry, scale, orientation and provenance;
+bounded revision attempts return a stop reason.
 
-None of them happen here, because nothing is inferred. The spec states
-what the object is made of, and the mesh follows from it:
+The builder uses the Python 3.10+ standard library. ``fit_wearable_asset``
+uses an optional, isolated Blender worker for garment fitting and skinning.
 
-    intent -> spec (JSON) -> evaluate -> vertices -> gates -> GLB
-
-The spec is engine-neutral by construction: it is arithmetic over
-primitives, and the output is glTF, which is the one mesh format
-:mod:`engine_adapters` accepts on every engine (measured from each
-adapter's own importer: UE5 takes ``fbx glb gltf obj usd usda usdz``,
-Blender adds ``abc ply usdc``, Unity takes ``fbx glb gltf obj``, three.js
-takes ``glb gltf`` — glTF is the intersection).
-
-WHAT THIS BUYS, stated plainly, because "another asset backend" undersells
-it. The spec is a few hundred bytes of readable JSON, so unlike a mesh it
-can be reviewed in a diff, corrected by editing one number, and regressed
-in a unit test. It carries ``units`` and ``forward`` as data, which is the
-whole of what ``orientation_review`` is for. Parts keep their names, so a
-wheel is still a wheel after export and can be spun by gameplay — the
-thing a generated mesh categorically cannot do.
-
-WHERE IT DOES NOT APPLY, equally plainly. Anything organic, anything soft,
-anything whose surface is the point: a face, a tree, cloth, a creature.
-For those, generation is the right tool and this module should decline —
-:func:`suits_code_asset` is that judgement, and ``unsupported`` is a
-result, not a failure.
-
-AND WHERE THE TWO MEET. A ``mesh`` part reads a GLB off disk, normally one
-component from a cloud generator, and from that point on is indistinguishable
-to everything here: placed by ``at``, measured by :func:`part_bounds`,
-counted by :func:`estimate_triangles`, checked by the same gates. That
-sameness is the entire design — a composition must not become two pipelines
-with a merge step.
-
-The division of labour is not a matter of taste, and getting it backwards
-is what this route makes easy. Delegate the shapes no formula states: a
-grip's finger swells, a stock's cheek weld, stippling — where the exact
-dimensions do not matter. State everything with an exact dimension: a
-receiver, a barrel's diameters, thirteen rail slots at 30 mm pitch. Measured
-while building a hybrid assault rifle: generating a scope cost 19,982
-triangles, three times the whole weapon's primitive geometry, for a softened
-version of a stepped tube a nine-point ``lathe`` profile gives exactly — and
-unlike the lathe it cannot then be corrected by editing a number.
-:func:`check_provenance` reports that trade rather than forbidding it,
-because only the author knows which shapes were the point.
-
-The gates are ported from img2threejs [1], keeping the property that makes
-them worth having: each one exists because of a specific measured failure,
-and the docstring says which. Three of them are reproduced faithfully
-because their failure modes are not three.js specific and will happen here:
-
-    CHIRALITY       img2threejs built a mirrored limb by negating x AND z.
-                    Two negations is a 180-degree rotation about Y, and a
-                    rotation PRESERVES handedness — so the left hand was
-                    the right hand turned around. Measured on the thumb
-                    tip: z +0.288 against -0.288, where a mirror leaves z
-                    alone. A left/right pair of anything — headlights,
-                    wing mirrors, a rifle's sling swivels — is one sign
-                    error away from this, and the result looks tidy.
-
-    HOLLOW SHELL    A part with no thickness renders as a shape from the
-                    front and disappears edge-on. In img2threejs a bald
-                    patch on a scalp survived eight review passes because
-                    the silhouette metric could not see it: the defect was
-                    interior, and outline agreement is computed from the
-                    ~11% of cells that lie on the outline. Geometry gates
-                    run on points, before any renderer, so this is caught
-                    for free.
-
-    SCALE SANITY    A spec can be internally consistent and still describe
-                    a 3 m chair. Nothing downstream can detect it, because
-                    a mesh normalised into a unit box has no size of its
-                    own — which is why ``art_plan`` carries a height in
-                    metres and why that height is checked here against the
-                    part extents rather than assumed to agree with them.
-
-The correction loop is bounded for a recorded reason: an unbounded one
-spent 45 minutes producing a video of a car that never moved, because a
-lookup returned ``None`` and the loop optimised a metric that could not
-see it. Repeated defects, oscillation and plateaus all stop the loop, and
-``stop_reason`` says which — a loop that gives up loudly costs one message,
-a loop that grinds costs a session.
-
-Pure Python 3.10+ standard library. Nothing to install means nothing to
-debug in-context, and ``glb_writer`` is stdlib for the same reason.
-
-[1] https://github.com/img2threejs/img2threejs
+Geometry checks are adapted from https://github.com/img2threejs/img2threejs.
 """
 
 from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Literal, Sequence
 
 # --------------------------------------------------------------------------
 # Spec vocabulary
@@ -250,6 +165,27 @@ def suits_code_asset(
     """
 
     return _routing.resolve(subject, asset_type, strategies=strategies)
+
+
+def fit_wearable_asset(*, body: str, clothing: str, output: str,
+                       coverage: Literal["full_body", "upper_body"] = "full_body",
+                       sleeve_pose: Literal["down", "a", "t"] = "down",
+                       footwear_mode: Literal["preserve", "replace"] = "preserve",
+                       height_metres: float = 1.75, clearance_metres: float = 0.008,
+                       headwear_offset_metres: float = 0.0,
+                       blender_python: str | None = None,
+                       source_heights: dict[str, float] | None = None,
+                       clothing_rotation: tuple[float, float, float] = (0.0, 0.0, 0.0),
+                       save_blend: bool = True, timeout: float = 600.0) -> dict[str, Any]:
+    """Fit a continuous garment to a rigged FBX/GLB character."""
+    return _templates.fit_wearable(
+        body=body, clothing=clothing, output=output, coverage=coverage,
+        sleeve_pose=sleeve_pose, footwear_mode=footwear_mode,
+        height_metres=height_metres, clearance_metres=clearance_metres,
+        headwear_offset_metres=headwear_offset_metres,
+        blender_python=blender_python, source_heights=source_heights,
+        clothing_rotation=clothing_rotation, save_blend=save_blend,
+        timeout=timeout)
 
 
 # --------------------------------------------------------------------------
