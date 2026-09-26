@@ -220,7 +220,7 @@ def _build_operator_for_types(
 ):
     needs_rig = bool(task_types & {"rig", "humanoid"})
     needs_motion = bool(task_types & {"text_to_motion", "humanoid"})
-    needs_retarget = bool(task_types & {"retarget", "humanoid"})
+    needs_retarget = bool(task_types & {"retarget", "humanoid", "vibe_retarget"})
 
     puppeteer = None
     if needs_rig:
