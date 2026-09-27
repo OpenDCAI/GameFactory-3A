@@ -6,19 +6,27 @@ import struct
 import numpy as np
 
 
-def animated_glb(mesh, rig, skin, clip) -> bytes:
-    'Serialize matching mesh, weights, bind skeleton and MotionClip as glTF 2.0.'
+def animated_glb(mesh, rig, skin, clip, *, config) -> bytes:
+    'Serialize glTF 2.0 with explicit tolerances, material and interpolation.'
     from ..bvh import validate_hierarchy
+    from .templates import require_config, finite_number
 
+    p = require_config(config, ('bind_tolerance', 'sum_tolerance', 'material', 'interpolation'), 'GLB export')
+    finite_number(p['bind_tolerance'], 'bind_tolerance')
+    finite_number(p['sum_tolerance'], 'sum_tolerance')
+    if p['material'] is not None and not isinstance(p['material'], dict):
+        raise ValueError('material must be a glTF material dictionary or None')
+    if p['interpolation'] not in ('LINEAR', 'STEP'):
+        raise ValueError('interpolation must be LINEAR or STEP')
     parents, rest = validate_hierarchy(clip.template.parents, clip.template.rest)
-    if not np.array_equal(parents, rig.parents) or not np.allclose(rest, rig.joints, atol=1e-6):
+    if not np.array_equal(parents, rig.parents) or not np.allclose(rest, rig.joints, atol=p['bind_tolerance'], rtol=0):
         raise ValueError("clip and rig must share their bind skeleton")
     if list(skin.joint_names) != list(clip.template.joint_names):
         raise ValueError("skin and clip joint names must match")
     v = np.asarray(mesh.vertices, dtype='<f4')
     f = np.asarray(mesh.faces, dtype='<u4')
     w = np.asarray(skin.weights, dtype=float)
-    if w.shape != (len(v), len(rest)) or not np.isfinite(w).all() or np.any(w < 0) or not np.allclose(w.sum(1), 1):
+    if w.shape != (len(v), len(rest)) or not np.isfinite(w).all() or np.any(w < 0) or not np.allclose(w.sum(1), 1, atol=p['sum_tolerance'], rtol=0):
         raise ValueError("weights must be finite normalized (vertices,joints)")
     if np.any(np.count_nonzero(w, axis=1) > 4) or len(rest) > 65535:
         raise ValueError("GLB export supports four influences and 65535 joints")
@@ -29,7 +37,7 @@ def animated_glb(mesh, rig, skin, clip) -> bytes:
     if not np.isfinite(q).all() or not np.isfinite(trans).all() or not np.isfinite(clip.fps) or clip.fps <= 0:
         raise ValueError("clip values must be finite and fps positive")
     norms = np.linalg.norm(q, axis=-1, keepdims=True)
-    if np.any(norms < 1e-12):
+    if np.any(norms < np.finfo(float).eps):
         raise ValueError("zero quaternion in clip")
     q = q / norms
     for frame in range(1, len(q)):
@@ -58,7 +66,7 @@ def animated_glb(mesh, rig, skin, clip) -> bytes:
     fn = np.cross(v[f[:, 1]] - v[f[:, 0]], v[f[:, 2]] - v[f[:, 0]])
     for i in range(3):
         np.add.at(normals, f[:, i], fn)
-    normals /= np.maximum(np.linalg.norm(normals, axis=1, keepdims=True), 1e-12)
+    normals /= np.maximum(np.linalg.norm(normals, axis=1, keepdims=True), np.finfo(float).eps)
     order = np.argsort(-w, axis=1, kind='stable')[:, :4]
     weights = np.take_along_axis(w, order, axis=1)
     if order.shape[1] < 4:
@@ -69,9 +77,11 @@ def animated_glb(mesh, rig, skin, clip) -> bytes:
                   'NORMAL': accessor(normals, 'VEC3'),
                   'JOINTS_0': accessor(order, 'VEC4', 5123),
                   'WEIGHTS_0': accessor(weights, 'VEC4')}
-    doc['meshes'] = [{'primitives': [{'attributes': attributes, 'indices': accessor(f.reshape(-1), 'SCALAR', 5125), 'material': 0}]}]
-    doc['materials'] = [{'name': 'Preview surface', 'doubleSided': True,
-                         'pbrMetallicRoughness': {'baseColorFactor': [.16, .65, .61, 1], 'metallicFactor': .08, 'roughnessFactor': .65}}]
+    primitive = {'attributes': attributes, 'indices': accessor(f.reshape(-1), 'SCALAR', 5125)}
+    if p['material'] is not None:
+        primitive['material'] = 0
+        doc['materials'] = [p['material']]
+    doc['meshes'] = [{'primitives': [primitive]}]
     root = int(np.flatnonzero(parents == -1)[0])
     doc['nodes'] = [{'name': mesh.name, 'mesh': 0, 'skin': 0}, {'name': 'Skeleton', 'children': [root + 2]}]
     for j, parent in enumerate(parents):
@@ -89,10 +99,10 @@ def animated_glb(mesh, rig, skin, clip) -> bytes:
     for j in range(len(rest)):
         values = accessor(q[:, j, [1, 2, 3, 0]], 'VEC4')
         animation['channels'].append({'sampler': len(animation['samplers']), 'target': {'node': j + 2, 'path': 'rotation'}})
-        animation['samplers'].append({'input': times, 'output': values, 'interpolation': 'LINEAR'})
+        animation['samplers'].append({'input': times, 'output': values, 'interpolation': p['interpolation']})
     values = accessor(rest[root] + trans, 'VEC3')
     animation['channels'].append({'sampler': len(animation['samplers']), 'target': {'node': root + 2, 'path': 'translation'}})
-    animation['samplers'].append({'input': times, 'output': values, 'interpolation': 'LINEAR'})
+    animation['samplers'].append({'input': times, 'output': values, 'interpolation': p['interpolation']})
     doc['animations'] = [animation]
     doc['buffers'] = [{'byteLength': len(data)}]
     encoded = json.dumps(doc, ensure_ascii=False, allow_nan=False, separators=(',', ':')).encode('utf-8')

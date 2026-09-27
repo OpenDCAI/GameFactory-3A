@@ -1,0 +1,60 @@
+{
+  "skeleton": {
+    "name": "synthetic_turning_biped",
+    "names": ["pelvis", "spine", "chest", "neck", "head", "shoulder_a", "elbow_a", "wrist_a", "shoulder_b", "elbow_b", "wrist_b", "hip_a", "knee_a", "ankle_a", "toe_a", "hip_b", "knee_b", "ankle_b", "toe_b"],
+    "parents": [-1, 0, 1, 2, 3, 2, 5, 6, 2, 8, 9, 0, 11, 12, 13, 0, 15, 16, 17],
+    "rest": [[0, 1, 0], [0, 1.25, 0], [0, 1.5, 0], [0, 1.65, 0], [0, 1.85, 0], [0.22, 1.5, 0], [0.52, 1.45, 0], [0.82, 1.4, 0], [-0.22, 1.5, 0], [-0.52, 1.45, 0], [-0.82, 1.4, 0], [0.16, 0.95, 0], [0.16, 0.5, 0.08], [0.16, 0.1, 0], [0.16, 0.04, 0.13], [-0.16, 0.95, 0], [-0.16, 0.5, 0.08], [-0.16, 0.1, 0], [-0.16, 0.04, 0.13]]
+  },
+  "rhythm": {"duration": 2.6, "fps": 60, "events": {"begin": 0, "anticipation": 0.21, "release_left": 0.265, "release_right": 0.34, "apex": 0.49535714285714283, "slash_start": 0.53, "slash_end": 0.61, "land_left": 0.66, "land_right": 0.735, "absorb": 0.76, "recover": 0.86, "finish": 1}},
+  "program": {
+    "action": "turn_jump_chop",
+    "forward": [0, 0, 1],
+    "root": {"operator": "curves", "params": {
+      "scale": 1,
+      "x": {"keys": ["begin", "anticipation", "release_right", "slash_start", "land_left", "finish"], "values": [0, -0.035, -0.05, 0, 0.018, 0], "interpolation": "pchip"},
+      "y": {"keys": ["begin", "anticipation", "release_right", "apex", "land_left", "absorb", "recover", "finish"], "values": [0, -0.22, -0.035, 0.49297154017857137, -0.1, -0.22, -0.05, 0], "slopes": [0, 0, 6.796875, 0, -7.203125, 0, 0, 0], "interpolation": "hermite"},
+      "z": {"keys": ["begin", "anticipation", "land_left", "finish"], "values": [0, 0, -0.65, -0.65], "interpolation": "smooth"},
+      "yaw": {"keys": ["begin", "anticipation", "release_right", "slash_end", "land_left", "finish"], "values": [0, -12, 14.4, 172.8, 180, 180], "interpolation": "pchip"}
+    }},
+    "parts": {
+      "body": {"category": "trunk", "joints": ["pelvis", "spine", "chest"], "operator": "rest", "params": {}},
+      "look": {"category": "head", "joints": ["neck", "head"], "operator": "rest", "params": {}},
+      "guard": {"category": "upper_limb", "side": "L", "joints": ["shoulder_a", "elbow_a", "wrist_a"], "operator": "arm_arc", "params": {
+        "scale": 0.6082762530298219, "preferred_swivel_degrees": 15, "rest_pole": [0, 0, 1],
+        "angle": {"keys": ["begin", "anticipation", "release_right", "slash_start", "slash_end", "land_right", "recover", "finish"], "values": [125, 145, 150, 145, 125, 120, 110, 125], "interpolation": "pchip"},
+        "radius": {"keys": ["begin", "anticipation", "release_right", "slash_start", "slash_end", "land_right", "recover", "finish"], "values": [0.6, 0.68, 0.77, 0.82, 0.72, 0.62, 0.59, 0.6], "interpolation": "pchip"},
+        "lateral": {"keys": ["begin", "anticipation", "release_right", "slash_start", "slash_end", "land_right", "recover", "finish"], "values": [0.27, 0.36, 0.43, 0.49, 0.43, 0.32, 0.27, 0.27], "interpolation": "pchip"},
+        "limits": {"shoulder_flexion": [-20, 165], "shoulder_abduction": [3, 80], "shoulder_swivel": [-40, 45], "elbow_flexion": [8, 145], "target_back_ratio": 0.08, "regularization": 0.005, "max_nfev": 100, "ftol": 1e-9, "xtol": 1e-9, "gtol": 1e-9}
+      }},
+      "strike": {"category": "upper_limb", "side": "R", "joints": ["shoulder_b", "elbow_b", "wrist_b"], "operator": "arm_arc", "params": {
+        "scale": 0.6082762530298219, "preferred_swivel_degrees": 5, "rest_pole": [0, 0, 1],
+        "angle": {"keys": ["begin", "anticipation", "release_right", "slash_start", "slash_end", "land_right", "recover", "finish"], "values": [132, 150, 60, 5, 132, 148, 135, 132], "interpolation": "pchip"},
+        "radius": {"keys": ["begin", "anticipation", "release_right", "slash_start", "slash_end", "land_right", "recover", "finish"], "values": [0.66, 0.6, 0.72, 0.78, 0.9, 0.72, 0.62, 0.64], "interpolation": "pchip"},
+        "lateral": {"keys": ["begin", "anticipation", "release_right", "slash_start", "slash_end", "land_right", "recover", "finish"], "values": [0.25, 0.3, 0.33, 0.32, 0.3, 0.28, 0.23, 0.22], "interpolation": "pchip"},
+        "limits": {"shoulder_flexion": [-20, 165], "shoulder_abduction": [3, 80], "shoulder_swivel": [-40, 45], "elbow_flexion": [8, 145], "target_back_ratio": 0.08, "regularization": 0.005, "max_nfev": 100, "ftol": 1e-9, "xtol": 1e-9, "gtol": 1e-9}
+      }},
+      "step_a": {"category": "lower_limb", "side": "L", "joints": ["hip_a", "knee_a", "ankle_a", "toe_a"], "operator": "position", "params": {
+        "trajectory": {
+          "keys": ["begin", "release_left", 0.281458333333, 0.297916666667, 0.314375, 0.330833333333, 0.347291666667, 0.36375, 0.380208333333, 0.396666666667, 0.413125, 0.429583333333, 0.446041666667, 0.4625, 0.478958333333, 0.495416666667, 0.511875, 0.528333333333, 0.544791666667, 0.56125, 0.577708333333, 0.594166666667, 0.610625, 0.627083333333, 0.643541666667, "land_left", "finish"],
+          "values": [[0.16, 0.04, 0.13], [0.16, 0.04, 0.13], [0.160817500496, 0.050751544674, 0.13197287267], [0.163233899951, 0.092609299838, 0.13522742419], [0.167281191575, 0.166639019742, 0.136033403845], [0.172834751209, 0.278465088973, 0.131100121871], [0.179539033758, 0.426732832832, 0.11762728706], [0.188072706243, 0.574009686949, 0.092020671065], [0.197900578189, 0.709435683861, 0.051070945797], [0.206840283504, 0.829835967331, -0.007287534495], [0.211388859761, 0.932252042328, -0.08329146583], [0.207468477088, 1.014143391574, -0.174672903904], [0.191626644959, 1.073560607599, -0.27650534096], [0.162290522359, 1.109278241636, -0.381806828418], [0.120573840127, 1.120878315933, -0.482835975855], [0.070264647813, 1.108778808241, -0.572695688497], [0.016947090626, 1.074205167328, -0.646692409026], [-0.033426388265, 1.019106800664, -0.702988639035], [-0.075982836272, 0.946024225527, -0.742392824275], [-0.107906184272, 0.857915936949, -0.767490616766], [-0.128702533839, 0.757956791165, -0.781553141897], [-0.139819294697, 0.649321644414, -0.787668200456], [-0.143893972388, 0.516471886956, -0.788364383135], [-0.144151264069, 0.272779036089, -0.785681452618], [-0.142853612932, 0.079164556342, -0.78195832672], [-0.142, 0.04, -0.78], [-0.142, 0.04, -0.78]],
+          "interpolation": "pchip"
+        },
+        "space": "world", "scale": 1, "contacts": [["begin", "release_left"], ["land_left", "finish"]],
+        "pole": [0.1, 0, 1], "rest_pole": [0.1, 0, 1], "flexion": [5, 145],
+        "orientation": {"keys": ["begin", "release_left", "land_left", "finish"], "values": [0, 0, 180, 180], "interpolation": "smooth"}
+      }},
+      "step_b": {"category": "lower_limb", "side": "R", "joints": ["hip_b", "knee_b", "ankle_b", "toe_b"], "operator": "position", "params": {
+        "trajectory": {
+          "keys": ["begin", "release_right", 0.356458333333, 0.372916666667, 0.389375, 0.405833333333, 0.422291666667, 0.43875, 0.455208333333, 0.471666666667, 0.488125, 0.504583333333, 0.521041666667, 0.5375, 0.553958333333, 0.570416666667, 0.586875, 0.603333333333, 0.619791666667, 0.63625, 0.652708333333, 0.669166666667, 0.685625, 0.702083333333, 0.718541666667, "land_right", "finish"],
+          "values": [[-0.16, 0.04, 0.13], [-0.16, 0.04, 0.13], [-0.161862182009, 0.128174094396, 0.126880906395], [-0.167699037476, 0.262804435697, 0.116672208305], [-0.177846442293, 0.372058692901, 0.099770813877], [-0.191784791001, 0.477654079861, 0.078391933431], [-0.207376814363, 0.577191219147, 0.055628108387], [-0.22070583334, 0.667875976563, 0.034153432661], [-0.226713759404, 0.746709876773, 0.014974690254], [-0.220517957915, 0.810694444444, -0.003268667024], [-0.198953856474, 0.85703554538, -0.02410523765], [-0.161732804903, 0.88333380215, -0.05214359344], [-0.111732627981, 0.8877481077, -0.091500034445], [-0.054301880457, 0.86912109375, -0.144361983869], [0.004130539678, 0.827058003533, -0.210228096575], [0.057601832353, 0.761953593817, -0.286046715251], [0.101800647684, 0.67496523288, -0.367093934665], [0.134612201873, 0.567934027778, -0.448178759113], [0.156869232518, 0.44325935594, -0.524937160509], [0.171974801116, 0.303735351563, -0.594656243752], [0.179831516002, 0.166000762333, -0.654484065083], [0.182066738497, 0.125, -0.702700617284], [0.181903266288, 0.089791847198, -0.739032066361], [0.180442285555, 0.062775681357, -0.763312415584], [0.178684860681, 0.045792609531, -0.776315505416], [0.177806794474, 0.04, -0.78], [0.177806794474, 0.04, -0.78]],
+          "interpolation": "pchip"
+        },
+        "space": "world", "scale": 1, "contacts": [["begin", "release_right"], ["land_right", "finish"]],
+        "pole": [-0.1, 0, 1], "rest_pole": [-0.1, 0, 1], "flexion": [5, 145],
+        "orientation": {"keys": ["begin", "release_right", "land_right", "finish"], "values": [0, 0, 180, 180], "interpolation": "smooth"}
+      }}
+    },
+    "solver": {"epsilon": 1e-9},
+    "quality": {"target_tolerance": 0.002, "contact_tolerance": 0.001, "bone_length_tolerance": 1e-6, "ground_height": 0.04, "ground_tolerance": 0.001, "limit_tolerance": 1e-5}
+  }
+}

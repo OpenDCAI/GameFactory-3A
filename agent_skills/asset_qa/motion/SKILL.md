@@ -47,8 +47,8 @@ skeleton, skinning, trajectory and IK operations across compatible characters.
 Prefer this stable, controllable route over repeated prompting: timing, stride,
 heading and contact targets are explicit parameters, with no learned weights or GPU.
 
-1. Select a preset and a compatible skeleton; adjust parameters or compose the
-   existing functions before choosing another source.
+1. Supply explicit joint-position trajectories, named rhythm events, a rest
+   skeleton and IK constraints. Adjust this program before choosing another source.
 2. Check bone lengths, ground penetration, contact speed, IK residuals and skin
    weights; replay the result on the target mesh. Fix reproducible function bugs
    in `vibe_motion_utils` and rerun through `GenMotionOperator`.
@@ -61,155 +61,84 @@ heading and contact targets are explicit parameters, with no learned weights or 
 
 | Function | Use |
 |---|---|
-| `skeleton.fit_skeleton`, `skinning.skin_mesh` | Fit a rig and vertex weights to a mesh |
-| `motion.build_plan`, `motion.generate_clip` | Generate a preset on a skeleton plan |
-| `motion.concatenate_clips` | Join clips sharing the same template and fps |
-| `motion_utils` | Local motion primitives: `rotate_joint`, `solve_two_bone`, `fit_feet`, `swing`, `strike` |
-| `rigging_utils` | Local cross-section fitting, weight generation and LBS functions |
-| `generate_vibe_motion` / `GenMotionOperator.run` | Produce BVH, joints, optional rig/OBJ and QA reports |
+| `skeleton.fit_skeleton(mesh, config=...)` | Fit a rig using complete, explicit fitting settings |
+| `skinning.skin_mesh(mesh, rig, config=...)` | Generate weights using explicit kernel, bone convention and smoothing settings |
+| `motion.build_plan(skeleton, rhythm=..., program=...)` | Validate a complete trajectory program and bind named joint chains |
+| `motion.generate_clip(plan)` | Sample positions and solve joint motion through IK |
+| `generate_vibe_motion(config=..., mesh=...)` | Produce BVH, joints, targets, residuals and optional rig/skin/GLB artifacts |
 
-Use `task_type="vibe"` with `preset`, `num_frames`, `fps`, `heading_deg` and
-`motion_overrides`. Supply either `target_mesh_path` or `creature="human"`;
-with neither, use `template="biped_armed"` for a clip-only task. With geometry and
-`skin=true`, `vibe` also returns `animated_glb_path`: a skinned animation that can
-be previewed directly without Blender. Inspect that GLB on the target mesh.
-For FBX, use `vibe_retarget` with geometry, `skin=true`, positive integer fps and
-a configured bpy runtime; confirm the exported FBX with the import checks below.
+The old rotation recipes, presets, built-in skeletons and rotation-blended
+`segments` interface have been removed. Express a multi-stage action as one
+continuous position program with named events and explicit contact windows.
+`program.action` is a label only; it never selects an implementation.
 
-Current motion presets: `walk`, `stride`, `boxing`, `jab`, `chop`, `turn_jump_chop`,
-`turn_jump_chop_tuned`, `task_space`
-(plus aliases such as `walking`, `step`, `punch`, `slash`). These presets cover
-**biped humanoids**, not arbitrary
-creature motion. `biped` supports walk/stride; arm actions require `biped_armed`.
-Standalone skeleton fitting also supports `quadruped` and `axial`; do not treat that
-as support for their gait generation. Clip concatenation does not preserve foot
-contact through transitions. Numerical checks do not prove visual quality.
+Use `task_type="vibe"` with a `config` object containing:
 
-New distance-generated skin weights default to `bone_convention="outgoing"` so
-upper-arm vertices follow the shoulder pivot, not the elbow. To reproduce legacy
-weights, pass `skin_overrides={"bone_convention": "incoming"}`. This does not remap
-artist-authored weights. The skin report records the convention; mesh-ground and
-triangle-intersection review are still needed beyond skeleton-only metrics.
+- `skeleton`: explicit `name`, `names`, `parents` and world-space `rest` positions.
+- `rhythm`: `duration`, `fps`, and named `events` in normalized time. Duration times
+  fps must be integral; clips include both endpoints, with `duration * fps + 1` frames.
+- `program`: `action`, horizontal `forward`, root position curves, named `parts`,
+  `solver` settings and `quality` thresholds. Missing settings are errors, not defaults.
 
-`turn_jump_chop` uses geometric flight. Optional `torso_twist_deg` (0–25),
-`torso_lean_deg` (0–18) and `arm_clearance` (0–0.1 of skeleton scale) default to zero.
+Curves contain `keys`, `values`, and an explicit `interpolation` mode: `pchip`,
+`hermite`, `linear`, or `smooth`. Hermite additionally requires `slopes`, measured
+per normalized time unit. Keys may reference rhythm events, `start`, or `end`.
+All spatial scales are supplied explicitly. The coordinate contract is Y-up;
+local animation quaternions use wxyz, matching the BVH/GLB adapters.
 
-Use `preset="turn_jump_chop_tuned"` for a ballistic jump with task-space
-wind-up/accelerating strike/recovery for both arms, outward elbow poles, wrist-led
-blade direction, ballistic root flight, velocity-matched takeoff/landing and foot
-tuck with planted contacts. It accepts `turn_deg`, `travel`, `takeoff_ratio`,
-`jump_height`, `gravity_ratio`, `crouch`, `landing_crouch`, `torso_twist_deg`,
-`torso_lean_deg`, `hand_clearance`, `strike_reach`, `foot_tuck`; see template defaults.
-`hand_clearance` is in arm lengths, unlike the legacy `arm_clearance` in skeleton
-scale. Do not mix old angle or landing/strike-ratio parameters into this preset:
-they are rejected. Reports record derived seconds and gravity under `timing`.
-Duration/sampling must accommodate the flight and recovery; impossible requests
-raise rather than silently changing fps or timing. Blade control requires a wrist
-attachment. This is analytic animation, not whole-body dynamics or collision solving.
+Supported part operators:
 
-For three-joint arms (shoulder/elbow/wrist), pass `rig_overrides={"motion_ready": False}`; the motion
-adapter reuses the existing chest parent as role metadata without adding joints.
-The historical default still fits four arm joints, 21 total. Different elbow
-pivots can change skin collisions substantially: compare on the SAME rig/weights,
-and inspect actual mesh intersections, not only skeleton QA. Neither topology
-is universally collision-free; the procedural fixture can still fail QA.
+- `position`: world-, root-, or parent-frame end-effector trajectories, explicit
+  pole/rest-pole directions and flexion bounds; three- or four-joint chains.
+  `orientation` is `body`, `rest`, or an explicit scalar curve of Y-up yaw degrees
+  relative to rest. Hold this curve constant during support to lock foot heading.
+  Position/contact IK poles use root-body axes; aim poles use the selected target
+  space. `rest_pole` always uses the original world-space rest basis.
+- `contact_path`: independently timed support windows, explicit anchor sample
+  times and one body-frame swing offset per gap. Contact orientation can be locked.
+- `arm_arc`: task-space wrist arcs with bounded shoulder/elbow IK. Polar angles
+  describe wrist positions, not authored joint rotations. All optimizer settings
+  and joint bounds are explicit.
+- `aim`: child-joint position tracks for axial chains, preserving bone lengths.
+- `rest`: explicitly retain the local rest pose.
 
-For explicit comparison exports, call `export_refinement_preview` in
-`test/test_vibe_motion.py` with `output_dir`, `mesh_path`, `stage` and `task_inputs`.
-`MOTION_COMPARE_TASKS` defines `legacy_motion`, `partial_motion`, `full_motion` at
-96 frames/30 fps with fixed outgoing weights. Compare stages once on the default
-rig and again with the same 19-joint rig. All action settings come from task_inputs;
-stage only names the output folder. Paths are repository-relative. Existing folders
-are not overwritten. Normal unit tests do not write visualizations.
+Chains are resolved from the supplied skeleton, not from hardcoded human names.
+Biped and quadruped examples, including all motion parameters and synthetic
+skeleton data, live in `test/vibe_motion_examples/horse_gallop_stop_kick.json`
+and `test/vibe_motion_examples/turn_jump_chop.json`. The latter encodes flight
+as explicit Hermite position keys rather than a built-in jump recipe. Load an
+example JSON into `config` and pass it to `GenMotionOperator.run` together with
+`task_type="vibe"`, `game_id` and `task_id`.
 
-Use Python 3.10+ with NumPy; add trimesh for input mesh files. Implementations
-live in `vibe_motion_utils/motion_utils/` and `vibe_motion_utils/rigging_utils/`;
-no external source checkout, source-root environment variable or model weights are
-needed. `creature` creates an untextured procedural fixture, not a downloaded
-character. Use `target_mesh_path` for the actual game character. For example,
-run from the repository root:
+For a real mesh, supply `target_mesh_path`, `rig_quality` and `export.text`
+(`precision`, `sum_tolerance`, `max_influences`). Either provide its skeleton or
+use `skeleton=null` with a complete `rigging` config. To generate a skinned GLB,
+additionally supply `skinning`, `skin_quality` and `export.glb` (`bind_tolerance`,
+`sum_tolerance`, `material`, `interpolation`).
+No creature geometry, rig preset or skin preset is loaded automatically. For FBX,
+use `vibe_retarget` with the same mesh/skin settings, integer rhythm fps and a bpy
+runtime. Mesh configuration examples and tests live in `test/test_vibe_rigging.py`.
 
-```python
-from operators.gen_motion.operator import GenMotionOperator
+The numerical runtime requires NumPy and SciPy; input mesh files additionally
+require trimesh. No external source checkout, model weights or GPU is needed.
+Run the motion regression suite with
+`python -m unittest discover -s test -p 'test_vibe_motion.py' -v`.
 
-result = GenMotionOperator(run_id="vibe_qa").run({
-    "game_id": "my_game", "task_id": "walk", "task_type": "vibe",
-    "preset": "walk", "template": "biped_armed", "num_frames": 96, "fps": 30,
-    "motion_overrides": {"steps": 4, "step_length": 0.24, "foot_height": 0.12},
-})
-```
+To export skeleton test videos, use
+`python -m test.test_vibe_motion export-videos --ffmpeg /path/to/ffmpeg`.
+This explicit preview mode requires Pillow, leaves ordinary tests artifact-free,
+and writes MP4 files and numerical reports under
+`test_data/outputs/_GPT6_astra_test/vibe_motion_refine260927`.
+Use `--output-dir` to select a different test output location. These skeleton
+previews are not skinned-character or physical-simulation validation.
 
-### Custom motion tracks
-
-`preset="task_space"` accepts `root_positions`, `root_yaw`, `rotations`, `targets`
-and `plant_feet` through `motion_overrides`. Curves use normalized `times` (0–1),
-`values` and optional `modes`. Root positions use skeleton scale; target positions
-use chain lengths relative to the shoulder, in body axes. Rotations use degrees.
-See `GESTURE_TASKS` in the test for forward-reach and wave inputs. Conflicting
-controls and overlapping or dependent IK chains are rejected.
-
-### Parameterized sequences
-
-The LLM plans the action order and parameters from the mesh and requirements.
-Send the complete plan to one `GenMotionOperator.run` call. The operator delegates
-sequence generation and blending to `funcs/vibe_motion_utils`; it fits the rig and
-skin once, generates every segment on the same plan, then exports one final clip.
-Do not implement production sequencing or blending in a test script.
-
-For either `vibe` or `vibe_retarget`, pass a non-empty `segments` list instead of
-top-level `preset`, `num_frames` or `motion_overrides` (these are mutually exclusive).
-Each segment accepts only `preset`, optional `num_frames`, `heading_deg`, and
-`motion_overrides`. Omitted motion parameters come from that preset's template.
-All segments share global `fps`, geometry, rig and skin settings.
-
-Optional `transitions` has exactly one entry per adjacent pair. Each entry accepts
-`transition_frames` (non-negative integer, default 8) and `carry_facing` (boolean,
-default true). Omit the list to use these defaults at every join.
-
-- Transitions **insert** frames; total frames = sum of segment frames + sum of
-  transition frames. Zero means a hard cut; discontinuities may fail QA.
-- Global `heading_deg` defaults the world heading. With `carry_facing=true`, the
-  next segment inherits the previous endpoint yaw, including any generated turn.
-  An explicit later segment heading requires `carry_facing=false` on its incoming
-  transition; ambiguous combinations raise instead of silently losing the heading.
-- Horizontal root position is aligned. Each segment keeps its ground-relative
-  height, with pose/height interpolation between segments. No foot-lock or velocity
-  continuity guarantee is made. Authored contact masks and foot targets are aligned
-  with their segments; transition contacts are inferred from joint height.
-
-```python
-result = GenMotionOperator(run_id="vibe_qa").run({
-    "game_id": "my_game",
-    "task_id": "walk_then_boxing",
-    "task_type": "vibe",
-    "target_mesh_path": "character.glb",
-    "fps": 30,
-    "segments": [
-        {"preset": "walk", "num_frames": 120,
-         "motion_overrides": {"steps": 3, "step_length": 0.35}},
-        {"preset": "boxing", "num_frames": 96,
-         "motion_overrides": {"combo": [0, 1], "reach": 0.9}},
-    ],
-    "transitions": [{"transition_frames": 12, "carry_facing": True}],
-})
-```
-
-Use the Python operator or a task JSONL for Vibe-specific fields; do not assume
-one CLI flag exists for each field. Tests configure `MOTION_TASKS` directly in
-`test/test_vibe_motion.py` and call the same operator; no external task file is
-needed. Single-preset calls and their report fields remain compatible.
-
-Inspect `vibe_report_path`, plus `skin_report_path` and `rig_report_path` for mesh
-tasks. Sequence reports use `preset="sequence"`, `parameters=null`, and `segments`
-with canonical presets, resolved parameters, effective heading, diagnostics and
-zero-based **end-exclusive** frame ranges. `transitions` records ranges and maximum
-root/joint displacement per frame across each seam, including both endpoints.
-Final `metrics` evaluates the blended clip, including continuity, ground,
-self-collision and inferred foot skate; segment failures also propagate to the final
-failure list. Foot-target error above 0.001 metres adds `ik_target`; the threshold is
-recorded as `target_error_tolerance`. Target error and IK residuals are explicitly
-scoped to authored segments, not unsolved transitions. A successful export is not
-visual QA approval. Do not reuse artifacts from an earlier task run.
+Inspect `vibe_report_path` and, for mesh tasks, `skin_report_path` and
+`rig_report_path`. Reports retain the full program, event timing, original-target
+residuals, contact speed, bone-length error, ground penetration and optimizer
+failures. Quality thresholds come from the input. Unreachable targets are
+projected under joint limits and reported, never hidden by stretching bones.
+These are kinematic checks, not balance, self-collision or visual-quality proof;
+replay the animation on the actual mesh before accepting it.
 
 ### Fallback routes
 

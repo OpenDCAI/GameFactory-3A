@@ -67,7 +67,7 @@ class BodyFrame:
         'Project points onto the spine axis, normalised to ``[0,1]`` (0 = tail end, 1 = head end).'
         t = np.asarray(points, float) @ self.spine
         lo, hi = self.span
-        return (t - lo) / max(hi - lo, 1e-12)
+        return (t - lo) / max(hi - lo, np.finfo(float).eps)
 
     def lateral(self, points: np.ndarray) -> np.ndarray:
         'Signed lateral offset of points, positive towards the creature left side.'
@@ -79,7 +79,7 @@ def point_to_segment_distance(points: np.ndarray, a: np.ndarray, b: np.ndarray) 
     a = np.asarray(a, float)
     ab = np.asarray(b, float) - a
     denom = float(ab @ ab)
-    if denom < 1e-18:
+    if denom <= np.finfo(float).eps:
         return np.linalg.norm(p - a, axis=-1)
     t = np.clip(np.einsum('ij,j->i', p - a, ab) / denom, 0.0, 1.0)
     return np.linalg.norm(p - (a + t[:, None] * ab), axis=-1)

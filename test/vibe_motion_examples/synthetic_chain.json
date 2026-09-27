@@ -1,0 +1,30 @@
+{
+  "skeleton": {
+    "name": "synthetic_chain",
+    "names": ["origin", "crown", "socket", "hinge", "tip"],
+    "parents": [-1, 0, 0, 2, 3],
+    "rest": [[0, 2.2, 0], [0, 2.5, 0], [0, 2, 0], [0, 1, 0], [0, 0, 0]]
+  },
+  "rhythm": {"duration": 1, "fps": 12, "events": {"begin": 0, "beat": 0.5, "finish": 1}},
+  "program": {
+    "action": "synthetic_position_probe",
+    "forward": [0, 0, 1],
+    "root": {"operator": "curves", "params": {
+      "scale": 1,
+      "x": {"keys": ["begin", "finish"], "values": [0, 0], "interpolation": "linear"},
+      "y": {"keys": ["begin", "finish"], "values": [0, 0], "interpolation": "linear"},
+      "z": {"keys": ["begin", "finish"], "values": [0, 0], "interpolation": "linear"},
+      "yaw": {"keys": ["begin", "finish"], "values": [0, 0], "interpolation": "linear"}
+    }},
+    "parts": {
+      "support": {"category": "trunk", "joints": ["origin", "crown"], "operator": "rest", "params": {}},
+      "probe": {"category": "lower_limb", "joints": ["socket", "hinge", "tip"], "operator": "position", "params": {
+        "trajectory": {"keys": ["begin", "beat", "finish"], "values": [[0, 0.4, 0], [0.2, 0.6, 0.2], [0, 0.4, 0]], "interpolation": "smooth"},
+        "space": "world", "scale": 1, "contacts": [],
+        "pole": [0, 0, 1], "rest_pole": [0, 0, 1], "flexion": [5, 145], "orientation": "body"
+      }}
+    },
+    "solver": {"epsilon": 1e-9},
+    "quality": {"target_tolerance": 1e-6, "contact_tolerance": 1e-6, "bone_length_tolerance": 1e-6, "ground_height": 0, "ground_tolerance": 1e-6, "limit_tolerance": 1e-6}
+  }
+}

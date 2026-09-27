@@ -1,0 +1,55 @@
+{
+  "skeleton": {
+    "name": "synthetic_horse",
+    "names": ["hips", "back", "chest", "neck", "head", "muzzle", "tail_base", "tail_mid", "tail_tip", "front_L_hip", "front_L_knee", "front_L_ankle", "front_L_hoof", "front_R_hip", "front_R_knee", "front_R_ankle", "front_R_hoof", "rear_L_hip", "rear_L_knee", "rear_L_ankle", "rear_L_hoof", "rear_R_hip", "rear_R_knee", "rear_R_ankle", "rear_R_hoof"],
+    "parents": [-1, 0, 1, 2, 3, 4, 0, 6, 7, 2, 9, 10, 11, 2, 13, 14, 15, 0, 17, 18, 19, 0, 21, 22, 23],
+    "rest": [[0,1.15,-0.45],[0,1.17,0.1],[0,1.18,0.65],[0,1.52,0.9],[0,1.75,1.08],[0,1.65,1.45],[0,1.15,-0.78],[0,0.91,-1.12],[0,0.57,-1.36],[0.26,1.1,0.64],[0.27,0.63,0.62],[0.27,0.12,0.64],[0.27,0.04,0.73],[-0.26,1.1,0.64],[-0.27,0.63,0.62],[-0.27,0.12,0.64],[-0.27,0.04,0.73],[0.26,1.02,-0.45],[0.28,0.57,-0.2],[0.28,0.1,-0.46],[0.28,0.04,-0.38],[-0.26,1.02,-0.45],[-0.28,0.57,-0.2],[-0.28,0.1,-0.46],[-0.28,0.04,-0.38]]
+  },
+  "rhythm": {"duration": 4.8, "fps": 60, "events": {"begin": 0, "gallop_end": 0.48, "brake_end": 0.6, "launch": 0.67, "kick_peak": 0.74, "rear_land": 0.8, "front_land": 0.86, "recover": 0.96, "finish": 1}},
+  "program": {
+    "action": "horse_gallop_stop_kick",
+    "forward": [0, 0, 1],
+    "root": {"operator": "curves", "params": {
+      "scale": 1.1268157006055712,
+      "x": {"keys": ["begin", "finish"], "values": [0, 0], "interpolation": "pchip"},
+      "z": {"keys": [0, 0.1, 0.2, 0.3, 0.42, 0.52, 0.6, 0.65, 0.8, 0.9, 1], "values": [0, 0.65, 1.5, 2.4, 3.45, 4.05, 4.18, 4.18, 4.55, 4.57, 4.57], "slopes": [6, 8, 9, 9, 7, 2, 0, 0, 0.5, 0, 0], "interpolation": "hermite"},
+      "y": {"keys": [0, 0.07, 0.14, 0.21, 0.28, 0.35, 0.42, "gallop_end", 0.55, "brake_end", 0.65, "kick_peak", "rear_land", "front_land", 0.93, 1], "values": [-0.1, -0.08, -0.1, -0.08, -0.1, -0.08, -0.1, -0.09, -0.13, -0.2, -0.12, 0.12, -0.01, -0.19, -0.1, -0.1], "interpolation": "pchip"},
+      "yaw": {"keys": ["begin", "finish"], "values": [0, 0], "interpolation": "pchip"}
+    }},
+    "parts": {
+      "barrel": {"category": "trunk", "joints": ["hips", "back", "chest"], "operator": "rest", "params": {}},
+      "neck_and_head": {"category": "head", "joints": ["neck", "head", "muzzle"], "operator": "rest", "params": {}},
+      "tail": {"category": "tail", "joints": ["tail_base", "tail_mid", "tail_tip"], "operator": "rest", "params": {}},
+      "fore_a": {"category": "lower_limb", "side": "L", "joints": ["front_L_hip", "front_L_knee", "front_L_ankle", "front_L_hoof"], "operator": "contact_path", "params": {
+        "contacts": [[0, 0.035], [0.14, 0.175], [0.28, 0.315], [0.42, 0.455], [0.55, 0.62], ["front_land", 1]],
+        "anchor_times": [0.0175, 0.1575, 0.2975, 0.4375, 0.585, 0.93],
+        "arcs": [[0, 0.24, 0], [0, 0.24, 0], [0, 0.24, 0], [0, 0.24, 0], [0, 1.05, 0.92]],
+        "scale": 1.1013395662356606, "ground_height": 0.04,
+        "pole": [0.05, 0, 1], "rest_pole": [0.05, 0, 1], "flexion": [5, 145], "orientation": "contact"
+      }},
+      "fore_b": {"category": "lower_limb", "side": "R", "joints": ["front_R_hip", "front_R_knee", "front_R_ankle", "front_R_hoof"], "operator": "contact_path", "params": {
+        "contacts": [[0, 0.015], [0.12, 0.155], [0.26, 0.295], [0.4, 0.435], [0.53, 0.6], [0.88, 1]],
+        "anchor_times": [0.0075, 0.1375, 0.2775, 0.4175, 0.565, 0.94],
+        "arcs": [[0, 0.25, 0], [0, 0.25, 0], [0, 0.25, 0], [0, 0.25, 0], [0, 1.03, 0.93]],
+        "scale": 1.1013395662356606, "ground_height": 0.04,
+        "pole": [-0.05, 0, 1], "rest_pole": [-0.05, 0, 1], "flexion": [5, 145], "orientation": "contact"
+      }},
+      "hind_a": {"category": "lower_limb", "side": "L", "joints": ["rear_L_hip", "rear_L_knee", "rear_L_ankle", "rear_L_hoof"], "operator": "contact_path", "params": {
+        "contacts": [[0, 0.005], [0.065, 0.105], [0.205, 0.245], [0.345, 0.385], [0.49, 0.55], [0.58, "launch"], [0.82, 1]],
+        "anchor_times": [0.0025, 0.085, 0.225, 0.365, 0.52, 0.625, 0.91],
+        "arcs": [[0, 0.27, 0], [0, 0.27, 0], [0, 0.27, 0], [0, 0.27, 0], [0, 0.27, 0], [0, 0.43, -0.06]],
+        "scale": 1.1522918349754818, "ground_height": 0.04,
+        "pole": [0.1, 0, -1], "rest_pole": [0.1, 0, -1], "flexion": [5, 145], "orientation": "contact"
+      }},
+      "hind_b": {"category": "lower_limb", "side": "R", "joints": ["rear_R_hip", "rear_R_knee", "rear_R_ankle", "rear_R_hoof"], "operator": "contact_path", "params": {
+        "contacts": [[0, 0.025], [0.045, 0.085], [0.185, 0.225], [0.325, 0.365], [0.47, 0.53], [0.56, 0.65], ["rear_land", 1]],
+        "anchor_times": [0.0125, 0.065, 0.205, 0.345, 0.5, 0.605, 0.9],
+        "arcs": [[0, 0.28, 0], [0, 0.28, 0], [0, 0.28, 0], [0, 0.28, 0], [0, 0.28, 0], [0, 0.42, -0.04]],
+        "scale": 1.1522918349754818, "ground_height": 0.04,
+        "pole": [-0.1, 0, -1], "rest_pole": [-0.1, 0, -1], "flexion": [5, 145], "orientation": "contact"
+      }}
+    },
+    "solver": {"epsilon": 1e-9},
+    "quality": {"target_tolerance": 0.002, "contact_tolerance": 0.001, "bone_length_tolerance": 1e-6, "ground_height": 0.04, "ground_tolerance": 0.001, "limit_tolerance": 1e-5}
+  }
+}

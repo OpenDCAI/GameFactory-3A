@@ -17,7 +17,7 @@ SUPPORTED_TASK_TYPES = {
     # "cloud_humanoid" → check + rig + animate    (analogous to "humanoid")
     "cloud_rig", "cloud_humanoid",
     # Zero-weight analytic backend: fits a rig to mesh geometry, solves skin
-    # weights and generates a preset clip with no model and no GPU.
+    # weights and solves position trajectories with no model and no GPU.
     # "vibe"          → skeleton + skinning + clip
     # "vibe_retarget" → the above, then the normal bpy retarget stage
     "vibe", "vibe_retarget",
@@ -383,17 +383,23 @@ class GenMotionOperator:
         """Generate local procedural rig, skin, motion and optional animated GLB artifacts."""
         from .funcs.vibe_motion_utils.pipeline import generate_vibe_motion
 
+        legacy = {"preset", "segments", "transitions", "creature", "template", "rig_preset",
+                  "skin_preset", "num_frames", "heading_deg", "skin", "motion_overrides",
+                  "rig_overrides", "skin_overrides", "fps"}.intersection(inp)
+        if legacy:
+            raise ValueError(f"Legacy vibe arguments were removed: {sorted(legacy)}; supply config")
+        config = inp.get("config")
+        if not isinstance(config, dict):
+            raise ValueError("vibe requires an explicit config containing skeleton, rhythm and program")
         mesh = None
-        creature = inp.get("creature")
         has_mesh = bool(inp.get("target_mesh_path") or inp.get("target_glb_path"))
-        if has_mesh and creature is not None:
-            raise ValueError("Pass either creature or target_mesh_path, not both")
         if inp.get("task_type", "").lower() == "vibe_retarget":
-            if not has_mesh and creature is None:
-                raise ValueError("vibe_retarget requires creature or target_mesh_path")
-            if inp.get("skin", True) is not True:
-                raise ValueError("vibe_retarget requires skin=true")
-            fps = float(inp.get("fps", 30))
+            if not has_mesh or not isinstance(config.get("skinning"), dict):
+                raise ValueError("vibe_retarget requires a target mesh and explicit skinning config")
+            rhythm = config.get("rhythm")
+            if not isinstance(rhythm, dict) or "fps" not in rhythm:
+                raise ValueError("vibe_retarget requires config.rhythm.fps")
+            fps = float(rhythm["fps"])
             if not fps.is_integer() or fps < 1:
                 raise ValueError("vibe_retarget requires positive integer fps; use vibe for fractional-fps BVH")
         if has_mesh:
@@ -402,25 +408,8 @@ class GenMotionOperator:
             mesh_path = self._target_mesh(inp)
             vertices, faces = _load_mesh_arrays(mesh_path)
             mesh = mesh_from_arrays(vertices, faces, name=mesh_path.stem)
-            creature = None
 
-        artifacts = generate_vibe_motion(
-            preset=inp.get("preset"),
-            segments=inp.get("segments"),
-            transitions=inp.get("transitions"),
-            creature=creature,
-            mesh=mesh,
-            template=str(inp.get("template", "biped_armed")),
-            rig_preset=str(inp.get("rig_preset", "biped")),
-            skin_preset=str(inp.get("skin_preset", "compact")),
-            num_frames=inp.get("num_frames"),
-            fps=inp.get("fps", 30.0),
-            heading_deg=inp.get("heading_deg", 0.0),
-            skin=inp.get("skin", True),
-            motion_overrides=inp.get("motion_overrides"),
-            rig_overrides=inp.get("rig_overrides"),
-            skin_overrides=inp.get("skin_overrides"),
-        )
+        artifacts = generate_vibe_motion(config=config, mesh=mesh)
 
         _write_bytes(
             outputs["motion_bvh_path"],
@@ -462,7 +451,7 @@ class GenMotionOperator:
         if failures:
             logger.warning(
                 "[gen_motion] vibe clip %s failed %s",
-                artifacts.get("preset"),
+                artifacts.get("action"),
                 ", ".join(map(str, failures)),
             )
         for note in artifacts.get("notes") or []:
@@ -507,7 +496,7 @@ class GenMotionOperator:
                     target_rig,
                     outputs,
                     inp,
-                    fps=int(vibe_artifacts.get("fps", 30)),
+                    fps=int(vibe_artifacts["fps"]),
                 )
 
         if task_type in {"rig", "humanoid"}:

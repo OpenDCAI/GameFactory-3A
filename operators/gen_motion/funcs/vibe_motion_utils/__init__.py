@@ -5,11 +5,9 @@ from typing import Any
 _EXPORTS = {
     "clip_to_bvh": "bvh",
     "clip_to_bvh_bytes": "bvh",
-    "creature_mesh": "skeleton",
     "fit_skeleton": "skeleton",
     "mesh_from_arrays": "skeleton",
     "rig_to_text": "skeleton",
-    "to_motion_template": "skeleton",
     "build_plan": "motion",
     "clip_metrics": "motion",
     "generate_clip": "motion",

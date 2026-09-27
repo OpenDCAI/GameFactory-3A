@@ -1,139 +1,124 @@
-"""Generate motions from normalized-time root, joint and limb-target tracks."""
+"""Design root, contact, child-joint and end-effector trajectories before solving IK."""
 from __future__ import annotations
 
-from copy import deepcopy
 import numpy as np
+from scipy.spatial.transform import Rotation
 
-from .generate import curve, fit_feet, rotate_joint, solve_two_bone
-from .units import MotionClip, fk, quat_to_matrix, root_index
-
-
-def _numbers(value, shape, label):
-    raw = np.asarray(value)
-    if raw.shape != shape or raw.dtype.kind not in 'iuf' or not np.isfinite(raw).all():
-        raise ValueError(f'{label} must contain finite numbers with shape {shape}')
-    return raw.astype(float)
+from .generate import solve_arm, solve_two_bone
+from .timing import curve, smooth
+from .units import basis, fk, quat_to_matrix, root_index, set_world_rotation
 
 
-def _validate_curve(track, width, n, label):
-    if not isinstance(track, dict):
-        raise ValueError(f'{label} must be an object')
-    times = np.asarray(track.get('times'))
-    if times.ndim != 1 or len(times) < 2:
-        raise ValueError(f'{label}.times needs at least two keys')
-    times = _numbers(track['times'], times.shape, f'{label}.times')
-    if times[0] != 0 or times[-1] != 1 or np.any(np.diff(times) * (n - 1) < 1):
-        raise ValueError(f'{label}.times must span [0,1] with at least one frame between keys')
-    shape = (len(times), width) if width else (len(times),)
-    _numbers(track.get('values'), shape, f'{label}.values')
-    curve(times, track['values'], np.array([0.]), track.get('modes'))
+def design_root(plan, times):
+    p = plan.program['root']['params']
+    offsets = np.column_stack([curve(p[k], plan.rhythm, times, width=0) for k in ('x', 'y', 'z')])
+    yaw = curve(p['yaw'], plan.rhythm, times, width=0)
+    heading = plan.frame @ Rotation.from_euler('y', yaw, degrees=True).as_matrix()
+    position = plan.template.rest[root_index(plan.template)] + offsets @ plan.frame.T * p['scale']
+    return {'position': position, 'heading': heading, 'rotation': heading @ plan.frame.T, 'yaw': yaw}
 
 
-def validate_task_space(parameters, n):
-    """Validate track data before skeleton fitting."""
-    if type(parameters['plant_feet']) is not bool:
-        raise ValueError('plant_feet must be a boolean')
-    for key, width in (('root_positions', 3), ('root_yaw', 0)):
-        track = parameters[key]
-        if track is not None:
-            _validate_curve(track, width, n, key)
-            if track.keys() - {'times', 'values', 'modes'}:
-                raise ValueError(f'{key} has unknown fields')
-    for key in ('rotations', 'targets'):
-        tracks = parameters[key]
-        if not isinstance(tracks, list):
-            raise ValueError(f'{key} must be a list')
-        for index, track in enumerate(tracks):
-            label = f'{key}[{index}]'
-            _validate_curve(track, 0 if key == 'rotations' else 3, n, label)
-            allowed = {'role', 'times', 'values', 'modes'} | ({'at', 'axis'} if key == 'rotations' else {'pole'})
-            if track.keys() - allowed:
-                raise ValueError(f'{label} has unknown fields')
-            if not isinstance(track.get('role'), str) or not track['role']:
-                raise ValueError(f'{label}.role must name a skeleton role')
-            vector = 'axis' if key == 'rotations' else 'pole'
-            value = _numbers(track.get(vector), (3,), f'{label}.{vector}')
-            if np.linalg.norm(value) < 1e-8:
-                raise ValueError(f'{label}.{vector} cannot be zero')
-            if key == 'rotations' and (type(track.get('at')) is not int or track['at'] < 0):
-                raise ValueError(f'{label}.at must be a non-negative integer')
-    if not any(parameters[key] for key in ('rotations', 'targets', 'root_positions', 'root_yaw')):
-        raise ValueError('task_space needs at least one motion track')
+def _position_frame(clip, plan, chain, root, space):
+    count = clip.num_frames
+    if space == 'world':
+        return np.zeros((count, 3)), np.broadcast_to(np.eye(3), (count, 3, 3))
+    if space == 'root':
+        return root['position'], root['heading']
+    positions, quats = fk(clip)
+    parent = clip.template.parents[chain[0]]
+    frame = root['heading'] if parent < 0 else quat_to_matrix(quats[:, parent]) @ plan.frame
+    return positions[:, chain[0]], frame
 
 
-def generate_task_space(plan, *, num_frames, fps, heading_deg, parameters):
-    """Evaluate rotations before IK; targets use chain lengths in root-body axes.
+def _contact_path(plan, spec, times, root):
+    p, chain = spec['params'], spec['joints']
+    rhythm = plan.rhythm
+    windows = rhythm.windows(p['contacts'])
+    anchor_times = np.asarray([rhythm.fraction(v) * rhythm.duration for v in p['anchor_times']])
+    sampled = design_root(plan, anchor_times)
+    offset = plan.template.rest[chain[-1]] - plan.template.rest[root_index(plan.template)]
+    anchors = sampled['position'] + np.einsum('tij,j->ti', sampled['rotation'], offset)
+    anchors[:, 1] = p['ground_height']
+    target = np.broadcast_to(anchors[0], (len(times), 3)).copy()
+    yaw = np.full(len(times), sampled['yaw'][0])
+    fraction = times / rhythm.duration
+    contact_ids = rhythm.contact_ids(times, p['contacts'])
+    for index, (_, b) in enumerate(windows):
+        mask = contact_ids == index
+        target[mask], yaw[mask] = anchors[index], sampled['yaw'][index]
+        if index == len(windows) - 1:
+            continue
+        end = windows[index + 1, 0]
+        phase = np.clip((fraction - b) / (end - b), 0, 1)
+        blend = smooth(phase)
+        path = (1 - blend[:, None]) * anchors[index] + blend[:, None] * anchors[index + 1]
+        path += np.einsum('tij,j->ti', root['heading'], p['arcs'][index]) * p['scale'] * np.sin(np.pi * phase)[:, None] ** 2
+        mask = (contact_ids < 0) & (fraction > b) & (fraction < end)
+        target[mask] = path[mask]
+        yaw[mask] = ((1 - blend) * sampled['yaw'][index] + blend * sampled['yaw'][index + 1])[mask]
+    rotation = plan.frame @ Rotation.from_euler('y', yaw, degrees=True).as_matrix() @ plan.frame.T
+    return target, contact_ids, rotation
 
-    Root positions use skeleton scale. Planted feet retain their rest positions.
-    IK targets address non-support limb tips relative to their shoulder/chain root.
+
+def solve_part(clip, plan, spec, times, root):
+    """Position/contact IK poles use root-body axes; aim poles use target space.
+
+    rest_pole always specifies the original world-space rest basis. Neither pole
+    is a world-space point. These conventions match the positional limb model.
     """
-    p = parameters
-    root = root_index(plan.template)
-    controlled = set()
-    targets = []
-    for track in p['targets']:
-        role = track['role']
-        if role not in plan.template.limb_roles or role in plan.support_roles:
-            raise ValueError(f'{role}: targets require a non-support limb')
-        js = plan.roles[role].joints[-3:]
-        if len(js) != 3 or any(plan.template.parents[b] != a for a, b in zip(js, js[1:])):
-            raise ValueError(f'{role}: targets need a continuous three-joint chain')
-        if controlled.intersection(js):
-            raise ValueError('target chains must not overlap')
-        controlled.update(js)
-        targets.append((track, js))
-    for _, js in targets:
-        ancestor = int(plan.template.parents[js[0]])
-        while ancestor >= 0:
-            if ancestor in controlled:
-                raise ValueError('target chains must not depend on another target chain')
-            ancestor = int(plan.template.parents[ancestor])
-    if p['plant_feet'] and (not plan.support_roles or any(len(plan.roles[r].joints) not in (3, 4) for r in plan.support_roles)):
-        raise ValueError('plant_feet needs support chains with three or four joints')
-    planted = {j for r in plan.support_roles for j in plan.roles[r].joints} if p['plant_feet'] else set()
-    rotations = []
-    for track in p['rotations']:
-        role, at = track['role'], track['at']
-        if role not in plan.roles or at >= len(plan.roles[role].joints):
-            raise ValueError(f'{role}: joint index is outside the role')
-        joint = plan.roles[role].joints[at]
-        if joint == root or joint in controlled or joint in planted:
-            raise ValueError('rotation track conflicts with root or IK control')
-        rotations.append((track, joint))
-    clip = MotionClip.rest_clip(plan.template, num_frames, fps=fps)
-    baseline = clip.copy()
-    u = np.linspace(0, 1, num_frames)
-    def sample(track):
-        return curve(track['times'], track['values'], u, track.get('modes'))
-    yaw = heading_deg + (sample(p['root_yaw']) if p['root_yaw'] is not None else 0)
-    rotate_joint(clip, root, [0, 1, 0], yaw)
-    root_rotation = quat_to_matrix(clip.quats[:, root])
-    angle = np.deg2rad(heading_deg)
-    heading = np.array([[np.cos(angle), 0, np.sin(angle)], [0, 1, 0], [-np.sin(angle), 0, np.cos(angle)]])
-    if p['root_positions'] is not None:
-        clip.trans[:] = (sample(p['root_positions']) * plan.scale) @ heading.T
-    for track, joint in rotations:
-        rotate_joint(clip, joint, track['axis'], sample(track), space='body')
-    feet, hands, contacts, residuals = {}, {}, {}, {}
-    if p['plant_feet']:
-        center = plan.template.rest[root]
-        for role in plan.support_roles:
-            tip = plan.roles[role].joints[-1]
-            position = (plan.template.rest[tip] - center) @ heading.T + center
-            feet[role] = np.broadcast_to(position, (num_frames, 3)).copy()
-            contacts[role] = np.ones(num_frames, bool)
-        residuals.update(fit_feet(clip, plan, feet))
-    for track, js in targets:
-        position, _ = fk(clip)
-        length = sum(np.linalg.norm(plan.template.rest[b] - plan.template.rest[a]) for a, b in zip(js, js[1:]))
-        target = position[:, js[0]] + np.einsum('tij,tj->ti', root_rotation, sample(track) * length)
-        pole = np.einsum('tij,j->ti', root_rotation, track['pole'])
-        role = track['role']
-        residuals[role] = solve_two_bone(clip, js, target, pole)
-        hands[role] = target
+    op, p, chain = spec['operator'], spec['params'], spec['joints']
+    epsilon = plan.program['solver']['epsilon']
+    if op == 'rest':
+        return {}, {}, {}
+    if op == 'aim':
+        origin, frame = _position_frame(clip, plan, chain, root, p['space'])
+        targets = [origin + np.einsum('tij,tj->ti', frame, curve(track, plan.rhythm, times, width=3) * p['scale'])
+                   for track in p['targets']]
+        pole = np.einsum('tij,j->ti', frame, p['pole'])
+        tracks, diagnostics = {}, {}
+        for joint, child, target in zip(chain, chain[1:], targets):
+            positions, _ = fk(clip)
+            direction = target - positions[:, joint]
+            rest_direction = plan.template.rest[child] - plan.template.rest[joint]
+            rotation = basis(direction, pole, epsilon=epsilon) @ basis(rest_direction, p['rest_pole'], epsilon=epsilon).T
+            set_world_rotation(clip, joint, rotation)
+            tracks[child] = target
+        return tracks, {}, diagnostics
+    if op == 'arm_arc':
+        _, frame = _position_frame(clip, plan, chain, root, 'parent')
+        positions, _ = fk(clip)
+        angle = np.deg2rad(curve(p['angle'], plan.rhythm, times, width=0))
+        radius = curve(p['radius'], plan.rhythm, times, width=0)
+        lateral = curve(p['lateral'], plan.rhythm, times, width=0)
+        sagittal = np.sqrt(radius * radius - lateral * lateral)
+        sign = 1 if spec['side'] == 'L' else -1
+        relative = p['scale'] * np.column_stack([sign * lateral, sagittal * np.cos(angle), sagittal * np.sin(angle)])
+        target = positions[:, chain[0]] + np.einsum('tij,tj->ti', frame, relative)
+        diagnostics = solve_arm(clip, chain, target, frame, side=spec['side'], limits=p['limits'],
+                                preferred_swivel=p['preferred_swivel_degrees'], rest_pole=p['rest_pole'], epsilon=epsilon)
+        return {chain[-1]: target}, {}, diagnostics
+    if op == 'contact_path':
+        target, contact, contact_rotation = _contact_path(plan, spec, times, root)
+    else:
+        origin, frame = _position_frame(clip, plan, chain, root, p['space'])
+        target = origin + np.einsum('tij,tj->ti', frame, curve(p['trajectory'], plan.rhythm, times, width=3) * p['scale'])
+        contact = plan.rhythm.contact_ids(times, p['contacts'])
+        contact_rotation = None
+    if isinstance(p['orientation'], dict):
+        yaw = curve(p['orientation'], plan.rhythm, times, width=0)
+        rotation = plan.frame @ Rotation.from_euler('y', yaw, degrees=True).as_matrix() @ plan.frame.T
+    elif p['orientation'] == 'body':
+        rotation = root['rotation']
+    elif p['orientation'] == 'rest':
+        rotation = np.broadcast_to(np.eye(3), (len(times), 3, 3))
+    else:
+        rotation = contact_rotation
+    ankle_offset = plan.template.rest[chain[-1]] - plan.template.rest[chain[2]]
+    ankle_target = target - np.einsum('tij,j->ti', rotation, ankle_offset)
+    pole = np.einsum('tij,j->ti', root['heading'], p['pole'])
+    diagnostics = solve_two_bone(clip, chain[:3], ankle_target, pole,
+                                 flexion=p['flexion'], rest_pole=p['rest_pole'], epsilon=epsilon)
+    set_world_rotation(clip, chain[2], rotation)
     positions, _ = fk(clip)
-    for role in plan.support_roles:
-        if role not in contacts:
-            contacts[role] = positions[:, plan.roles[role].joints[-1], 1] <= plan.ground + .01 * plan.support_length
-    return dict(clip=clip, baseline=baseline, parameters=deepcopy(p), contacts=contacts,
-                foot_targets=feet, hand_targets=hands, residuals=residuals)
+    diagnostics['residual'] = np.linalg.norm(positions[:, chain[-1]] - target, axis=-1)
+    return {chain[-1]: target}, {chain[-1]: contact}, diagnostics
