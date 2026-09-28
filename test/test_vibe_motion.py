@@ -684,6 +684,110 @@ def _preview_frames(config, result):
         yield image
 
 
+def evaluate_bound_motion(mesh, rig, weights, config, poles):
+    """Reuse the explicit position/IK action on a newly fitted bind, with fixed skin weights."""
+    from operators.gen_motion.funcs.vibe_motion_utils.motion_utils.units import fk, quat_to_matrix
+    from operators.gen_motion.funcs.vibe_motion_utils.rigging_utils.skin_units import deform
+    action = load_config(config['action']['example'])
+    original = action['skeleton']
+    rest = np.asarray(original['rest'])
+    mapping = config['action']['joint_map']
+    scale = config['action']['scale']
+    if set(mapping) != set(original['names']) or set(mapping.values()) != set(rig.joint_names):
+        raise ValueError('Action binding requires a complete one-to-one joint mapping')
+    for part, spec in action['program']['parts'].items():
+        old = [original['names'].index(n) for n in spec['joints']]
+        ids = [rig.joint_names.index(mapping[n]) for n in spec['joints']]
+        spec['joints'] = [mapping[n] for n in spec['joints']]
+        p = spec['params']
+        if spec['operator'] == 'position' and p['space'] == 'world':
+            p['trajectory']['values'] = (rig.joints[ids[-1]] + (np.asarray(p['trajectory']['values'])-rest[old[-1]])*scale).tolist()
+        elif spec['operator'] == 'arm_arc':
+            p['scale'] = float(np.linalg.norm(np.diff(rig.joints[ids], axis=0), axis=1).sum())
+        if part in poles:
+            p['rest_pole'] = list(poles[part])
+    action['program']['root']['params']['scale'] *= scale
+    action['program']['quality']['ground_height'] = config['action']['ground_height']
+    action['skeleton'] = {'name': rig.name, 'names': rig.joint_names, 'parents': rig.parents.tolist(), 'rest': rig.joints.tolist()}
+    result = pipeline.generate_vibe_motion(config=action)
+    positions, quaternions = fk(result['clip'])
+    rotations = quat_to_matrix(quaternions)
+    matrices = np.broadcast_to(np.eye(4), (*positions.shape[:2], 4, 4)).copy()
+    matrices[..., :3, :3] = rotations
+    matrices[..., :3, 3] = positions-np.einsum('tnij,nj->tni', rotations, rig.joints)
+    vertices = np.asarray([deform(mesh.vertices, weights.weights, m) for m in matrices])
+    edges = np.unique(np.sort(mesh.faces[:, [[0,1],[1,2],[2,0]]].reshape(-1,2), axis=1), axis=0)
+    length = np.linalg.norm(mesh.vertices[edges[:,0]]-mesh.vertices[edges[:,1]], axis=1)
+    valid = length > action['program']['solver']['epsilon']
+    ratio = np.linalg.norm(vertices[:,edges[valid,0]]-vertices[:,edges[valid,1]], axis=-1)/length[valid]
+    low, twist_quantile, high = config['action']['metric_quantiles']
+    stretch, compression = float(np.quantile(ratio, high)), float(np.quantile(ratio, low))
+    twist = []
+    for spec in config['probe_parts'].values():
+        ids = [rig.joint_names.index(n) for n in spec['chain']]
+        for joint, child in zip(ids, ids[1:]):
+            axis = rig.joints[child]-rig.joints[joint]
+            axis /= np.linalg.norm(axis)
+            component = quaternions[:,joint,1:] @ axis
+            valid = np.hypot(component,quaternions[:,joint,0]) > action['program']['solver']['epsilon']
+            if valid.any():
+                twist.append(float(np.quantile(2*np.arctan2(abs(component[valid]),abs(quaternions[valid,joint,0])), twist_quantile))/np.pi)
+    steps = 2*np.arccos(np.clip(abs(np.sum(quaternions[1:]*quaternions[:-1],axis=-1)),0,1))
+    foot_error = max((result['residual_summary'][name] for name in config['probe_parts']), default=0.)/mesh.scale
+    terms = {'log_strain_p99': max(abs(np.log(stretch)),abs(np.log(max(compression,np.finfo(float).tiny)))),
+             'twist_p95': max(twist,default=0.), 'rotation_step': float(steps.max())/np.pi,
+             'foot_error': foot_error, 'ground_penetration': float(max(0,action['program']['quality']['ground_height']-vertices[...,1].min()))/mesh.scale}
+    score = sum(config['score_weights'][k]*v for k,v in terms.items())
+    metrics = {'score_terms': terms, 'edge_stretch_p99': stretch, 'edge_stretch_max': float(ratio.max()),
+               'edge_compression_p01': compression, 'motion': result['metrics']}
+    return {'score': score, 'metrics': metrics, 'payload': (action, result, vertices)}
+
+
+def export_bound_motion(mesh, rig, weights, selected, config, output, report, *, ffmpeg):
+    from operators.gen_motion.funcs.vibe_motion_utils.rigging_utils.export import animated_glb
+    from test.test_vibe_rigging import glb_document, rig_preview, write_video
+    import struct
+    action, result, vertices = selected['payload']
+    data = animated_glb(mesh, rig, weights, result['clip'], config=config['export']['glb'])
+    path = output / 'turn_jump_chop.glb'
+    path.write_bytes(data)
+    data = path.read_bytes()
+    doc = glb_document(data)
+    start = 28 + struct.unpack_from('<I', data, 12)[0]
+    def accessor(index, width):
+        item = doc['accessors'][index]
+        view = doc['bufferViews'][item['bufferView']]
+        dtype = {5126:'<f4',5123:'<u2',5125:'<u4'}[item['componentType']]
+        return np.frombuffer(data, dtype=dtype, count=item['count']*width,
+                             offset=start+view.get('byteOffset',0)+item.get('byteOffset',0)).reshape(-1,width)
+    inverse = accessor(doc['skins'][0]['inverseBindMatrices'],16).reshape(-1,4,4).transpose(0,2,1)
+    tolerance = config['readback_tolerance']
+    np.testing.assert_allclose(inverse[:,:3,3],-rig.joints,atol=tolerance,rtol=0)
+    attributes = doc['meshes'][0]['primitives'][0]['attributes']
+    indices, sparse = accessor(attributes['JOINTS_0'],4), accessor(attributes['WEIGHTS_0'],4)
+    dense = np.zeros_like(weights.weights)
+    np.add.at(dense, (np.arange(len(dense))[:,None], indices), sparse)
+    np.testing.assert_allclose(dense,weights.weights,atol=tolerance,rtol=0)
+    np.testing.assert_allclose(accessor(attributes['POSITION'],3),mesh.vertices,atol=tolerance,rtol=0)
+    for channel in doc['animations'][0]['channels']:
+        sampler = doc['animations'][0]['samplers'][channel['sampler']]
+        np.testing.assert_allclose(accessor(sampler['input'],1).ravel(),np.arange(result['frames'])/result['fps'],atol=tolerance,rtol=0)
+        joint = channel['target']['node']-2
+        expected = result['clip'].quats[:,joint][:,[1,2,3,0]] if channel['target']['path']=='rotation' else rig.joints[joint]+result['clip'].trans
+        np.testing.assert_allclose(accessor(sampler['output'],expected.shape[1]),expected,atol=tolerance,rtol=0)
+    (output / 'turn_jump_chop.bvh').write_bytes(result['bvh_bytes'])
+    (output / 'action_config.json').write_text(json.dumps(action,indent=2))
+    (output / 'motion_report.json').write_text(result['vibe_report_json'])
+    np.savez_compressed(output / 'motion.npz',positions=result['joints'],quats=result['clip'].quats,
+                        translations=result['clip'].trans,vertices=vertices,fps=result['fps'])
+    preview = config['preview']
+    if ffmpeg is not None:
+        frames = (rig_preview(mesh,rig,vertices[i],result['joints'][i],report,azimuth=25,settings=preview)
+                  for i in range(result['frames']))
+        write_video(frames,output/'turn_jump_chop.mp4',ffmpeg=ffmpeg,width=preview['width'],height=preview['height'],fps=result['fps'])
+    return {'readback_passed':True,'frames':result['frames'],'bind_recomputed':True,'fixed_weights':True}
+
+
 def export_example_videos(*, ffmpeg, output_dir=VIDEO_OUTPUT_DIRECTORY, names=FIXTURE_NAMES):
     """Write real H.264 previews only when explicitly requested, never during tests."""
     from test.test_vibe_rigging import write_video

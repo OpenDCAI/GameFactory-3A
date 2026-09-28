@@ -28,9 +28,9 @@ def generate_vibe_motion(*, config, mesh=None):
     and requires skin_quality and export.glb. No mesh settings have defaults.
     """
     fields(config, ('skeleton', 'rhythm', 'program'),
-           optional=('description', 'units', 'rigging', 'skinning', 'rig_quality', 'skin_quality', 'export'), label='config')
+           optional=('description', 'units', 'rigging', 'skinning', 'rig_quality', 'skin_quality', 'export', 'skin_constraints'), label='config')
     config = deepcopy(config)
-    mesh_keys = {'rigging', 'skinning', 'rig_quality', 'skin_quality', 'export'}
+    mesh_keys = {'rigging', 'skinning', 'rig_quality', 'skin_quality', 'export', 'skin_constraints'}
     if mesh is None and mesh_keys.intersection(config):
         raise ValueError('Rigging, skinning, mesh quality and export settings require a mesh')
     if mesh is not None:
@@ -40,6 +40,8 @@ def generate_vibe_motion(*, config, mesh=None):
         fields(config['export']['text'], ('precision', 'sum_tolerance', 'max_influences'), label='export.text')
     if ('skinning' in config) != ('skin_quality' in config):
         raise ValueError('skinning and skin_quality must be supplied together')
+    if 'skin_constraints' in config and 'skinning' not in config:
+        raise ValueError('skin_constraints requires skinning configuration')
     rig = None
     if config['skeleton'] is None:
         if mesh is None or 'rigging' not in config:
@@ -71,7 +73,9 @@ def generate_vibe_motion(*, config, mesh=None):
                             joint_names=list(template.joint_names), chains=deepcopy(template.roles))
         weights = None
         if 'skinning' in config:
-            weights = skinning.skin_mesh(mesh, rig, config=config['skinning'])
+            constraints = config.get('skin_constraints', {})
+            fields(constraints, (), optional=('allowed_bones', 'weight_bias', 'anchors'), label='skin_constraints')
+            weights = skinning.skin_mesh(mesh, rig, config=config['skinning'], **constraints)
             report = skinning.validate_skin(weights, mesh, rig, config=config['skin_quality'])
             artifacts['skin_report_json'] = _json({
                 'parameters': config['skinning'], 'passed': skinning.report_passed(report),

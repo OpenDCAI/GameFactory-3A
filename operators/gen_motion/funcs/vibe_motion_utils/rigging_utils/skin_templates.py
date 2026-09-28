@@ -8,14 +8,14 @@ def resolve_skin_config(config):
     fields = (
         'kernel', 'falloff', 'radius_scale', 'max_influences', 'floor',
         'smooth_iterations', 'smooth_rate', 'bone_convention',
-        'distance_epsilon_ratio', 'sum_tolerance',
+        'distance_epsilon_ratio', 'sum_tolerance', 'screening', 'edge_epsilon_ratio',
     )
     p = require_config(config, fields, 'skin')
     if p['kernel'] not in KERNELS:
         raise ValueError(f'unknown kernel {p["kernel"]!r}, available {KERNELS}')
     if p['bone_convention'] not in ('incoming', 'outgoing'):
         raise ValueError('bone_convention must be incoming or outgoing')
-    for name in ('falloff', 'radius_scale', 'distance_epsilon_ratio'):
+    for name in ('falloff', 'radius_scale', 'distance_epsilon_ratio', 'screening', 'edge_epsilon_ratio'):
         finite_number(p[name], name, positive=True)
     for name in ('floor', 'smooth_rate', 'sum_tolerance'):
         finite_number(p[name], name)

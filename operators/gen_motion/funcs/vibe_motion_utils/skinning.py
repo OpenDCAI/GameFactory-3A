@@ -5,9 +5,10 @@ import numpy as np
 from . import rigging_utils as branch
 
 
-def skin_mesh(mesh: Any, rig: Any, *, config: dict) -> Any:
-    """Generate weights without selecting a preset or inferring morphology."""
-    return branch.skin_mesh(mesh, rig, config=config)
+def skin_mesh(mesh: Any, rig: Any, *, config: dict, allowed_bones=None, weight_bias=None, anchors=None) -> Any:
+    """Generate constrained, anchored topology-diffused weights."""
+    return branch.skin_mesh(mesh, rig, config=config, allowed_bones=allowed_bones,
+                            weight_bias=weight_bias, anchors=anchors)
 
 
 def validate_skin(skin: Any, mesh: Any, rig: Any, *, config: dict) -> Any:

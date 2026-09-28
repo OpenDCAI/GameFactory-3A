@@ -1,168 +1,128 @@
-"""Fit spine and limb chains with explicitly configured sampling and scoring."""
+"""Calibrated multiview reconstruction followed by bounded landmark-guided fitting."""
 from __future__ import annotations
 import numpy as np
 from .types import RigResult
-from .templates import resolve_rig_config
+from .templates import resolve_rig_config, require_config, finite_number, integer
 from .sections import canonical_mesh
 
 
-def _lift(points, axis, offset):
-    result = np.empty((len(points), 3))
-    result[:, axis] = offset
-    result[:, [i for i in range(3) if i != axis]] = points
-    return result
+def camera_matrices(cameras, *, tolerance):
+    if not isinstance(cameras, dict) or not cameras:
+        raise ValueError('Calibrated cameras are required; no automatic landmarks are inferred')
+    output = {}
+    for name, camera in cameras.items():
+        c = require_config(camera, ('width', 'height', 'right', 'up', 'center', 'pixels_per_unit', 'pixel_origin'), 'camera')
+        integer(c['width'], 'width', 1)
+        integer(c['height'], 'height', 1)
+        finite_number(c['pixels_per_unit'], 'pixels_per_unit', positive=True)
+        r, u, center, origin = [np.asarray(c[k], float) for k in ('right', 'up', 'center', 'pixel_origin')]
+        if any(v.shape != (3,) for v in (r, u, center)) or origin.shape != (2,) or not all(np.isfinite(v).all() for v in (r, u, center, origin)):
+            raise ValueError(f'{name}: invalid camera vectors')
+        if not np.allclose([r @ r, u @ u, r @ u], [1, 1, 0], atol=tolerance, rtol=0):
+            raise ValueError(f'{name}: camera axes must be orthonormal')
+        matrix = c['pixels_per_unit'] * np.stack([r, -u])
+        output[name] = matrix, origin - matrix @ center, np.array([c['width'], c['height']])
+    return output
 
 
-def _candidates(sections, axis, offset, p, notes, label):
-    section = sections.section(axis, offset)
-    if section.open_components:
-        notes.add(f'{label}: open cross-section detected; non-closed parts ignored')
-    points, radius = section.candidates(p['section_resolution'], keep=p['candidate_keep'],
-                                        bounds=None, chunk_size=p['clearance_chunk_size'])
-    if not len(points):
-        raise ValueError(f'{label}: no closed interior cross-section at {offset}; adjust the span or repair the mesh')
-    return _lift(points, axis, offset), radius
+def reconstruct_joints(cameras, observations, *, config):
+    matrices = camera_matrices(cameras, tolerance=config['axis_tolerance'])
+    if not isinstance(observations, dict) or not observations:
+        raise ValueError('Nonempty joint observations required')
+    positions, reports = {}, {}
+    for name, views in observations.items():
+        if not isinstance(views, dict) or len(views) < 2:
+            raise ValueError(f'{name}: at least two named views are required')
+        lhs, rhs = [], []
+        for view, item in views.items():
+            if view not in matrices:
+                raise ValueError(f'{name}: unknown camera {view}')
+            require_config(item, ('pixel', 'confidence', 'inferred'), 'observation')
+            pixel = np.asarray(item['pixel'], float)
+            matrix, offset, size = matrices[view]
+            confidence = finite_number(item['confidence'], 'confidence', positive=True)
+            if confidence > 1 or type(item['inferred']) is not bool:
+                raise ValueError('Confidence must lie in (0,1] and inferred must be boolean')
+            if pixel.shape != (2,) or not np.isfinite(pixel).all() or np.any(pixel < 0) or np.any(pixel > size - 1):
+                raise ValueError(f'{name}/{view}: pixel outside calibrated image')
+            lhs.append(matrix * np.sqrt(confidence))
+            rhs.append((pixel - offset) * np.sqrt(confidence))
+        point, _, rank, singular = np.linalg.lstsq(np.concatenate(lhs), np.concatenate(rhs), rcond=None)
+        if rank != 3 or singular[0] / singular[-1] > config['max_condition']:
+            raise ValueError(f'{name}: degenerate or near-parallel views')
+        residual = {v: float(np.linalg.norm(matrices[v][0] @ point + matrices[v][1] - item['pixel'])) for v, item in views.items()}
+        if max(residual.values()) > config['max_reprojection_pixels']:
+            raise ValueError(f'{name}: inconsistent calibrated annotations')
+        positions[name] = point
+        reports[name] = {'reprojection_pixels': residual, 'condition': float(singular[0] / singular[-1]),
+                         'inferred_views': [v for v in views if views[v]['inferred']]}
+    return positions, reports
 
 
-def simplify_chain(points, count, *, config):
-    n = len(points)
-    error = np.full((n, n), np.inf)
-    min_gap = max(config['simplify_min_gap'], int(config['simplify_gap_ratio'] * (n - 1) / (count - 1)))
-    ideal = (n - 1) / (count - 1)
-    length = max(np.linalg.norm(points[-1] - points[0]), np.finfo(float).eps)
-    for i in range(n - 1):
-        for j in range(i + min_gap, n):
-            edge = points[j] - points[i]
-            delta = points[i:j + 1] - points[i]
-            t = np.clip(np.einsum('ij,j->i', delta, edge) / max(np.dot(edge, edge), np.finfo(float).eps), 0.0, 1.0)
-            error[i, j] = np.sum((delta - t[:, None] * edge) ** 2) / length ** 2 + config['simplify_length_weight'] * ((j - i) / ideal - 1) ** 2
-    cost = np.full((count, n), np.inf)
-    trace = np.full((count, n), -1, int)
-    cost[0, 0] = 0.0
-    for k in range(1, count):
-        for j in range(k * min_gap, n):
-            value = cost[k - 1, :j] + error[:j, j]
-            i = int(np.argmin(value))
-            cost[k, j], trace[k, j] = value[i], i
-    if not np.isfinite(cost[-1, -1]):
-        raise ValueError('not enough centreline samples for the requested joint count')
-    idx = [n - 1]
-    for k in range(count - 1, 0, -1):
-        idx.append(int(trace[k, idx[-1]]))
-    return points[idx[::-1]]
+def reprojection_report(rig, *, config):
+    matrices = camera_matrices(config['cameras'], tolerance=config['reconstruction']['axis_tolerance'])
+    return {name: {v: float(np.linalg.norm(matrices[v][0] @ point + matrices[v][1] - item['pixel']))
+                   for v, item in config['observations'][name].items()}
+            for name, point in zip(rig.joint_names, rig.joints)}
 
 
-def _spine(sections, p, notes):
-    axis = 1 if p['spine_axis'] == 'vertical' else 2
-    vertices = sections.vertices
-    lo, hi = vertices[:, axis].min(), vertices[:, axis].max()
-    fractions = np.linspace(*p['spine_span'], p['spine_joints'])
-    sets = []
-    for fraction in fractions:
-        points, radius = _candidates(sections, axis, lo + fraction * (hi - lo), p, notes, 'spine')
-        score = radius - p['spine_center_weight'] * np.abs(points[:, 0])
-        sets.append((points, score))
-    cost, trace = -sets[0][1], []
-    for (prev, _), (cur, score) in zip(sets, sets[1:]):
-        distance = np.sum((cur[:, None] - prev[None, :]) ** 2, axis=-1)
-        total = cost[None, :] + p['spine_continuity_weight'] * distance
-        best = total.argmin(axis=1)
-        cost = total[np.arange(len(cur)), best] - score
-        trace.append(best)
-    path = [int(cost.argmin())]
-    for best in reversed(trace):
-        path.append(int(best[path[-1]]))
-    return np.stack([item[0][index] for item, index in zip(sets, path[::-1])])
-
-
-def _limb(sections, spine, group, side, p, notes):
-    position = group.at * (len(spine) - 1)
-    i = int(position)
-    attach = spine[i] + (position - i) * (spine[min(i + 1, len(spine) - 1)] - spine[i])
-    axis, sign = (0, side) if group.reach == 'out' else (1, -1)
-    vertices = sections.vertices
-    spine_axis = 1 if p['spine_axis'] == 'vertical' else 2
-    window = group.window * np.linalg.norm(spine[-1] - spine[0])
-    mask = side * vertices[:, 0] > 0
-    if axis != spine_axis:
-        mask &= np.abs(vertices[:, spine_axis] - attach[spine_axis]) <= window
-    mask &= sign * (vertices[:, axis] - attach[axis]) >= 0
-    if not mask.any():
-        raise ValueError(f'{group.name}: no limb found along the requested direction')
-    reach = np.max(sign * (vertices[mask, axis] - attach[axis]))
-    if reach <= np.finfo(float).eps:
-        raise ValueError(f'{group.name}: limb reach is degenerate')
-    fractions = np.linspace(*group.span, p['chain_samples'])
-    offsets = attach[axis] + sign * reach * fractions
-    other = [j for j in range(3) if j != axis]
-    low, high = np.full(3, -np.inf), np.full(3, np.inf)
-    if axis != 0:
-        lateral = group.lateral_min * np.max(side * vertices[mask, 0])
-        if side > 0:
-            low[0] = lateral
-        else:
-            high[0] = -lateral
-    if axis != spine_axis:
-        low[spine_axis], high[spine_axis] = attach[spine_axis] - window, attach[spine_axis] + window
-    bounds = low[other], high[other]
-    path, radii = [], []
-    step = abs(offsets[1] - offsets[0])
-    for offset in offsets[::-1]:
-        search_bounds = bounds
-        if path:
-            predicted = path[-1].copy()
-            if len(path) >= 2:
-                tangent = path[-1] - path[-2]
-                predicted += tangent * np.minimum(1.0, p['limb_tangent_step_limit'] * step / max(np.linalg.norm(tangent), np.finfo(float).eps))
-            if group.reach == 'down' and axis != spine_axis:
-                anchor = attach.copy()
-                anchor[0] = float(np.median(np.asarray(path)[:max(1, int(len(path) * p['limb_anchor_fraction'])), 0]))
-                progress = sign * (offset - attach[axis]) / reach
-                predicted += p['limb_anchor_weight'] * (1 - progress) ** p['limb_anchor_power'] * (anchor - predicted)
-            predicted[axis] = offset
-            cap = max(float(np.median(radii)), step)
-            half_width = p['limb_radius_window'] * cap + p['limb_step_window'] * step
-            search_bounds = np.maximum(bounds[0], predicted[other] - half_width), np.minimum(bounds[1], predicted[other] + half_width)
-        section = sections.section(axis, offset)
-        if section.open_components:
-            notes.add(f'{group.name}: open cross-section detected; non-closed parts ignored')
-        points, radius = section.candidates(p['section_resolution'], keep=None, bounds=search_bounds,
-                                            chunk_size=p['clearance_chunk_size'])
-        if not len(points):
-            raise ValueError(f'{group.name}: limb tracing left the closed solid; adjust the partition or span')
-        points = _lift(points, axis, offset)
-        if not path:
-            score = radius - p['limb_initial_distance_weight'] * np.linalg.norm(points - attach, axis=1)
-        else:
-            distance = np.sum((points - predicted) ** 2, axis=1)
-            score = np.minimum(radius / cap, p['limb_radius_cap']) - p['limb_continuity_weight'] * distance / (cap ** 2 + step ** 2)
-        index = int(np.argmax(score))
-        path.append(points[index])
-        radii.append(radius[index])
-    return simplify_chain(np.stack(path[::-1]), group.joints, config=p), int(round(position))
+def fit_joint_prior(sections, target, hint, *, config):
+    axis, radius, strength = hint['axis'], np.asarray(hint['radius']), hint['strength']
+    other = [i for i in range(3) if i != axis]
+    low, high = target[other] - radius[other], target[other] + radius[other]
+    section = sections.section(axis, float(target[axis]))
+    points, clearance = section.candidates(config['section_resolution'], keep=None, bounds=(low, high), chunk_size=config['clearance_chunk_size'])
+    if len(points):
+        distance = np.sum(((points - target[other]) / radius[other]) ** 2, axis=1)
+        score = (1 + config['prior_distance_gain'] * strength) * distance - (1 - strength) * clearance / radius[other].max()
+        chosen, mode = points[int(score.argmin())], 'closed_section'
+    elif hint['allow_open']:
+        hits = []
+        for a, b in section.segments:
+            edge, lo, hi = b - a, 0., 1.
+            for k in range(2):
+                if abs(edge[k]) <= config['epsilon']:
+                    if a[k] < low[k] or a[k] > high[k]:
+                        hi = -1.
+                        break
+                else:
+                    t0, t1 = sorted(((low[k] - a[k]) / edge[k], (high[k] - a[k]) / edge[k]))
+                    lo, hi = max(lo, t0), min(hi, t1)
+            if lo <= hi:
+                hits.extend([a + lo * edge, a + hi * edge])
+        if len(hits) < config['min_open_endpoints']:
+            raise ValueError('No surface evidence in the configured landmark window')
+        center = np.quantile(hits, config['open_quantiles'], axis=0).mean(axis=0)
+        chosen, mode = np.clip(strength * target[other] + (1 - strength) * center, low, high), 'open_surface_evidence'
+    else:
+        raise ValueError('No closed section in the landmark window; open fitting is disabled')
+    point = target.copy()
+    point[other] = chosen
+    return point, mode
 
 
 def rig_skeleton(mesh, *, config):
-    """Fit the explicit topology without morphology inference or reference data."""
+    """Topology and visual observations are mandatory; the old tracing fallback is removed."""
     p = resolve_rig_config(config)
-    sections, frame, axes = canonical_mesh(mesh, p['up'], p['forward'],
-                                           vertical=p['spine_axis'] == 'vertical', config=p)
-    notes = {'fitted from geometric cross-sections; no reference rig or skin weights were used'}
-    spine = _spine(sections, p, notes)
-    root = int(round(p['root_at'] * (len(spine) - 1)))
-    joints = list(spine)
-    parents = [-1 if i == root else i - 1 if i > root else i + 1 for i in range(len(spine))]
-    names = [f'spine.{i}' for i in range(len(spine))]
-    chains = {'spine': list(range(len(spine)))}
-    for group in p['limb_groups']:
-        for side, tag in ((1, 'L'), (-1, 'R')) if group.paired else ((1, 'C'),):
-            points, anchor = _limb(sections, spine, group, side, p, notes)
-            label = f'{group.name}.{tag}'
-            start = len(joints)
-            joints.extend(points)
-            parents.extend([anchor] + list(range(start, start + len(points) - 1)))
-            names.extend(f'{label}.{i}' for i in range(len(points)))
-            chains[label] = list(range(start, start + len(points)))
-    world = np.einsum('ij,jk->ik', np.asarray(joints) * frame.scale, axes) + frame.origin
-    return RigResult(p['name'], world, np.array(parents, np.int64), names, chains, frame,
-                     {**p, 'up': tuple(frame.up), 'forward': tuple(frame.forward)}, sorted(notes))
+    raw, triangulation = reconstruct_joints(p['cameras'], p['observations'], config=p['reconstruction'])
+    sections, frame, axes = canonical_mesh(mesh, p['up'], p['forward'], vertical=True, config=p['geometry'])
+    joints, modes = [], {}
+    for name in p['names']:
+        target = (raw[name] - frame.origin) @ axes.T / frame.scale
+        point, modes[name] = fit_joint_prior(sections, target, p['fit'][name], config=p['geometry'])
+        joints.append(point @ axes * frame.scale + frame.origin)
+    rig = RigResult(p['name'], np.asarray(joints), np.asarray(p['parents'], int), p['names'],
+                    {k: [p['names'].index(n) for n in ns] for k, ns in p['chains'].items()}, frame, p)
+    errors, conflicts = reprojection_report(rig, config=p), {}
+    for i, name in enumerate(rig.joint_names):
+        if max(errors[name].values()) > p['reconstruction']['max_fitted_reprojection_pixels']:
+            if p['reconstruction']['conflict_policy'] == 'reject':
+                raise ValueError(f'{name}: geometric fit exceeds reprojection tolerance')
+            conflicts[name] = {'rejected_fit': rig.joints[i].tolist(), 'reprojection_pixels': errors[name]}
+            rig.joints[i] = raw[name]
+            if max(triangulation[name]['reprojection_pixels'].values()) > p['reconstruction']['max_fitted_reprojection_pixels']:
+                raise ValueError(f'{name}: retained annotation also violates fitted tolerance')
+    rig.params = {**p, 'diagnostics': {'triangulation': triangulation, 'fit_modes': modes, 'fit_conflicts': conflicts}}
+    rig.notes = ['Calibrated visual landmarks and explicit topology; no reference rig or unguided tracing.',
+                 'Open-section fits and retained annotations do not certify solid containment. No surface snapping.']
+    return rig

@@ -1,4 +1,4 @@
-"""Fit caller-configured skeletons and serialize rig and mesh artifacts."""
+"""Public calibrated skeleton fitting, enclosure diagnostics and artifact serialization."""
 from __future__ import annotations
 from typing import Any
 import numpy as np
@@ -8,12 +8,12 @@ from .rigging_utils.templates import finite_number, integer
 
 
 def fit_skeleton(mesh: Any, *, config: dict) -> Any:
-    """Fit generic spine and limb chains using only explicit configuration."""
+    """Delegate calibrated cameras, 2D observations, topology and fit windows; no legacy tracing."""
     return branch.rig_skeleton(mesh, config=config)
 
 
 def evaluate_skeleton(mesh: Any, rig: Any, *, config: dict) -> dict:
-    """Measure and assess placement using explicit sampling and thresholds."""
+    """Report solid certificates separately from open-mesh enclosure and parity evidence."""
     return checks.evaluate_rig(mesh, rig, config=config)
 
 

@@ -73,52 +73,111 @@ def prune_to_k(weights: np.ndarray, distances: np.ndarray, *, max_influences: in
         w = np.where(w >= cut, w, 0.0)
         extra = (w > 0).sum(axis=1) - k
         for i in np.flatnonzero(extra > 0):
-            live = np.flatnonzero(w[i] > 0)
-            drop = live[np.argsort(d[i, live], kind='stable')[k:]]
+            tied = np.flatnonzero(w[i] == cut[i, 0])
+            slots = k - np.count_nonzero(w[i] > cut[i, 0])
+            drop = tied[np.argsort(d[i, tied], kind='stable')[slots:]]
             w[i, drop] = 0.0
     total = w.sum(axis=1, keepdims=True)
     empty = np.flatnonzero(total[:, 0] <= 0.0)
     if len(empty):
+        if np.any(~np.isfinite(d[empty]).any(axis=1)):
+            raise ValueError('Empty vertex has no allowed fallback bone')
         w[empty] = 0.0
         w[empty, np.argmin(d[empty], axis=1)] = 1.0
         total = w.sum(axis=1, keepdims=True)
     return w / total, int(len(empty))
 
 
-def smooth_weights(weights: np.ndarray, adjacency: list[np.ndarray], *, iterations: int,
-                   rate: float, max_influences: int, distances: np.ndarray) -> np.ndarray:
-    w = np.asarray(weights, float).copy()
-    integer(iterations, 'iterations', 0)
-    finite_number(rate, 'rate')
-    if rate > 1:
-        raise ValueError('rate must lie in [0,1]')
-    if len(adjacency) != len(w):
-        raise ValueError('adjacency must match the weight vertex count')
-    for _ in range(iterations):
-        nxt = w.copy()
-        for i, nb in enumerate(adjacency):
-            if len(nb):
-                nxt[i] = (1.0 - rate) * w[i] + rate * w[nb].mean(axis=0)
-        w = nxt
-    w, _ = prune_to_k(w, distances, max_influences=max_influences)
-    return w
+def anchored_weights(mesh, prior, ids, values, allowed, *, config):
+    """Screened diffusion on real triangle edges; anchors and forbidden entries are exact."""
+    from scipy.sparse import coo_matrix, diags
+    from scipy.sparse.linalg import spsolve
+    p, n = config, mesh.num_vertices
+    prior, allowed = np.asarray(prior, float), np.asarray(allowed)
+    if prior.ndim != 2 or prior.shape[0] != n or not prior.shape[1] or not np.isfinite(prior).all() or np.any(prior < 0):
+        raise ValueError('Prior must be a finite nonnegative (V,J) array')
+    if not np.allclose(prior.sum(1), 1, atol=p['sum_tolerance'], rtol=0):
+        raise ValueError('Prior rows must be normalized')
+    if allowed.shape != prior.shape or allowed.dtype.kind != 'b' or np.any(~allowed.any(1)):
+        raise ValueError('Each vertex needs at least one allowed influence')
+    ids, values = np.asarray(ids), np.asarray(values, float)
+    if ids.shape == (0,) and values.size == 0:
+        ids, values = np.empty(0, int), np.empty((0, prior.shape[1]))
+    if ids.ndim != 1 or ids.dtype.kind not in 'iu' or len(set(ids)) != len(ids) or np.any((ids < 0) | (ids >= n)):
+        raise ValueError('Anchor IDs must be unique valid vertex indices')
+    if values.shape != (len(ids), prior.shape[1]) or not np.isfinite(values).all() or np.any(values < 0):
+        raise ValueError('Invalid anchor weight array')
+    if not np.allclose(values.sum(1), 1, atol=p['sum_tolerance'], rtol=0) or np.any((values > 0).sum(1) > p['max_influences']):
+        raise ValueError('Anchors must be normalized and obey the influence count; they are never silently pruned')
+    if np.any(values[~allowed[ids]] != 0):
+        raise ValueError('Anchor conflicts with forbidden influences')
+    edges = np.unique(np.sort(mesh.faces[:, [[0, 1], [1, 2], [2, 0]]].reshape(-1, 2), axis=1), axis=0)
+    edges = edges[edges[:, 0] != edges[:, 1]]
+    length = np.linalg.norm(mesh.vertices[edges[:, 0]] - mesh.vertices[edges[:, 1]], axis=1) / mesh.scale
+    conductance = 1 / np.maximum(length, p['edge_epsilon_ratio'])
+    a, b = edges.T
+    graph = coo_matrix((np.tile(conductance, 2), (np.r_[a, b], np.r_[b, a])), shape=(n, n)).tocsr()
+    degree = np.asarray(graph.sum(1)).ravel()
+    screen = p['screening'] * np.maximum(degree, 1)
+    matrix = (diags(degree + screen) - graph).tocsr()
+    fixed, output = np.zeros(n, bool), np.zeros_like(prior)
+    fixed[ids], output[ids] = True, values
+    for j in range(prior.shape[1]):
+        free = np.flatnonzero(~fixed & allowed[:, j])
+        if len(free):
+            rhs = screen[free] * prior[free, j] - matrix[free][:, ids] @ values[:, j]
+            output[free, j] = spsolve(matrix[free][:, free], rhs)
+    if not np.isfinite(output).all() or np.any(output < -p['sum_tolerance']):
+        raise ValueError('Invalid screened diffusion solution')
+    output = np.where(allowed, np.maximum(output, 0), 0)
+    if np.any(output.sum(1) <= 0):
+        raise ValueError('Allowed region has no positive prior or anchor support')
+    output, _ = prune_to_k(output, np.where(allowed, -output, np.inf), max_influences=p['max_influences'])
+    output[ids] = values
+    return output
 
 
-def skin_mesh(mesh: CreatureMesh, rig: RigResult, *, config: dict) -> SkinWeights:
+def skin_mesh(mesh: CreatureMesh, rig: RigResult, *, config: dict,
+              allowed_bones=None, weight_bias=None, anchors=None) -> SkinWeights:
+    """One constrained prior/diffusion path; no unrestricted post-smoothing fallback."""
     p = resolve_skin_config(config)
-    radius = float(p['radius_scale']) * mesh.scale
     dist = bone_distances(mesh, rig, convention=p['bone_convention'])
-    raw = distance_weights(dist, kernel=p['kernel'], falloff=p['falloff'], radius=radius,
-                           floor=p['floor'], distance_epsilon_ratio=p['distance_epsilon_ratio'])
-    weights, fallback = prune_to_k(raw, dist, max_influences=p['max_influences'])
-    notes = [f'bone_convention={p["bone_convention"]}']
+    allowed = np.ones(dist.shape, bool) if allowed_bones is None else np.asarray(allowed_bones)
+    bias = np.ones_like(dist) if weight_bias is None else np.asarray(weight_bias, float)
+    if allowed.shape != dist.shape or allowed.dtype.kind != 'b':
+        raise ValueError('allowed_bones must be a boolean (V,J) array')
+    if bias.shape != dist.shape or not np.isfinite(bias).all() or np.any(bias < 0):
+        raise ValueError('weight_bias must be a finite nonnegative (V,J) array')
+    allowed = allowed & (bias > 0)
+    if np.any(~allowed.any(1)):
+        raise ValueError('Each vertex needs a positive allowed influence')
+    raw = distance_weights(dist, kernel=p['kernel'], falloff=p['falloff'], radius=p['radius_scale'] * mesh.scale,
+                           floor=0, distance_epsilon_ratio=p['distance_epsilon_ratio'])
+    raw = np.where(allowed, raw * bias, 0)
+    raw = np.where(raw >= p['floor'] * raw.max(1, keepdims=True), raw, 0)
+    distance = np.where(allowed, dist, np.inf)
+    weights, fallback = prune_to_k(raw, distance, max_influences=p['max_influences'])
+    adjacency = mesh.adjacency()
+    for _ in range(p['smooth_iterations']):
+        nxt = weights.copy()
+        for i, neighbors in enumerate(adjacency):
+            if len(neighbors):
+                nxt[i] = (1 - p['smooth_rate']) * weights[i] + p['smooth_rate'] * weights[neighbors].mean(0)
+        weights, _ = prune_to_k(np.where(allowed, nxt, 0), distance, max_influences=p['max_influences'])
+    if anchors is None:
+        ids, values = np.empty(0, int), np.empty((0, rig.num_joints))
+    else:
+        from .templates import require_config
+        require_config(anchors, ('ids', 'values'), 'anchors')
+        ids, values = anchors['ids'], anchors['values']
+    weights = anchored_weights(mesh, weights, ids, values, allowed, config=p)
+    if np.any(weights[~allowed] != 0):
+        raise ValueError('Forbidden influence escaped constrained diffusion')
+    notes = [f'bone_convention={p["bone_convention"]}; topology diffusion with {len(ids)} exact anchors']
     if fallback:
-        notes.append(f'{fallback}/{mesh.num_vertices} vertices were outside every bone radius and bound to the nearest bone')
-    if p['smooth_iterations'] > 0:
-        weights = smooth_weights(weights, mesh.adjacency(), iterations=p['smooth_iterations'],
-                                 rate=p['smooth_rate'], max_influences=p['max_influences'], distances=dist)
+        notes.append(f'{fallback} vertices bound to the nearest bone within the allowed set')
     skin = SkinWeights(weights, list(rig.joint_names), tuple(notes))
     issues = validate_weights(skin, max_influences=p['max_influences'], sum_tolerance=p['sum_tolerance'])
     if issues:
-        raise ValueError('skin weights violate the constraints: ' + '; '.join(issues))
+        raise ValueError('; '.join(issues))
     return skin
