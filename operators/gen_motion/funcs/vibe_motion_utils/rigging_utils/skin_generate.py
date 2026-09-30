@@ -1,4 +1,4 @@
-"""Generate skin weights from explicitly configured distance kernels and smoothing."""
+"""Distance-kernel skin weights with anchored topology diffusion."""
 from __future__ import annotations
 import numpy as np
 from .types import RigResult
@@ -33,7 +33,7 @@ def bone_distances(mesh: CreatureMesh, rig: RigResult, *, convention: str) -> np
 
 def distance_weights(distances: np.ndarray, *, kernel: str, falloff: float,
                      radius: float, floor: float, distance_epsilon_ratio: float) -> np.ndarray:
-    """Turn distances into relative weights without implicit kernel policy."""
+    """Turn distances into relative weights."""
     d = np.asarray(distances, float)
     if d.ndim != 2 or not d.shape[1] or not np.isfinite(d).all() or np.any(d < 0):
         raise ValueError('distances must be finite non-negative (V,J) with at least one joint')

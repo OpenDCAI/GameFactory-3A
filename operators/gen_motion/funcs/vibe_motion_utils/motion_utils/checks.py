@@ -1,4 +1,3 @@
-"""Measure generated geometry against explicitly supplied quality thresholds."""
 from __future__ import annotations
 
 import numpy as np

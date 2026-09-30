@@ -7,7 +7,6 @@ import numpy as np
 
 
 def animated_glb(mesh, rig, skin, clip, *, config) -> bytes:
-    'Serialize glTF 2.0 with explicit tolerances, material and interpolation.'
     from ..bvh import validate_hierarchy
     from .templates import require_config, finite_number
 

@@ -1,4 +1,4 @@
-"""Rigging regressions and an explicit real-OBJ test CLI."""
+"""Rigging regressions and an OBJ test CLI."""
 from __future__ import annotations
 
 from collections import Counter
@@ -200,7 +200,7 @@ def write_video(frames, path, *, ffmpeg, width, height, fps):
 
 
 def rig_preview(mesh, rig, posed, joints, report, *, azimuth, settings):
-    """Plain rest/posed comparison without decorative UI."""
+    """Render rest and stress-pose mesh views."""
     from PIL import Image, ImageDraw, ImageFont
     width, height = settings['width'], settings['height']
     image = Image.new('RGB', (width, height), '#101824')
@@ -234,7 +234,7 @@ def rig_preview(mesh, rig, posed, joints, report, *, azimuth, settings):
 
 
 def skin_constraints(mesh, audit, rig, config):
-    """Translate this fixture's object regions and seam settings into explicit arrays."""
+    """Convert fixture object regions and seams to skin constraints."""
     from scipy.sparse import coo_matrix
     from scipy.sparse.csgraph import connected_components
     from scipy.spatial import cKDTree

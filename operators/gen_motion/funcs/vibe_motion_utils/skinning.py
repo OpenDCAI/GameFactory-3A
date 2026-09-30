@@ -1,4 +1,3 @@
-"""Generate and validate skin weights using required explicit configuration."""
 from __future__ import annotations
 from typing import Any
 import numpy as np

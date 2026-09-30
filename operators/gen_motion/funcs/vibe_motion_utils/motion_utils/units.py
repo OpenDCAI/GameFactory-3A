@@ -1,4 +1,4 @@
-"""Validated forward kinematics and explicit geometric basis construction."""
+"""Forward kinematics and geometric bases."""
 from __future__ import annotations
 
 import numpy as np

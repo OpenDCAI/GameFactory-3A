@@ -1,46 +1,11 @@
----
-name: motion-asset-qa
-description: Generate and validate character motion assets using mesh projections, sequential VLM joint estimation, 3D skeleton reconstruction, skinning and motion-guided bone orientation. Applies to unrigged character meshes, procedural motion, retargeting and engine QA; prefer Vibe Motion with Mixamo or model generation as fallbacks.
----
+# Motion Generation
 
-# Motion Generation Skills
-
-How an agent turns a character mesh into a usable animated FBX — and how to
-judge whether the result is shippable.
+Reconstruct a skeleton from calibrated mesh projections and sequential VLM joint
+annotations, then fit joints and skin weights. Generate motion from joint-position
+trajectories, rhythm and contact constraints through IK; refine bone orientation
+against the action, then export, retarget and validate on the target mesh.
 
 Replace `<...>` path placeholders with actual paths; `<repo_path>` denotes the repository root.
-
-Motion assets are a special category: many clip / mesh / engine formats,
-per-character skeletons, and unit conventions that static-mesh QA does not
-cover. Prefer the `gen_motion` operator first; when a format or retarget
-edge case is outside what the operator already handles, the agent **may
-edit the retarget code** (`<repo_path>/operators/gen_motion/funcs/retarget_utils/` and
-related steps) rather than inventing a one-off workaround outside the
-pipeline.
-
-This skill covers the whole motion chain in 3AGameFactory:
-
-```
-character mesh (.glb/.obj/…)
-        │
-        ▼
-   calibrated projections  →  images + calibration.json
-        │
-        ▼
-   VLM topology + per-chain labels  →  annotations.json (intermediate)
-        │
-        ▼
-   3D reconstruction + skinning     →  rig + weights
-        │
-        ▼
-   position/rhythm/IK motion + bone-orientation refinement → motion.bvh
-        │
-        ▼
-   retarget (world-delta)    →  retargeted.fbx + animation.fbx + mapping.json
-        │
-        ▼
-   import (Blender / UE5)    →  engine-ready skeletal asset
-```
 
 Entry point: `<repo_path>/pipeline/assets_gen/gen_motion/run.py`.
 Operator: `<repo_path>/operators/gen_motion/operator.py`.
@@ -49,13 +14,8 @@ module docstrings under `<repo_path>/operators/gen_motion/funcs/`.
 
 ## Prefer Vibe Motion functions
 
-**Use Vibe Motion first.** Compose motion with the functions in
-`<repo_path>/operators/gen_motion/funcs/vibe_motion_utils/`: reuse parameterized
-skeleton, skinning, trajectory and IK operations across compatible characters.
-Prefer this stable, controllable route over repeated prompting: timing, stride,
-heading and contact targets are explicit parameters. Numerical rigging and IK need
-no learned weights or GPU; the preceding visual-estimation stage uses an explicitly
-configured VLM service and may incur API costs.
+Use `<repo_path>/operators/gen_motion/funcs/vibe_motion_utils/` first; fall back to
+Mixamo, MoMask or Tripo only when the topology/action is unsupported or fails QA.
 
 1. Supply explicit joint-position trajectories, named rhythm events, a rest
    skeleton and IK constraints. Adjust this program before choosing another source.
@@ -77,10 +37,12 @@ configured VLM service and may incur API costs.
 | `motion.generate_clip(plan)` | Sample positions and solve joint motion through IK |
 | `generate_vibe_motion(config=..., mesh=...)` | Produce BVH, joints, targets, residuals and optional rig/skin/GLB artifacts |
 
-The old rotation recipes, presets, built-in skeletons and rotation-blended
-`segments` interface have been removed. Express a multi-stage action as one
-continuous position program with named events and explicit contact windows.
-`program.action` is a label only; it never selects an implementation.
+Express a multi-stage action as one continuous position program with named events
+and contact windows. `program.action` is a label, not a preset selector.
+
+IK implementation: `<repo_path>/operators/gen_motion/funcs/vibe_motion_utils/motion_utils/generate.py`.
+Use `solve_two_bone_ik` for flexion-limited two-bone chains and `solve_arm_ik` for
+bounded shoulder/elbow optimization; `task_space.solve_part` supplies sampled targets.
 
 Use `task_type="vibe"` with a `config` object containing:
 
@@ -218,7 +180,7 @@ failure and rerun into a new output directory after correction. Never overwrite
 prior outputs. A downstream quality failure exits nonzero while retaining artifacts.
 
 The numerical runtime requires NumPy and SciPy; input mesh files additionally
-require trimesh. No external source checkout, model weights or GPU is needed.
+require trimesh.
 Run the motion regression suite with
 `python -m unittest discover -s "<repo_path>/test" -t "<repo_path>" -p 'test_vibe_motion.py' -v`.
 
@@ -251,7 +213,7 @@ replay the animation on the actual mesh before accepting it.
 ## Cloud fallback (Tripo)
 
 `task_type=cloud_rig` / `cloud_humanoid` runs rigging and animation on the
-TokenHub / Tripo backend: no weights, no Blender, no BVH step.
+TokenHub / Tripo backend.
 Code: `<repo_path>/operators/gen_motion/funcs/cloud_rig_animate.py`,
 `<repo_path>/models/gen_motion/tripo_rigging_model.py`.
 
@@ -273,13 +235,6 @@ Constraints to plan around:
 Gate the result before shipping: `inspect_rig` (limb chains resolved) and
 `inspect_animation` (joints not flipped past 150°). Both are in
 `<repo_path>/models/gen_motion/tripo_rigging_model.py`; the operator writes them next to the artifact.
-
-## When To Run
-
-- A task asks for a humanoid character that moves (walk, attack, idle, …).
-- You have a downloaded Mixamo / mocap clip and need it on a generated rig.
-- A generated clip looks wrong and you need a downloaded replacement.
-- You have a retargeted FBX and need to prove Blender or Unreal can use it.
 
 Do **not** use the static mesh importers
 (`<repo_path>/engine_adapters/blender/import_generated/import_mesh.py` or
@@ -310,8 +265,8 @@ path — do not bypass with a hand-rolled Blender script that never lands in
 
 | `task_type` | Needs | Produces |
 |---|---|---|
-| `vibe` | preset or segments + template or compatible mesh/creature | BVH, joints, QA report; rig/OBJ/skin report with geometry |
-| `vibe_retarget` | preset or segments + compatible geometry + skin + bpy | Vibe artifacts + retargeted FBX/animation/mapping |
+| `vibe` | config: skeleton + rhythm + position program; optional mesh/skin | BVH, joints, QA report; rig/OBJ/skin report with geometry |
+| `vibe_retarget` | same config + mesh + skin/export settings + integer fps + bpy | Vibe artifacts + retargeted FBX/animation/mapping |
 | `rig` | character mesh | `rig.txt`, `skeleton.txt`, `mesh.obj` |
 | `text_to_motion` | text prompt | `motion.bvh` (+ raw/ik/preview) |
 | `retarget` | source clip + mesh + rig | `retargeted.fbx`, `animation.fbx`, `mapping.json` |
@@ -340,7 +295,7 @@ python "<repo_path>/pipeline/assets_gen/gen_motion/run.py" \
   --in-place
 ```
 
-Registries (no models, no Blender)::
+List mapping and motion-source registries:
 
 ```bash
 python "<repo_path>/pipeline/assets_gen/gen_motion/run.py" --list-mappings
@@ -599,10 +554,8 @@ Run these after `inspect_fbx` / Blender import report `ok=True`:
 
 ## 6. Runtime Environment
 
-For Vibe-only BVH generation, use the Python/NumPy source setup above; no model
-weights or GPU environment is needed. Configure bpy additionally for FBX retargeting.
-Install the following Linux environments only for the model-backed fallback and
-retarget routes:
+Configure bpy for FBX retargeting. Install the following Linux environments for
+model-backed fallback and retarget routes:
 
 ```bash
 bash "<repo_path>/scripts/asset_env_setup/gen_motion/install.sh"
@@ -641,7 +594,7 @@ python "<repo_path>/pipeline/assets_gen/gen_motion/run.py" \
 Tests::
 
 ```bash
-# Unit + stub integration (no GPU)
+# Unit + stub integration
 python -m unittest test.test_gen_motion
 
 # Create an unlicensed, single-mesh T-pose fixture for a real local run.
@@ -658,16 +611,3 @@ rig), for local repro without licensed assets. Use
 from test.test_rigging_retarget import build_all
 build_all("<output_dir>", mesh_format=".glb")
 ```
-
-## 7. What An Agent Should Do, In Order
-
-1. Read this skill and the required functions in `vibe_motion_utils`.
-2. Try Vibe Motion first: choose a compatible plan, generate or compose the motion,
-   tune parameters and inspect numerical reports plus target-mesh playback.
-3. Fix function defects in-repo and rerun. If Vibe remains unsuitable or fails QA,
-   select Mixamo/local mocap or direct generation and record the fallback reason.
-4. Run retarget through the operator when FBX is required. Derive the bone map for
-   the actual source and target; do not reuse an unrelated character's mapping.
-5. Validate the exported pose with `inspect_fbx` or Blender motion import, then
-   inspect playback in the target engine. Do not treat root travel as limb motion.
-6. Save source, parameters, reports, licence, facing and scale beside the artifact.

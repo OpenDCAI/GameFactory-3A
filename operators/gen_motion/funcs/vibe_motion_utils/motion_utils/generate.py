@@ -1,4 +1,4 @@
-"""Recover local joint rotations from positional constraints and explicit IK limits."""
+"""Analytic two-bone IK and bounded shoulder/elbow IK."""
 from __future__ import annotations
 
 import numpy as np
@@ -22,7 +22,7 @@ def _orient_bones(clip, chain, upper, lower, normal, rest_pole, epsilon):
         set_world_rotation(clip, joint, rotation)
 
 
-def solve_two_bone(clip, chain, targets, poles, *, flexion, rest_pole, epsilon):
+def solve_two_bone_ik(clip, chain, targets, poles, *, flexion, rest_pole, epsilon):
     """Project unreachable targets to a flexion-limited shell, never stretch bones."""
     a, b, c = chain
     rest = clip.template.rest
@@ -67,7 +67,7 @@ def arm_vectors(angles, side):
     return upper, lower, bend
 
 
-def solve_arm(clip, chain, targets, frame, *, side, limits, preferred_swivel, rest_pole, epsilon):
+def solve_arm_ik(clip, chain, targets, frame, *, side, limits, preferred_swivel, rest_pole, epsilon):
     """Bounded shoulder/elbow IK; report original target error and optimizer failures."""
     a, b, c = chain
     positions, _ = fk(clip)

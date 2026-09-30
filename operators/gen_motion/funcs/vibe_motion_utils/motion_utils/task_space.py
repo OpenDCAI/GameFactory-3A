@@ -4,7 +4,7 @@ from __future__ import annotations
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from .generate import solve_arm, solve_two_bone
+from .generate import solve_arm_ik, solve_two_bone_ik
 from .timing import curve, smooth
 from .units import basis, fk, quat_to_matrix, root_index, set_world_rotation
 
@@ -63,8 +63,8 @@ def _contact_path(plan, spec, times, root):
 def solve_part(clip, plan, spec, times, root):
     """Position/contact IK poles use root-body axes; aim poles use target space.
 
-    rest_pole always specifies the original world-space rest basis. Neither pole
-    is a world-space point. These conventions match the positional limb model.
+    rest_pole uses the original world-space rest basis. Both poles are directions,
+    not world-space points.
     """
     op, p, chain = spec['operator'], spec['params'], spec['joints']
     epsilon = plan.program['solver']['epsilon']
@@ -94,7 +94,7 @@ def solve_part(clip, plan, spec, times, root):
         sign = 1 if spec['side'] == 'L' else -1
         relative = p['scale'] * np.column_stack([sign * lateral, sagittal * np.cos(angle), sagittal * np.sin(angle)])
         target = positions[:, chain[0]] + np.einsum('tij,tj->ti', frame, relative)
-        diagnostics = solve_arm(clip, chain, target, frame, side=spec['side'], limits=p['limits'],
+        diagnostics = solve_arm_ik(clip, chain, target, frame, side=spec['side'], limits=p['limits'],
                                 preferred_swivel=p['preferred_swivel_degrees'], rest_pole=p['rest_pole'], epsilon=epsilon)
         return {chain[-1]: target}, {}, diagnostics
     if op == 'contact_path':
@@ -116,7 +116,7 @@ def solve_part(clip, plan, spec, times, root):
     ankle_offset = plan.template.rest[chain[-1]] - plan.template.rest[chain[2]]
     ankle_target = target - np.einsum('tij,j->ti', rotation, ankle_offset)
     pole = np.einsum('tij,j->ti', root['heading'], p['pole'])
-    diagnostics = solve_two_bone(clip, chain[:3], ankle_target, pole,
+    diagnostics = solve_two_bone_ik(clip, chain[:3], ankle_target, pole,
                                  flexion=p['flexion'], rest_pole=p['rest_pole'], epsilon=epsilon)
     set_world_rotation(clip, chain[2], rotation)
     positions, _ = fk(clip)

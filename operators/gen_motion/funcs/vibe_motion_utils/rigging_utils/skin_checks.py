@@ -1,4 +1,3 @@
-"""Evaluate skin weights and deformation with explicit sampling and thresholds."""
 from __future__ import annotations
 from dataclasses import dataclass
 import numpy as np

@@ -1,4 +1,4 @@
-"""Generate a clip exclusively from an explicit position/rhythm/IK program."""
+"""Sample position/rhythm tracks, solve IK and collect target residuals."""
 from __future__ import annotations
 
 from dataclasses import dataclass

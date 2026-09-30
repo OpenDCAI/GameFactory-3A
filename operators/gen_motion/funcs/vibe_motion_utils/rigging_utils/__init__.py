@@ -1,4 +1,3 @@
-"""Generic mesh rigging, skinning and linear blend deformation functions."""
 from .mesh import BodyFrame, CreatureMesh
 from .types import RigResult
 from .generate import rig_skeleton, reconstruct_joints, reprojection_report

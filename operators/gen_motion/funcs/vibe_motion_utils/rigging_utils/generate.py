@@ -102,7 +102,7 @@ def fit_joint_prior(sections, target, hint, *, config):
 
 
 def rig_skeleton(mesh, *, config):
-    """Topology and visual observations are mandatory; the old tracing fallback is removed."""
+    """Require topology and visual observations before fitting joint windows."""
     p = resolve_rig_config(config)
     raw, triangulation = reconstruct_joints(p['cameras'], p['observations'], config=p['reconstruction'])
     sections, frame, axes = canonical_mesh(mesh, p['up'], p['forward'], vertical=True, config=p['geometry'])

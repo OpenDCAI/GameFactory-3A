@@ -1,4 +1,4 @@
-"""Position-first motion regressions using explicit, self-contained JSON inputs."""
+"""Position-first motion regressions using JSON inputs."""
 from __future__ import annotations
 
 from copy import deepcopy
@@ -591,7 +591,7 @@ class BvhValidationTest(unittest.TestCase):
 
 
 def _preview_frames(config, result):
-    """Render fixed-camera skeleton views; optional dependencies stay test-only."""
+    """Render fixed-camera skeleton views."""
     from PIL import Image, ImageDraw, ImageFont
 
     width, height = 1280, 768
@@ -685,7 +685,7 @@ def _preview_frames(config, result):
 
 
 def evaluate_bound_motion(mesh, rig, weights, config, poles):
-    """Reuse the explicit position/IK action on a newly fitted bind, with fixed skin weights."""
+    """Evaluate a position/IK action on a new bind with fixed skin weights."""
     from operators.gen_motion.funcs.vibe_motion_utils.motion_utils.units import fk, quat_to_matrix
     from operators.gen_motion.funcs.vibe_motion_utils.rigging_utils.skin_units import deform
     action = load_config(config['action']['example'])

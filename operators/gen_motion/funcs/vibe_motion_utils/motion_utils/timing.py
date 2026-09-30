@@ -1,4 +1,4 @@
-"""Event-addressed position curves with explicit interpolation and sample cadence."""
+"""Sample position curves using named events and interpolation modes."""
 from __future__ import annotations
 
 from dataclasses import dataclass

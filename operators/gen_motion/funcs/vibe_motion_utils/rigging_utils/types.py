@@ -1,4 +1,3 @@
-"""Store generic skeleton fitting results without motion recognition."""
 from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
@@ -7,7 +6,6 @@ from .mesh import BodyFrame
 
 @dataclass
 class RigResult:
-    'Result of one rigging pass.'
     name: str
     joints: np.ndarray
     parents: np.ndarray

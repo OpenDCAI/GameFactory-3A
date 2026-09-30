@@ -16,8 +16,6 @@ SUPPORTED_TASK_TYPES = {
     # "cloud_rig"      → TripoRiggingModel only  (analogous to "rig")
     # "cloud_humanoid" → check + rig + animate    (analogous to "humanoid")
     "cloud_rig", "cloud_humanoid",
-    # Zero-weight analytic backend: fits a rig to mesh geometry, solves skin
-    # weights and solves position trajectories with no model and no GPU.
     # "vibe"          → skeleton + skinning + clip
     # "vibe_retarget" → the above, then the normal bpy retarget stage
     "vibe", "vibe_retarget",

@@ -8,7 +8,7 @@ from .rigging_utils.templates import finite_number, integer
 
 
 def fit_skeleton(mesh: Any, *, config: dict) -> Any:
-    """Delegate calibrated cameras, 2D observations, topology and fit windows; no legacy tracing."""
+    """Fit using calibrated cameras, 2D observations, topology and joint windows."""
     return branch.rig_skeleton(mesh, config=config)
 
 
@@ -34,7 +34,7 @@ def mesh_from_arrays(vertices: np.ndarray, faces: np.ndarray, *, name: str) -> A
 
 def rig_to_text(rig: Any, *, precision: int, sum_tolerance: float,
                 max_influences: int, skin: Any | None = None) -> str:
-    """Serialize a hierarchy and optional weights with explicit output policy."""
+    """Serialize a hierarchy and optional weights."""
     from .bvh import _joint_names, validate_hierarchy
 
     parents, joints = validate_hierarchy(rig.parents, rig.joints)
