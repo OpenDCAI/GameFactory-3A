@@ -16,6 +16,9 @@ SUPPORTED_TASK_TYPES = {
     # "cloud_rig"      → TripoRiggingModel only  (analogous to "rig")
     # "cloud_humanoid" → check + rig + animate    (analogous to "humanoid")
     "cloud_rig", "cloud_humanoid",
+    # "vibe"          → skeleton + skinning + clip
+    # "vibe_retarget" → the above, then the normal bpy retarget stage
+    "vibe", "vibe_retarget",
 }
 
 #: Artifact key -> filename, one directory per task.
@@ -38,6 +41,8 @@ _PER_GAME_NAMES = {
     "rig_report_path": "rig_report.json",
     "anim_report_path": "anim_report.json",
     "converted_path": "converted.fbx",
+    "skin_report_path": "skin_report.json",
+    "vibe_report_path": "vibe_report.json",
 }
 
 #: The same artifacts under the flat layout, where one directory holds several
@@ -61,6 +66,8 @@ _LEGACY_SUFFIXES = {
     "rig_report_path": "_rig_report.json",
     "anim_report_path": "_anim_report.json",
     "converted_path": "_converted.fbx",
+    "skin_report_path": "_skin_report.json",
+    "vibe_report_path": "_vibe_report.json",
 }
 
 
@@ -366,6 +373,89 @@ class GenMotionOperator:
             verbose=self.verbose,
         )
 
+    def _vibe(
+        self,
+        outputs: dict[str, Path],
+        inp: dict,
+    ) -> dict[str, Any]:
+        """Generate local procedural rig, skin, motion and optional animated GLB artifacts."""
+        from .funcs.vibe_motion_utils.pipeline import generate_vibe_motion
+
+        legacy = {"preset", "segments", "transitions", "creature", "template", "rig_preset",
+                  "skin_preset", "num_frames", "heading_deg", "skin", "motion_overrides",
+                  "rig_overrides", "skin_overrides", "fps"}.intersection(inp)
+        if legacy:
+            raise ValueError(f"Legacy vibe arguments were removed: {sorted(legacy)}; supply config")
+        config = inp.get("config")
+        if not isinstance(config, dict):
+            raise ValueError("vibe requires an explicit config containing skeleton, rhythm and program")
+        mesh = None
+        has_mesh = bool(inp.get("target_mesh_path") or inp.get("target_glb_path"))
+        if inp.get("task_type", "").lower() == "vibe_retarget":
+            if not has_mesh or not isinstance(config.get("skinning"), dict):
+                raise ValueError("vibe_retarget requires a target mesh and explicit skinning config")
+            rhythm = config.get("rhythm")
+            if not isinstance(rhythm, dict) or "fps" not in rhythm:
+                raise ValueError("vibe_retarget requires config.rhythm.fps")
+            fps = float(rhythm["fps"])
+            if not fps.is_integer() or fps < 1:
+                raise ValueError("vibe_retarget requires positive integer fps; use vibe for fractional-fps BVH")
+        if has_mesh:
+            from .funcs.vibe_motion_utils.skeleton import mesh_from_arrays
+
+            mesh_path = self._target_mesh(inp)
+            vertices, faces = _load_mesh_arrays(mesh_path)
+            mesh = mesh_from_arrays(vertices, faces, name=mesh_path.stem)
+
+        artifacts = generate_vibe_motion(config=config, mesh=mesh)
+
+        _write_bytes(
+            outputs["motion_bvh_path"],
+            artifacts.get("bvh_bytes"),
+            "vibe motion BVH",
+        )
+        for output_key, artifact_key, label in (
+            ("rig_path", "rig_text", "rig"),
+            ("skeleton_path", "skeleton_text", "skeleton"),
+        ):
+            if artifacts.get(artifact_key):
+                _write_text(outputs[output_key], artifacts[artifact_key], label)
+        if artifacts.get("animated_glb_bytes"):
+            _write_bytes(outputs["animated_glb_path"], artifacts["animated_glb_bytes"], "vibe animated GLB")
+        if artifacts.get("mesh_obj_bytes"):
+            _write_bytes(
+                outputs["mesh_obj_path"],
+                artifacts["mesh_obj_bytes"],
+                "vibe mesh OBJ",
+            )
+        for output_key, artifact_key in (
+            ("skin_report_path", "skin_report_json"),
+            ("rig_report_path", "rig_report_json"),
+            ("vibe_report_path", "vibe_report_json"),
+        ):
+            if artifacts.get(artifact_key):
+                path = outputs[output_key]
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(artifacts[artifact_key], encoding="utf-8")
+
+        joints = artifacts.get("joints")
+        if joints is not None:
+            import numpy as np
+
+            outputs["joints_npy_path"].parent.mkdir(parents=True, exist_ok=True)
+            np.save(outputs["joints_npy_path"], joints, allow_pickle=False)
+
+        failures = (artifacts.get("metrics") or {}).get("failures") or []
+        if failures:
+            logger.warning(
+                "[gen_motion] vibe clip %s failed %s",
+                artifacts.get("action"),
+                ", ".join(map(str, failures)),
+            )
+        for note in artifacts.get("notes") or []:
+            logger.info("[gen_motion] vibe: %s", note)
+        return artifacts
+
     def run(self, inp: dict) -> dict:
         """Execute a retarget, rig, text-to-motion or humanoid task."""
         task_type = str(inp.get("task_type", "retarget")).lower()
@@ -384,8 +474,29 @@ class GenMotionOperator:
         rig_artifacts: dict[str, Any] | None = None
         motion_artifacts: dict[str, Any] | None = None
         retarget_artifacts: dict[str, Any] | None = None
+        vibe_artifacts: dict[str, Any] | None = None
 
         t0 = time.time()
+        if task_type in {"vibe", "vibe_retarget"}:
+            vibe_artifacts = self._vibe(outputs, inp)
+            motion_artifacts = vibe_artifacts
+            if task_type == "vibe_retarget":
+                if not all(vibe_artifacts.get(key) for key in (
+                    "rig_text", "mesh_obj_bytes", "bvh_bytes", "skin_report_json",
+                )):
+                    raise RuntimeError("vibe_retarget requires a rig, weighted mesh and BVH from this run")
+                target_mesh = outputs["mesh_obj_path"]
+                target_rig = outputs["rig_path"]
+                source_motion = outputs["motion_bvh_path"]
+                retarget_artifacts = self._retarget(
+                    source_motion,
+                    target_mesh,
+                    target_rig,
+                    outputs,
+                    inp,
+                    fps=int(vibe_artifacts["fps"]),
+                )
+
         if task_type in {"rig", "humanoid"}:
             target_mesh = self._target_mesh(inp)
             rig_artifacts = self._rig(target_mesh, outputs, inp, seed)
@@ -672,6 +783,7 @@ class GenMotionOperator:
             "rig_check_path": _existing_path(outputs["rig_check_path"]),
             "rig_report_path": _existing_path(outputs["rig_report_path"]),
             "anim_report_path": _existing_path(outputs["anim_report_path"]),
+            "skin_report_path": _existing_path(outputs["skin_report_path"]),
             "rig_task_id": (cloud_rig_result or {}).get("task_id"),
             "animation_task_id": (cloud_anim_result or {}).get("task_id"),
             "elapsed_sec": round(elapsed, 2),
@@ -680,6 +792,19 @@ class GenMotionOperator:
             "task_type": task_type,
             "output_dir": str(task_dir),
         }
+
+        if vibe_artifacts is not None:
+            current = {
+                "motion_bvh_path": "bvh_bytes", "joints_npy_path": "joints",
+                "rig_path": "rig_text", "skeleton_path": "skeleton_text",
+                "mesh_obj_path": "mesh_obj_bytes", "skin_report_path": "skin_report_json",
+                "rig_report_path": "rig_report_json", "vibe_report_path": "vibe_report_json",
+                "animated_glb_path": "animated_glb_bytes",
+            }
+            retarget_keys = {"retargeted_fbx_path", "anim_only_fbx_path", "mapping_path", "retarget_info_path"}
+            for key in outputs.keys() - retarget_keys:
+                artifact = current.get(key)
+                result[key] = _existing_path(outputs[key]) if artifact and vibe_artifacts.get(artifact) is not None else None
 
         if self.output_dir is None:
             from pipeline.common import paths
@@ -701,9 +826,10 @@ class GenMotionOperator:
                         str(target_rig) if target_rig else None
                     ),
                     "fps": (
-                        int((motion_artifacts or {}).get("fps", 20))
-                        if motion_artifacts
-                        else int(inp.get("fps", 30))
+                        float(vibe_artifacts["fps"]) if vibe_artifacts is not None else (
+                            int((motion_artifacts or {}).get("fps", 20))
+                            if motion_artifacts else int(inp.get("fps", 30))
+                        )
                     ),
                     "puppeteer_joint_count": (
                         (rig_artifacts or {}).get("joint_count")
@@ -725,6 +851,22 @@ class GenMotionOperator:
         from .metrics import evaluate
 
         return evaluate(result, task)
+
+
+def _load_mesh_arrays(path: Path) -> tuple[Any, Any]:
+    """Read a mesh file into ``(vertices, faces)`` with vertex order preserved."""
+    import numpy as np
+    import trimesh
+
+    mesh = trimesh.load(
+        str(path), force="mesh", process=False, maintain_order=True
+    )
+    if isinstance(mesh, trimesh.Scene):
+        mesh = mesh.dump(concatenate=True)
+    return (
+        np.asarray(mesh.vertices, dtype=np.float64),
+        np.asarray(mesh.faces, dtype=np.int64),
+    )
 
 
 def _write_text(path: Path, value: Any, label: str) -> None:

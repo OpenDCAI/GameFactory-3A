@@ -1,0 +1,43 @@
+{
+  "source": {"url": "https://threejs.org/examples/models/obj/male02/male02.obj", "normalization": {"height": 1.8, "weld_tolerance_ratio": 0.00001}},
+  "projection": {
+    "width": 1024, "height": 1024, "padding_ratio": 0.06,
+    "views": {
+      "front": {"right": [1,0,0], "up": [0,1,0]},
+      "side": {"right": [0,0,1], "up": [0,1,0]},
+      "opposite": {"right": [0,0,-1], "up": [0,1,0]},
+      "back": {"right": [-1,0,0], "up": [0,1,0]},
+      "front_left": {"right": [0.7071067811865476,0,-0.7071067811865476], "up": [0,1,0]},
+      "front_right": {"right": [0.7071067811865476,0,0.7071067811865476], "up": [0,1,0]}
+    }
+  },
+  "estimation": {"timeout": 120, "max_retries": 0, "max_tokens": 8192, "temperature": 0.0},
+  "rigging": {
+    "name": "visual_landmarks", "up": [0,1,0], "forward": [0,0,1],
+    "task": "Identify the humanoid pose and connect the requested control chains. Estimate joint centers inside the body, not skin surface points. L/R are anatomical sides; +X is L in the configured body basis. Preserve observed asymmetry. Do not invent a T-pose or mirror an occluded limb.",
+    "requested_chains": {
+      "spine": {"joints": ["spine.0","spine.1","spine.2","spine.3","spine.4"], "meaning": "pelvis, abdomen, chest, neck base, head center", "fit": {"radius": [0.065,0.02,0.12], "axis": 1, "strength": 0.94, "allow_open": true}},
+      "arm.L": {"joints": ["arm.L.0","arm.L.1","arm.L.2"], "meaning": "left shoulder, elbow, wrist", "fit": {"radius": [0.05,0.02,0.065], "axis": 1, "strength": 0.94, "allow_open": true}},
+      "arm.R": {"joints": ["arm.R.0","arm.R.1","arm.R.2"], "meaning": "right shoulder, elbow, wrist", "fit": {"radius": [0.05,0.02,0.065], "axis": 1, "strength": 0.94, "allow_open": true}},
+      "leg.L": {"joints": ["leg.L.0","leg.L.1","leg.L.2","leg.L.3"], "meaning": "left hip, knee, ankle, toe", "fit": {"radius": [0.045,0.02,0.08], "axis": 1, "strength": 0.94, "allow_open": true}},
+      "leg.R": {"joints": ["leg.R.0","leg.R.1","leg.R.2","leg.R.3"], "meaning": "right hip, knee, ankle, toe", "fit": {"radius": [0.045,0.02,0.08], "axis": 1, "strength": 0.94, "allow_open": true}}
+    },
+    "reconstruction": {"max_reprojection_pixels": 8.0, "max_fitted_reprojection_pixels": 24.0, "max_condition": 100.0, "axis_tolerance": 1e-8, "conflict_policy": "retain_annotation"},
+    "geometry": {"section_resolution": 25, "section_vertex_tolerance": 1e-10, "section_plane_nudge": 1e-9, "section_weld_tolerance": 1e-8, "clearance_chunk_size": 256, "prior_distance_gain": 20.0, "open_quantiles": [0.1,0.9], "min_open_endpoints": 4, "epsilon": 1e-12}
+  },
+  "skin_regions": {"midline_overlap": 0.015, "torso_half_width": 0.085, "torso_min_y": -0.055, "torso_max_y": 0.27, "head_min_y": 0.32, "leg_max_y": 0.015, "arm_min_y": -0.01, "arm_max_y": 0.31, "torso_spine_bias": 6.0, "transition_width": 0.045, "soft_floor": 0.01},
+  "object_bones": {"mesh2.002_mesh2-geometry": ["leg.L.2","leg.L.3"], "mesh3.002_mesh3-geometry": ["leg.R.2","leg.R.3"], "mesh4.002_mesh4-geometry": ["spine.4"], "mesh5.002_mesh5-geometry": ["spine.4"], "mesh6.002_mesh6-geometry": ["spine.4"], "mesh7.002_mesh7-geometry": ["spine.4"], "mesh8.002_mesh8-geometry": ["spine.4"], "mesh9.002_mesh9-geometry": ["arm.L.1","arm.L.2"], "mesh10.002_mesh10-geometry": ["arm.R.1","arm.R.2"]},
+  "cloth_object": "mesh1.002_mesh1-geometry",
+  "seams": {
+    "wrist.L": {"object": "mesh9.002_mesh9-geometry", "joint": "arm.L.2", "radius_ratio": 0.04, "segment_start": "arm.L.1", "min_segment_fraction": 0.72},
+    "wrist.R": {"object": "mesh10.002_mesh10-geometry", "joint": "arm.R.2", "radius_ratio": 0.04, "segment_start": "arm.R.1", "min_segment_fraction": 0.72},
+    "ankle.L": {"object": "mesh2.002_mesh2-geometry", "joint": "leg.L.2", "radius_ratio": 0.06, "segment_start": "leg.L.1", "min_segment_fraction": 0.85},
+    "ankle.R": {"object": "mesh3.002_mesh3-geometry", "joint": "leg.R.2", "radius_ratio": 0.06, "segment_start": "leg.R.1", "min_segment_fraction": 0.85}
+  },
+  "seam_max_gap_ratio": 0.025,
+  "orientation": {"candidate_prebend_ratios": [0.012,0.02], "max_displacement_ratio": 0.08, "max_length_change_ratio": 0.05, "min_enclosure_fraction": 0.85, "max_enclosure_drop": 0.1, "min_improvement": 0.001, "max_reprojection_pixels": 24.0, "epsilon": 1e-8},
+  "probe_parts": {"step_a": {"chain": ["leg.L.0","leg.L.1","leg.L.2"], "forward": [0,0,1]}, "step_b": {"chain": ["leg.R.0","leg.R.1","leg.R.2"], "forward": [0,0,1]}},
+  "score_weights": {"log_strain_p99": 1.0, "twist_p95": 0.4, "rotation_step": 0.15, "foot_error": 3.0, "ground_penetration": 3.0},
+  "action": {"example": "turn_jump_chop", "scale": 1.0, "ground_height": 0.0, "metric_quantiles": [0.01,0.95,0.99], "joint_map": {"pelvis": "spine.0", "spine": "spine.1", "chest": "spine.2", "neck": "spine.3", "head": "spine.4", "shoulder_a": "arm.L.0", "elbow_a": "arm.L.1", "wrist_a": "arm.L.2", "shoulder_b": "arm.R.0", "elbow_b": "arm.R.1", "wrist_b": "arm.R.2", "hip_a": "leg.L.0", "knee_a": "leg.L.1", "ankle_a": "leg.L.2", "toe_a": "leg.L.3", "hip_b": "leg.R.0", "knee_b": "leg.R.1", "ankle_b": "leg.R.2", "toe_b": "leg.R.3"}},
+  "skinning": {"kernel": "gaussian", "falloff": 5.0, "radius_scale": 0.3, "max_influences": 4, "floor": 0.0001, "smooth_iterations": 0, "smooth_rate": 0.6, "bone_convention": "outgoing", "distance_epsilon_ratio": 1e-6, "sum_tolerance": 1e-9, "screening": 0.08, "edge_epsilon_ratio": 1e-6}
+}
