@@ -1,4 +1,4 @@
-"""Analytic two-bone IK and bounded shoulder/elbow IK."""
+"""Bounded N-node hinge-chain IK (closed form for two bones) and bounded shoulder/elbow IK."""
 from __future__ import annotations
 
 import numpy as np
@@ -22,8 +22,11 @@ def _orient_bones(clip, chain, upper, lower, normal, rest_pole, epsilon):
         set_world_rotation(clip, joint, rotation)
 
 
-def solve_two_bone_ik(clip, chain, targets, poles, *, flexion, rest_pole, epsilon):
-    """Project unreachable targets to a flexion-limited shell, never stretch bones."""
+def _two_bone_closed_form(clip, chain, targets, poles, *, flexion, rest_pole, epsilon):
+    """Closed-form branch of ``solve_chain_ik`` for one hinge bent toward the pole.
+
+    Unreachable targets are projected to the flexion-limited shell; bones never stretch.
+    """
     a, b, c = chain
     rest = clip.template.rest
     l1 = np.linalg.norm(rest[b] - rest[a])
@@ -54,6 +57,129 @@ def solve_two_bone_ik(clip, chain, targets, poles, *, flexion, rest_pole, epsilo
     return {'residual': np.linalg.norm(actual[:, c] - targets, axis=-1),
             'flex_degrees': flex, 'projected_distance': np.abs(distance_requested - distance),
             'limit_violation_degrees': np.maximum(np.maximum(flexion[0] - flex, flex - flexion[1]), 0)}
+
+
+def chain_flexion_bounds(flexion, interior):
+    """One signed (low, high) pair shared by every interior hinge, or one pair per hinge."""
+    bounds = np.asarray(flexion, float)
+    if bounds.shape == (2,):
+        bounds = np.tile(bounds, (interior, 1))
+    if bounds.shape != (interior, 2) or not np.isfinite(bounds).all():
+        raise ValueError(f'Chain flexion needs one bound pair or {interior} pairs')
+    if np.any(bounds[:, 0] <= -180) or np.any(bounds[:, 1] >= 180) or np.any(bounds[:, 0] >= bounds[:, 1]):
+        raise ValueError('Chain flexion bounds must be increasing pairs inside (-180,180)')
+    return bounds
+
+
+def _planar_end(params, lengths):
+    angles = params[0] - np.concatenate([[0.], np.cumsum(params[1:])])
+    return angles, np.array([lengths @ np.cos(angles), lengths @ np.sin(angles)])
+
+
+def _solve_planar(lengths, distance, bounds, preferred, solver):
+    """Bounded planar hinge chain: reach ``distance`` along +x, prefer the bind-pose flexion."""
+    scale = lengths.sum()
+    goal = np.array([distance, 0.])
+    low = np.r_[-np.pi, bounds[:, 0]]
+    high = np.r_[np.pi, bounds[:, 1]]
+
+    def position(x):
+        return (_planar_end(x, lengths)[1] - goal) / scale
+
+    def position_jacobian(x):
+        angles = _planar_end(x, lengths)[0]
+        tangent = lengths[:, None] * np.column_stack([-np.sin(angles), np.cos(angles)])
+        tail = np.cumsum(tangent[::-1], axis=0)[::-1]
+        return np.column_stack([tail[0], -tail[1:].T]) / scale
+
+    def regularized(x):
+        return np.r_[position(x), solver['regularization'] * (x[1:] - preferred)]
+
+    def regularized_jacobian(x):
+        prior = np.zeros((len(preferred), len(x)))
+        prior[:, 1:] = solver['regularization'] * np.eye(len(preferred))
+        return np.vstack([position_jacobian(x), prior])
+
+    tolerance = solver['tolerance']
+    best = None
+    for shape in (preferred, (bounds[:, 0] + bounds[:, 1]) / 2):
+        start = np.r_[0., np.clip(shape, bounds[:, 0], bounds[:, 1])]
+        start[0] = -np.arctan2(*_planar_end(start, lengths)[1][::-1])
+        first = least_squares(regularized, np.clip(start, low, high), jac=regularized_jacobian, bounds=(low, high),
+                              max_nfev=solver['max_nfev'], xtol=tolerance, ftol=tolerance, gtol=tolerance)
+        final = least_squares(position, first.x, jac=position_jacobian, bounds=(low, high),
+                              max_nfev=solver['max_nfev'], xtol=tolerance, ftol=tolerance, gtol=tolerance)
+        error = float(np.linalg.norm(position(final.x)))
+        key = (round(error, 12), float(np.linalg.norm(final.x[1:] - preferred)))
+        # At zero residual SciPy may stop on max_nfev; a reached target counts as converged.
+        reached = error <= np.sqrt(tolerance)
+        if best is None or key < best[0]:
+            best = (key, final.x, bool(first.success and (final.success or reached)))
+    return best[1], best[2]
+
+
+def solve_chain_ik(clip, chain, targets, poles, *, flexion, rest_pole, solver, epsilon):
+    """Bounded hinge-chain IK for three or more contiguous nodes; bone lengths never change.
+
+    Interior nodes bend in the pole plane. Two bones use a closed form with one ``flexion``
+    pair in (0, 180) and ``solver=None``. Longer chains are solved per sample with ``solver``
+    and signed bounds (positive toward the pole), preferring the rest-pose flexion.
+    Unreachable targets return the nearest bounded pose; ``residual`` is measured against
+    the requested target. Twist and out-of-plane bending are not modelled.
+    """
+    chain = [int(j) for j in chain]
+    if len(chain) == 3:
+        if solver is not None:
+            raise ValueError('Two-bone chains use the closed form; omit chain_solver')
+        low, high = np.asarray(flexion, float)
+        if not 0 < low < high < 180:
+            raise ValueError('Two-bone flexion bounds must lie inside (0,180)')
+        return _two_bone_closed_form(clip, chain, targets, poles, flexion=flexion,
+                                     rest_pole=rest_pole, epsilon=epsilon)
+    if solver is None:
+        raise ValueError('Chains with three or more bones need explicit solver settings')
+    rest = clip.template.rest
+    segments = rest[chain[1:]] - rest[chain[:-1]]
+    lengths = np.linalg.norm(segments, axis=1)
+    if len(chain) < 3 or lengths.min() <= epsilon:
+        raise ValueError('Chain IK needs at least three nodes and nonzero bones')
+    bounds = np.deg2rad(chain_flexion_bounds(flexion, len(chain) - 2))
+    rest_axis = unit(rest[chain[-1]] - rest[chain[0]], epsilon=epsilon)
+    rest_frame = basis(rest_axis, rest_pole, epsilon=epsilon)
+    rest_lateral, rest_normal = rest_frame[:, 1], rest_frame[:, 2]
+    planar = np.column_stack([segments @ rest_axis, segments @ rest_lateral])
+    angles = np.arctan2(planar[:, 1], planar[:, 0])
+    preferred = np.clip(angles[:-1] - angles[1:], bounds[:, 0], bounds[:, 1])
+    positions, _ = fk(clip)
+    origin = positions[:, chain[0]]
+    delta = targets - origin
+    requested = np.linalg.norm(delta, axis=-1)
+    direction = unit(np.where((requested > epsilon)[:, None], delta, rest_axis), epsilon=epsilon)
+    lateral = basis(direction, poles, epsilon=epsilon)[:, :, 1]
+    count = len(targets)
+    flex = np.zeros((count, len(chain) - 2))
+    points = np.zeros((len(chain), count, 3))
+    points[0] = origin
+    success = np.zeros(count, bool)
+    for i in range(count):
+        params, success[i] = _solve_planar(lengths, requested[i], bounds, preferred, solver)
+        theta = _planar_end(params, lengths)[0]
+        steps = lengths[:, None] * (np.cos(theta)[:, None] * direction[i] + np.sin(theta)[:, None] * lateral[i])
+        points[1:, i] = origin[i] + np.cumsum(steps, axis=0)
+        flex[i] = params[1:]
+    normal = unit(np.cross(direction, lateral), epsilon=epsilon)
+    for k, joint in enumerate(chain[:-1]):
+        desired = points[k + 1] - points[k]
+        rest_tangent = np.cross(rest_normal, segments[k] / lengths[k])
+        rotation = (basis(desired, np.cross(normal, unit(desired, epsilon=epsilon)), epsilon=epsilon)
+                    @ basis(segments[k], rest_tangent, epsilon=epsilon).T)
+        set_world_rotation(clip, joint, rotation)
+    actual, _ = fk(clip)
+    violation = np.maximum(bounds[:, 0] - flex, flex - bounds[:, 1])
+    return {'residual': np.linalg.norm(actual[:, chain[-1]] - targets, axis=-1),
+            'flex_degrees': np.degrees(flex), 'projected_distance': np.linalg.norm(points[-1] - targets, axis=-1),
+            'solver_success': success,
+            'limit_violation_degrees': np.degrees(np.maximum(violation, 0)).max(axis=1)}
 
 
 def arm_vectors(angles, side):
