@@ -85,8 +85,8 @@ scene, viewport and action trace. Preserve prompts and raw outputs for generatio
 comparisons. Report readability and comfort observations beside objective metrics;
 passing tests alone do not establish better feel. Change one presentation setting
 at a time, rerun the same trace, and update this skill from reproducible observations.
-Use `engine_adapters/three_js/examples/generated-camera-study/` for the bounded
-independent camera-module pair, with its explicit limitations.
+Use `engine_adapters/three_js/examples/camera-comparison/` for reference-camera
+and generated-module comparisons; one generated pair does not establish general effectiveness.
 Choose a lateral composition when player/target silhouettes obscure the action,
 then verify both actors in the actual game. Numeric defaults stay game-specific.
 

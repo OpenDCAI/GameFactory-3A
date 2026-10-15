@@ -142,19 +142,12 @@ three.plugin.install(
 this directory. Copying an example by hand bypasses the registry and the
 dependency synchronization that `plugin.install` performs.
 
-## Camera comparison fixture
+## Optional camera fixtures
 
-`game-feel-comparison/` is an inspection fixture, not an installable Gameplay
-Package. It compares identical traces with main's Orbit view and the arena chase
-profile, provides raw 30/60/120 Hz framing measurements, and runs in the plugin
-Vitest suite. See its README for replay and measurement commands.
+| Directory | Purpose |
+|---|---|
+| `camera-comparison/` | Shared preview, measurements and tests for static/chase and generated camera pairs |
+| `boss-action-demo/` | Authored combat prototype with action camera, live input and recording |
 
-`generated-camera-study/` preserves a separate, single independent native-agent
-camera-module pair with skill context disabled/enabled, full prompts, raw outputs,
-hashes and identical-trace measurements. Its README explains tradeoffs and limits;
-neither fixture claims a full game-pipeline or subjective comfort study.
-
-`boss-action-demo/` is an original playable prototype and authored action-camera
-inspection fixture. It shows strikes, vertical launch/landing, bounded event-aware
-shots, reduced motion and a real canvas recorder. See its README for replay/live
-controls and clear distinctions from the independent generated-module pair.
+These are not required runtime packages. See each README for replay commands;
+framing tests do not establish general SKILL effectiveness or visual comfort.
