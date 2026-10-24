@@ -1,0 +1,6 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<title>Camera comparison</title><style>body{font:16px system-ui;background:#111b27;color:#e9f3ff;margin:24px}main{display:flex;gap:12px;flex-wrap:wrap}canvas{width:min(640px,90vw);height:auto}button,input,select{margin:8px}pre{white-space:pre-wrap}</style>
+<h1>Camera comparison</h1><p>Same actors and trace. Blue: player; orange: target. Projection metrics are not comfort scores.</p>
+<label>Pair <select id="mode"><option value="reference">Static / chase</option><option value="generated">No SKILL / SKILL</option></select></label>
+<button id="replay">Replay</button><button id="record">Record 18 seconds</button><span id="capture-status"></span><label><input id="reduced" type="checkbox">Reduced motion</label><label>Inspect time <input id="seek" type="range" min="0" max="8" step="0.01" value="0"></label>
+<main><section><h2 id="before-label">static</h2><canvas id="before"></canvas></section><section><h2 id="after-label">chase</h2><canvas id="after"></canvas></section></main><pre id="report"></pre><script type="module" src="./preview.js"></script></html>

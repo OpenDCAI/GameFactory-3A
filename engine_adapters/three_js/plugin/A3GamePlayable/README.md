@@ -1,390 +1,135 @@
 # A3GamePlayable (three.js)
 
-Runtime extension contracts for generated three.js gameplay packages.
-This is the adapter-owned framework; it is the web counterpart of the
-UE5 `A3GamePlayable` plugin.
+Adapter-owned runtime for generated three.js Gameplay Packages. Gameplay owns
+entities, input mappings, combat and scoring; the framework owns rendering,
+sessions, assets, input transport, animation, queries and presentation.
 
-Install it with the public adapter API, never by copying files:
+## Install and import
+
+Install through the adapter, not by copying files:
 
 ```python
 from engine_adapters.three_js import ThreeClient
 
-three = ThreeClient(project_path="/path/to/project")
+three = ThreeClient(project_path="<project_path>")
 three.plugin.install_framework()
 ```
 
-## Import surface
-
 ```js
-import {
-  A3GameRuntimeHost,
-  A3GameEnvironmentPreset,
-  A3GameAssetLibrary,
-  A3GameSceneLoader,
-  A3GameInputRouter,
-  A3GameLookMode,
-  A3GameAnimationDirector,
-  A3GameCollisionProbe,
-  A3GameHudLayer,
-  A3GameMaterialPreset,
-  A3GameRuntimeSubsystem,
-  A3GameWorldSessionSubsystem,
-  A3GameCinematicPlayer,
-  A3GameRuntimeEntityComponent,
-  A3GameEntityFactory,
-  A3GameControllableEntity,
-  bootA3GameRuntime,
-  createContactShadow,
-  createFillLight,
-  createInstancedFromModel,
-  createMaterial,
-  createRoundedBox,
-  createSeededRandom,
-  createSunLight,
-  disposeObject3D,
-  fitToHeight,
-  forwardAxisYaw,
-  groundObject,
-  measureObject,
-  orientModel,
-  prepareModel,
-  resolveEntityId,
-  A3GameForwardAxis,
-  A3GAME_RUNTIME_FORWARD_AXIS,
-} from '@a3game/playable';
+import { A3GameRuntimeHost, bootA3GameRuntime } from '@a3game/playable';
 ```
 
-`A3GameCinematicPlayer` submits a canonical CG-video task to the configured
-Browser Serving gateway, waits for its artifact URL, and owns the temporary
-`<video>` element. Gameplay chooses when to trigger a clip and remains
-responsible for any game-state transition around playback.
+Use public exports, not deep `src/` imports. `three` is a host-supplied peer
+dependency. The export list is in `engine_adapters/three_js/plugin/A3GamePlayable/src/index.js`;
+API guidance is in `agent_skills/engine_context/three_js_api.md`.
+Runnable Gameplay Packages are in `engine_adapters/three_js/examples/`.
 
-Deep imports into `src/` are not part of the contract. `three` is a peer
-dependency supplied by the host project.
+## Collision queries
 
-## Choosing a collision primitive
+`A3GameCollisionProbe` provides queries, not a physics engine:
 
-three.js ships no physics engine, so `A3GameCollisionProbe` supplies the
-primitives every generated game needs. Picking the wrong one is the most
-common gameplay bug:
+| Query | Method |
+|---|---|
+| Ground height | `sampleGround` |
+| Character movement | `resolveMove`, `stepCharacter` |
+| Instant shot | `hitscan` |
+| Nearby targets/triggers | `overlapSphere` |
+| Projectile segment | `sweepSphere` |
 
-| Question | Primitive |
-| --- | --- |
-| What is under me? | `sampleGround` |
-| Can I move there? | `resolveMove` / `stepCharacter` |
-| What did I shoot, instantly? | `hitscan` |
-| What is **near** me? | `overlapSphere` |
-| Where did my projectile go this frame? | `sweepSphere` |
+`overlapSphere` treats geometry-free markers as points. `sweepSphere` tests the
+travelled segment. Update world matrices before querying newly moved objects.
 
-`overlapSphere` treats a target with no geometry as a point at its world
-position, so bare `Object3D` markers work as triggers. `sweepSphere`
-tests the whole travelled segment, so a fast projectile cannot tunnel
-through a thin wall.
+## Cameras and lighting
 
-## Cameras
+The host supports perspective and orthographic cameras (`cameraType`,
+`frustumHeight`, `usePerspectiveCamera`, `useOrthographicCamera`, `setFrustumHeight`).
+For custom first-person yaw/pitch, use `requestPointerLock`; do not attach another
+control that also writes the camera.
 
-`A3GameRuntimeHost` supports both projections. Pass
-`cameraType: 'orthographic'` (with `frustumHeight`) for a side-scrolling
-or isometric game, or switch at runtime with `useOrthographicCamera()` /
-`usePerspectiveCamera()`. `setFrustumHeight()` rescales an orthographic
-view cheaply enough to call every frame.
+`setEnvironment({ preset: 'sky' })` or `'room'` generates environment lighting
+without an HDR asset. Use `createSunLight` with a map-sized shadow radius,
+`createFillLight`, and `A3GameMaterialPreset` for primitive materials.
 
-For a first-person game that derives `yaw`/`pitch` from the input frame,
-use `requestPointerLock()` rather than `attachPointerLockControls()`:
-`PointerLockControls` writes the camera itself, and two authors fighting
-over one camera produces jitter.
+## Models and instancing
 
-## Looking good without art
+`A3GameAssetLibrary.tryInstantiate` and `instantiateOrBuild` call `prepareModel`.
+Set `height` for scale and `ground` for placement. Model orientation comes from
+manifest `orientation.forward_axis`; override with `forwardAxis` or disable with
+`orient: false`. Runtime local forward is -Z. Orientation correction stays inside
+a wrapper so gameplay yaw does not undo it; unannotated assets are not rotated.
+Set `frustumCulled: false` on skinned characters if bind-pose bounds cause clipping.
 
-three.js ships no models, so a generated game's appearance comes from
-these calls rather than from finding an asset:
+`createInstancedFromModel` bakes source transforms and returns `null` for skinned
+or multi-part models. Keep separate collision proxies: invisible meshes can still
+participate in raycasts. A missing manifest is allowed; check `assets.available`
+and `warnings`, or set `requireManifest: true`.
 
-```js
-host.setEnvironment({
-  preset: 'sky',                // or 'room' for an interior
-  sunPosition: sunDirection,
-  toneMapping: 'ACESFilmicToneMapping',
-  toneMappingExposure: 0.7,
-});
-host.add(createSunLight({ radius: 120 }), 'lights');   // fitted shadows
-host.add(createFillLight(), 'lights');
-const prop = createRoundedBox({ width: 2, depth: 4, preset: 'painted_metal' });
-```
+## Lifecycle
 
-`setEnvironment({ preset })` generates image-based lighting on the GPU
-from `RoomEnvironment` or the `Sky` shader — no `.hdr` file, no licence.
-It matters more than any other single call: without an environment map a
-PBR material has nothing to reflect and reads as flat plastic no matter
-how it is lit.
+- Register `input.pipeToSession()` and AI input producers before
+  `A3GameRuntimeSubsystem.onWorldBeginPlay()`. Use `autoBeginPlay: false` to control ordering.
+- Entities implement runtime identity, input and snapshot contracts; factories
+  implement spawning. See the example packages rather than duplicating them here.
+- Release owned geometry, materials and textures with `disposeObject3D(root)`;
+  shared resources need a separate owner. Unsubscribe callbacks on scene exit.
+- `A3GameCinematicPlayer` owns video playback through the configured Browser
+  Serving gateway; gameplay owns the surrounding state transitions.
 
-`createSunLight` exists because the stock `DirectionalLight` shadow
-camera is a 10-metre box at the origin, so a large map gets no shadow at
-all; it also prefers `normalBias`, which scales with the geometry, over a
-flat `bias` that is only correct at one distance.
+## Feedback and camera ownership
 
-`A3GameMaterialPreset` keeps materials physically honest: a surface is a
-conductor or it is not, so dielectrics stay at `metalness: 0` and get
-their shine from `clearcoat`.
-
-## Imported models
-
-`GLTFLoader` output is never scene-ready, so both loading helpers run
-`prepareModel` for you:
+`A3GameFeedback` consumes confirmed events and returns camera-local offset/FOV
+pulses; it does not mutate simulation or the camera. `A3GameCameraRig` owns the
+final pose. Use an unparented camera and detach other controls.
 
 ```js
-// Build-from-scratch content: use the model, or the primitive version.
-const built = await assets.instantiateOrBuild('robot_expressive',
-  () => buildPrimitiveBody(), { height: 1.8, ground: true });
-
-// Existing content being upgraded.
-const loaded = await assets.tryInstantiate('fox', { height: 0.85 });
-if (loaded) entity.setVisual(loaded.object, loaded.animations);
-```
-
-Two problems have no glTF-level solution and are handled there:
-
-- **scale** — every model arrives in the author's unit of choice, so
-  normalise with `height` rather than a magic constant. When the adapter
-  recorded a `scale_hint_metres`, it is used as the default;
-- **shadows** — glTF cannot express `castShadow`, so every mesh loads
-  with it false.
-
-A third has no glTF-level solution either, and unlike the other two it
-cannot even be detected:
-
-- **facing** — a model authored facing +Z and the same model facing -Z
-  produce identical files. The framework's convention is **local forward
-  = -Z**, matching `Math.atan2(-x, -z)`, and the manifest's
-  `orientation.forward_axis` says which way the model actually faces. The
-  correction is applied to the model inside a wrapper `Group`, and the
-  wrapper is what you receive — so assigning `visual.rotation.y` for
-  gameplay facing cannot undo it. Override with
-  `{ forwardAxis: '+x' }`, or opt out with `{ orient: false }`.
-
-  ```js
-  // Equivalent, when a game knows better than the manifest:
-  orientModel(model, { forwardAxis: '+z' });        // rotates in place
-  forwardAxisYaw('+z');                            // → Math.PI
-  ```
-
-  With nothing recorded, nothing rotates: an unannotated asset behaves
-  exactly as it did before this existed.
-
-Set `frustumCulled: false` on a skinned character, which is otherwise
-culled on its bind-pose bounds and blinks out at the screen edge.
-
-## Many copies of one model
-
-A character is one model; scenery is seventy-four trees, and instantiating
-a generated body per placement is what makes a generated game slow rather
-than merely plain — seventy-four draw calls and seventy-four copies of
-tens of thousands of triangles.
-
-```js
-const loaded = await assets.tryInstantiate('explorer_pine', { height: 9 });
-const trees = createInstancedFromModel(loaded.object, placements.length);
-if (trees) {
-  placements.forEach((holder, index) => {
-    trees.setMatrixAt(index, matrixFor(holder));
-    holder.visible = false;       // keep it as the collision volume
-  });
-  trees.instanceMatrix.needsUpdate = true;
-  host.add(trees, 'environment');
-}
-```
-
-`createInstancedFromModel` bakes the source model's transform into the
-geometry, so a model already fitted with `height` keeps its metre size and
-each instance matrix only says where a copy goes. It returns `null` for
-skinned or multi-part models instead of flattening them — losing a
-skeleton is not something to discover at runtime — so the caller keeps
-whatever it was drawing.
-
-Hiding the primitive rather than removing it is the point: `Raycaster`
-does not test `visible` and `Mesh.raycast` only needs a material, so an
-invisible box still blocks movement and stops a hitscan, far more cheaply
-than the art would. Cover that looks solid stays solid.
-
-## Tick ordering
-
-`A3GameRuntimeSubsystem.onWorldBeginPlay()` installs the tick that
-delivers queued input to entities. Register `input.pipeToSession()` — and
-any AI that enqueues frames — *before* it, or every input frame arrives
-one frame late. `bootA3GameRuntime({ autoBeginPlay: false })` hands that
-ordering to the game.
-
-## Assets are optional
-
-`A3GameAssetLibrary.load()` tolerates a missing manifest and records the
-reason in `warnings`, because a procedurally built game imports nothing.
-Check `assets.available` before reaching for an artifact, or pass
-`requireManifest: true` when the game genuinely cannot run without
-imported content.
-
-## What the framework owns
-
-| Layer | Responsibility |
-| --- | --- |
-| `data-types/` | Generic runtime data contract, identical wire format across Python and the browser |
-| `interfaces/` | The three contracts generated gameplay implements |
-| `components/` | Runtime identity and entity state attached to a `THREE.Object3D` |
-| `subsystems/` | Session ownership, input arbitration, runtime coordination |
-| `engine/` | Renderer, frame loop, asset manifest, world scene graph, input, animation, raycast probes, HUD, control channel |
-
-## What the framework does not own
-
-No Character, Pawn, Controller, GameMode, HUD content, weapon, vehicle,
-combat rule, scoring rule, or game-specific input mapping. Generated
-Gameplay Packages own all of that.
-
-## Minimal generated gameplay
-
-```js
-import * as THREE from 'three';
-import {
-  A3GameControllableEntity,
-  A3GameEntityFactory,
-  A3GameRuntimeEntityComponent,
-} from '@a3game/playable';
-
-class MyPawn extends A3GameControllableEntity {
-  constructor(object) {
-    super();
-    this.object = object;
-    this.runtime = new A3GameRuntimeEntityComponent(object);
-  }
-
-  getRuntimeEntityId() {
-    return this.runtime.entityId;
-  }
-
-  setRuntimeEntityId(entityId) {
-    this.runtime.setRuntimeEntityId(entityId);
-  }
-
-  applyRuntimeInput(inputState) {
-    // Concrete movement rules belong here, not in the framework.
-    return this.runtime.applyRuntimeInput(inputState);
-  }
-
-  getRuntimeSnapshot() {
-    return this.runtime.getRuntimeSnapshot();
-  }
-}
-
-export class MyEntityFactory extends A3GameEntityFactory {
-  async spawnRuntimeEntity(request, { host, assets }) {
-    const { object } = await assets.instantiate(
-      request.parameters.avatarArtifactId,
-    );
-    host.add(object, 'entities');
-    return new MyPawn(object);
-  }
-}
-```
-
-## Resource discipline
-
-three.js never frees GPU memory automatically. Every entity must release
-its own geometry, materials, and textures; `disposeObject3D(root)` does
-the traversal. Forgetting this is the most common failure in generated
-web games.
-
-A second, quieter trap: a raycast reads `matrixWorld`, and the renderer
-only refreshes it at render time. An object that spawns or moves and is
-probed in the same frame must call `object.updateMatrixWorld(true)`
-first, or it is tested at the origin.
-
-## Gameplay feedback and camera framing
-
-`A3GameFeedback` consumes confirmed gameplay events and returns camera-local
-translation/FOV pulses; it never changes simulation or mutates the camera.
-`A3GameCameraRig` is the final camera owner and combines a separately stored base
-pose with those pulses. Use an unparented camera and detach other controls.
-
-```js
-import * as THREE from 'three';
 import { A3GameFeedback, A3GameCameraRig } from '@a3game/playable';
 
 host.detachControls();
 const feedback = new A3GameFeedback({ haptics: false, intensity: 0.6 });
-const rig = new A3GameCameraRig(host.camera, {
-  offset: new THREE.Vector3(0, 4, 7),
-  focusOffset: new THREE.Vector3(0, 1.2, 0),
-  response: 8, fov: 55, occlusionTargets: staticCameraBlockers,
-});
-const offEvent = mechanic.onEvent(event => {
-  if (event.type === 'confirmed_impact' && event.recipientId === localPlayerId) {
-    feedback.trigger({ strength: 0.08, duration: 0.18, fovKick: 1, vibrationMs: 35 });
-  }
-});
+const rig = new A3GameCameraRig(host.camera);
 const offRender = host.onRender(dt => {
   rig.update(dt, playerFocusWorldPosition(), {
     ...feedback.update(dt), reducedMotion: feedback.reducedMotion,
   });
 });
-// Activity switch: exponential blend from current base framing.
-rig.setShot({ offset: new THREE.Vector3(2, 2, 4), fov: 45 });
-// Settings apply immediately. null reducedMotion restores the OS preference.
-feedback.setPreferences({ reducedMotion: true, haptics: false });
-rig.clear();
-// Before host.stop():
-feedback.setSuspended(true);
-rig.clear();
-// On resume: feedback.setSuspended(false), then host.start().
-// On scene exit:
-offEvent(); offRender(); feedback.dispose(); rig.clear();
 ```
 
-Time arguments use seconds; offsets use world units; FOV uses degrees; vibration
-uses milliseconds. Pulses replace instead of stacking; translation amplitude is
-capped at 0.3 per axis, FOV at 4 degrees, duration at 0.5 seconds, vibration at
-100 ms with a 0.1-second retrigger limit. Intensity is clamped to 0–1. Disabled
-feedback/intensity 0 suppress all pulses. Reduced motion suppresses optional
-translation/FOV dynamics and cuts framing changes; opt-in haptics remain independent.
-The OS media query is tracked live unless `reducedMotion` explicitly overrides it.
-Blur/hidden pages cancel vibration and pulses; manual suspension survives focus
-changes. Disposal cancels vibration and removes all browser listeners.
+Trigger feedback only after confirmed local gameplay outcomes. `setShot` changes
+base framing; `cut` handles teleports. Before pause, suspend feedback and clear the
+rig; on resume, unsuspend it. On exit, unsubscribe events/render callbacks,
+`feedback.dispose()` and `rig.clear()`.
 
-`navigator.vibrate` is optional and may reject a request or throw; those cases
-leave visual/static feedback available. This is local-browser device vibration,
-not Gamepad rumble or remote Browser Serving transport. Hardware acceptance is
-not established by an API return value. Pair motion with health/animation/audio
-cues so disabled or unsupported feedback loses no gameplay information.
+Times use seconds, offsets world units, FOV degrees and vibration milliseconds.
+Pulses replace rather than stack: translation ≤0.3 per axis, FOV ≤4°, duration
+≤0.5 s, vibration ≤100 ms with a 0.1 s retrigger limit. Intensity is clamped to 0–1.
+Disabled feedback clears pulses. Reduced motion suppresses optional motion and
+cuts framing changes; opt-in haptics are independent. OS preferences are tracked
+unless overridden. Blur/hidden pages clear pulses; manual suspension persists.
 
-The rig follows a world-space focus with configurable composition offsets and
-shot FOV, supports explicit `cut`, and handles perspective/orthographic pose
-updates. Orthographic framing size remains owned by `host.setFrustumHeight()`.
-Optional `occlusionTargets` run a center-line ray against explicit blockers after
-presentation offsets, shortening the boom by `clearance` world units. Blocker world matrices are updated before the query. This does not sweep the camera/near-plane
-volume, handle one-sided backfaces, or guarantee corner clearance; use an engine
-collision sweep for tight interiors. Keep gameplay aiming/picking on a separate
-base aim rather than the shaken display camera.
+`navigator.vibrate` is optional local-browser vibration, not Gamepad rumble or
+remote transport; device acceptance needs live testing. Keep static health,
+animation or audio cues when motion is disabled.
 
-The arena example exposes `feedback`, `cameraRig`, `setFeedbackPreferences`,
-`pause`, `resume`, and `dispose`. It reacts only to actual `damaged` events
-involving the local player, retaining the static HP bar when motion is disabled.
-Its chase shot sits behind and beside the +Z-forward player; movement follows
-the base framing and lateral input matches screen right after shot changes.
-Run `npm ci && npm test` from this plugin directory to check framework and example
-behavior without a GPU. Physical haptics and visual comfort require live testing.
-# Action-aware camera director
+The rig supports perspective/orthographic pose; orthographic size belongs to the
+host. Optional `occlusionTargets` use a center-line ray with `clearance`, not a
+camera-volume sweep or corner/backface guarantee. Gameplay aiming/picking must
+use a separate base aim, not the shaken camera.
 
-`A3GameActionCameraDirector` is exported at root and `./engine`. Construct with an
-unparented PerspectiveCamera and optional `{ yaw, playerHeight, targetHeight,
-minDistance, maxDistance, response, occlusionTargets, clearance }`. Call
-`update(deltaSeconds, playerPosition, targetPosition, { mode, cut, reducedMotion,
-offset, fovKick })` after simulation. Modes are `follow`, `windup`, `impact`,
-`airborne`, `landing`, `recovery`; the caller owns confirmed combat state.
-Offsets/FOV kicks may come from `A3GameFeedback.update`. Repeated mode values do
-not restart the transition clock. Use `cut` on spawn/teleport; call `clear` before
-pause and stop updates while paused. `dispose` is idempotent and stops later writes.
+## Action camera
 
-The director fits a conservative two-actor sphere and makes bounded same-side
-arcs without roll. Reduced motion uses stable follow parameters and suppresses
-optional offsets/FOV pulses. Set actor heights for actual meshes/weapons, choose
-distance bounds for the game, and inspect `framingLimited` when the cap prevents
-the requested fit. Blockers retain the rig's center-line limitation; no camera
-volume sweep, gameplay changes, launch physics or automatic target discovery are
-provided. `examples/boss-action-demo/` integrates the public API with an original
-procedural action scene, actual input and canvas recording.
+`A3GameActionCameraDirector` uses an unparented PerspectiveCamera. Configure actor
+heights, distance bounds, response and blockers; call
+`update(dt, playerPosition, targetPosition, { mode, cut, reducedMotion, offset, fovKick })`
+after simulation. Modes: `follow`, `windup`, `impact`, `airborne`, `landing`, `recovery`.
+Gameplay owns mode/target selection. Repeated modes do not restart transitions.
+
+Use `cut` on spawn/teleport, `clear` before pause and stop updates while paused.
+`dispose` is idempotent. The director fits two actors with bounded same-side arcs;
+check `framingLimited` when distance caps prevent a fit. Reduced motion uses stable
+follow framing. Blockers retain the center-ray limitation; no launch physics or
+automatic target discovery is provided. See `engine_adapters/three_js/examples/boss-action-demo/`.
+
+## Tests
+
+Run `npm ci` then `npm test` from this plugin directory. Tests cover runtime and
+example logic without WebGL; rendering, comfort and physical haptics need live review.

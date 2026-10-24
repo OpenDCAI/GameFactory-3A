@@ -1,6 +1,0 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Arena camera comparison</title>
-<style>body{margin:20px;background:#151a24;color:#eee;font:16px system-ui}main{display:flex;gap:16px}section{width:50%}canvas{width:100%;height:auto}button,label{margin:8px}pre{white-space:pre-wrap} @media(max-width:700px){main{display:block}section{width:100%}}</style></head>
-<body><h1>Arena camera: same trace, before / after</h1><p>Blue player, orange opponent. Eight seconds, identical movement, assets and timing. Reference implementation comparison; generated-skill effectiveness and comfort remain separate reviews.</p>
-<button id="replay">Replay</button><button id="record">Record 8 seconds</button><a id="download" hidden>Download WebM</a><label>Inspect time <input id="seek" type="range" min="0" max="8" step="0.25" value="0"></label><label><input id="reduced" type="checkbox">Reduced motion</label>
-<main><section><h2>Before: main / static Orbit view</h2><canvas id="before"></canvas></section><section><h2>After: arena chase profile</h2><canvas id="after"></canvas></section></main>
-<video id="playback" controls hidden style="width:100%;max-width:1280px" aria-label="Recorded camera comparison"></video><pre id="report">Loading</pre><script type="module" src="./preview.js"></script></body></html>
