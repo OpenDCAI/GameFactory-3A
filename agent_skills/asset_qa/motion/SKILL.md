@@ -32,7 +32,7 @@ Mixamo, MoMask or Tripo only when the topology/action is unsupported or fails QA
 | Function | Use |
 |---|---|
 | `skeleton.fit_skeleton(mesh, config=...)` | Fit a rig using complete, explicit fitting settings |
-| `skinning.skin_mesh(mesh, rig, config=...)` | Generate weights using explicit kernel, bone convention and smoothing settings |
+| `skinning.skin_mesh(mesh, rig, config=...)` | Generate weights using explicit kernel, bone convention and smoothing settings; optional `gate` |
 | `motion.build_plan(skeleton, rhythm=..., program=...)` | Validate a complete trajectory program and bind named joint chains |
 | `motion.generate_clip(plan)` | Sample positions and solve joint motion through IK |
 | `generate_vibe_motion(config=..., mesh=...)` | Produce BVH, joints, targets, residuals and optional rig/skin/GLB artifacts |
@@ -41,8 +41,10 @@ Express a multi-stage action as one continuous position program with named event
 and contact windows. `program.action` is a label, not a preset selector.
 
 IK implementation: `<repo_path>/operators/gen_motion/funcs/vibe_motion_utils/motion_utils/generate.py`.
-Use `solve_two_bone_ik` for flexion-limited two-bone chains and `solve_arm_ik` for
-bounded shoulder/elbow optimization; `task_space.solve_part` supplies sampled targets.
+`solve_chain_ik` solves every `position`/`contact_path` limb: two bones use a closed
+form, three or more bones use bounded per-frame hinge optimization. `solve_arm_ik`
+serves `arm_arc` (shoulder flexion/abduction/swivel plus elbow); `task_space.solve_part`
+supplies sampled targets.
 
 Use `task_type="vibe"` with a `config` object containing:
 
@@ -61,18 +63,35 @@ local animation quaternions use wxyz, matching the BVH/GLB adapters.
 Supported part operators:
 
 - `position`: world-, root-, or parent-frame end-effector trajectories, explicit
-  pole/rest-pole directions and flexion bounds; three- or four-joint chains.
+  pole/rest-pole directions and flexion bounds; chains of three or more joints.
+  Optional `foot` states whether the last bone is an oriented foot excluded from IK;
+  it defaults to true for four joints, false for three, and is required beyond four.
+  Two-bone IK takes one `flexion` pair inside (0,180) and no `chain_solver`. Three or
+  more bones require `chain_solver` (`regularization`, `max_nfev`, `tolerance`) and
+  signed flexion: one shared pair or one pair per hinge, positive toward the pole, so
+  alternating joints such as stifle/hock take opposite signs. Derive each pair from
+  the rest pose projected on `rest_pole`; redundancy resolves toward that rest shape.
+  If the bind pose is mid-stride, place contact anchors relative to the rest
+  girdle-to-foot offset rather than directly below the hip or shoulder.
   `orientation` is `body`, `rest`, or an explicit scalar curve of Y-up yaw degrees
   relative to rest. Hold this curve constant during support to lock foot heading.
   Position/contact IK poles use root-body axes; aim poles use the selected target
   space. `rest_pole` always uses the original world-space rest basis.
 - `contact_path`: independently timed support windows, explicit anchor sample
   times and one body-frame swing offset per gap. Contact orientation can be locked.
+  It accepts the same `foot`, `chain_solver` and flexion rules as `position`.
 - `arm_arc`: task-space wrist arcs with bounded shoulder/elbow IK. Polar angles
   describe wrist positions, not authored joint rotations. All optimizer settings
   and joint bounds are explicit.
 - `aim`: child-joint position tracks for axial chains, preserving bone lengths.
+  Aim targets count as IK residuals, so build them by forward kinematics of
+  rest-length offsets rather than free curves.
 - `rest`: explicitly retain the local rest pose.
+
+Joints not covered by any part keep their local rest rotation and follow their
+parent. For a rider on a mount, parent the rider pelvis under the mount trunk and
+leave the rider chains at `rest` (or `aim` only the head) so the rider inherits the
+mount heading instead of turning independently.
 
 Chains are resolved from the supplied skeleton, not from hardcoded human names.
 Biped and quadruped examples, including all motion parameters and synthetic
@@ -129,6 +148,14 @@ Follow this order for an unrigged model:
    `config.skin_constraints`. Keep `screening` and `edge_epsilon_ratio` explicit;
    never add proximity links across disconnected surfaces. Asset-specific object
    and seam selectors in the example are task constraints, not model predictions.
+   For fused multi-body or multi-limb meshes, add `skinning.gate` to forbid bones
+   that reach a vertex only through the air: `seed_mode` (`nearest` or `visible`,
+   the latter also needing `ray_samples`, `ray_directions`, `ray_reach_ratio`),
+   `seed_ratio`, `gate_ratio`, `gate_abs_ratio`, `gate_limit_ratio`,
+   `fallback_ratio` and `radius_cap_ratio`. The gate only narrows caller
+   constraints. Surface far from every bone (a low belly between short legs) can
+   still blend leg bones; fix that with explicit `allowed_bones` regions and
+   report remaining stress-pose or motion stretch failures rather than hiding them.
 6. **Adjust bone orientation using the action.** With `--with-motion`, call
    `<repo_path>/test/test_vibe_motion.py` to generate the explicit position/rhythm/IK action.
    Hold skin weights and action settings fixed while comparing bounded rest-pole
