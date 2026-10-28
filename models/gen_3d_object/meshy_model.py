@@ -52,6 +52,7 @@ from typing import Any, Optional
 
 from models.common import cloud_api
 from models.common.glb_utils import glb_summary
+from models.common.task_recovery import PendingTaskStore
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +94,8 @@ class MeshyModel:
                     the text-to-3D preview → refine chain gets the full budget).
         poll_interval: Seconds between status polls.
         max_retries: [C9] Extra attempts for retryable HTTP failures.
-        cache_dir:  [C8] Directory for the response cache. None disables it.
+        cache_dir:  [C8] Directory for completed responses and accepted-task
+                    checkpoints. None disables both caching and recovery.
         output_format: Any of `SUPPORTED_FORMATS`; picked out of `model_urls`.
         low_poly:   [B4.3] Sets `model_type="lowpoly"`, i.e. the service produces
                     a low-poly mesh instead of us decimating one locally.
@@ -319,22 +321,63 @@ class MeshyModel:
         # [C8] Everything that changes the output goes into the key; the image is
         # represented by its hash, and the API key never appears.
         png = cloud_api.image_to_png_bytes(image) if image is not None else None
-        cache_key = cloud_api.request_hash({
+        fingerprint = {
             "provider": self.PROVIDER,
             "payload": payload,
             "image_sha256": cloud_api.bytes_hash(png) if png else None,
             "image_url": image_url,
             "refine": self.refine and self.texture and not use_image,
             "output_format": self.output_format,
-        })
+        }
+        if self.refine and self.texture and not use_image:
+            fingerprint["refine_enable_pbr"] = self.enable_pbr
+        cache_key = cloud_api.request_hash(fingerprint)
         cached = self._cache.get(cache_key, ext=self.output_format)
         if cached is not None:
-            self.last_call_info = {
-                "provider": self.PROVIDER, "cached": True, "cache_key": cache_key,
-                "bytes": len(cached),
-                **(glb_summary(cached) if self.output_format == "glb" else {}),
-            }
-            return cached
+            return self._cached_result(cached, cache_key)
+
+        if not self._cache.enabled:
+            return self._generate(cache_key, payload, png, image_url, use_image, verbose)
+
+        client = self.client
+        key = getattr(client, "_api_key", None) or cloud_api.require_api_key(
+            self.api_key, "MESHY_API_KEY", SIGNUP_URL, who="MeshyModel")
+        scope = cloud_api.request_hash({
+            "request": cache_key,
+            "api_base": getattr(client, "base_url", self.api_base).rstrip("/"),
+            "credential_sha256": cloud_api.bytes_hash(key.encode("utf-8")),
+        })
+        # The first-stage lock protects the entire chain, including refine,
+        # download and cache publication. Each stage retains its own task ID.
+        first = PendingTaskStore(self._cache.root, scope)
+        refine = PendingTaskStore(self._cache.root, cloud_api.request_hash({
+            "request_scope": scope, "stage": "refine",
+        })) if self.texture and self.refine and not use_image else None
+        with first.lock(timeout=self.timeout):
+            cached = self._cache.get(cache_key, ext=self.output_format)
+            if cached is not None:
+                return self._cached_result(cached, cache_key)
+            return self._generate(cache_key, payload, png, image_url, use_image,
+                                  verbose, first=first, refine=refine)
+
+    def _cached_result(self, data: bytes, cache_key: str) -> bytes:
+        self.last_call_info = {
+            "provider": self.PROVIDER, "cached": True, "cache_key": cache_key,
+            "resumed": False, "bytes": len(data),
+            **(glb_summary(data) if self.output_format == "glb" else {}),
+        }
+        return data
+
+    def _generate(self, cache_key: str, payload: dict, png: Optional[bytes],
+                  image_url: Optional[str], use_image: bool, verbose: bool, *,
+                  first: Optional[PendingTaskStore] = None,
+                  refine: Optional[PendingTaskStore] = None) -> bytes:
+        first_id = first.load() if first is not None else None
+        refine_id = refine.load() if refine is not None else None
+        if refine_id and not first_id:
+            raise refine._error("Refine checkpoint has no preview checkpoint",
+                                task_id=refine_id)
+        resumed = first_id is not None
 
         t0 = time.time()
         task_ids: list[str] = []
@@ -342,13 +385,17 @@ class MeshyModel:
         if use_image:
             endpoint = "/openapi/v1/image-to-3d"
             payload["image_url"] = (
-                image_url if png is None else cloud_api.image_to_data_uri(image))
+                image_url if png is None else cloud_api.image_to_data_uri(png))
             task = self._submit_and_wait(endpoint, payload, verbose=verbose,
-                                         task_ids=task_ids)
+                                         task_ids=task_ids, store=first, task_id=first_id)
         else:
             endpoint = "/openapi/v2/text-to-3d"
-            task = self._submit_and_wait(endpoint, payload, verbose=verbose,
-                                         task_ids=task_ids)
+            if refine_id:
+                # Refine is already accepted; do not depend on preview retention.
+                task_ids.append(first_id)
+            else:
+                task = self._submit_and_wait(endpoint, payload, verbose=verbose,
+                                             task_ids=task_ids, store=first, task_id=first_id)
             if self.texture and self.refine:
                 # [C6] Preview geometry is untextured; refine is a second billed
                 # task that paints it. Skip with texture=False or refine=False.
@@ -359,9 +406,15 @@ class MeshyModel:
                     "enable_pbr": self.enable_pbr,
                 }
                 task = self._submit_and_wait(endpoint, refine_payload,
-                                             verbose=verbose, task_ids=task_ids)
+                                             verbose=verbose, task_ids=task_ids,
+                                             store=refine, task_id=refine_id)
 
-        data = self.client.download(self._model_url(task))
+        final_store = refine if refine is not None else first
+        try:
+            data = self.client.download(self._model_url(task))
+        except cloud_api.CloudAPIError as exc:
+            self._recovery_error(exc, final_store, task_ids[-1])
+            raise
         elapsed = time.time() - t0
 
         info = glb_summary(data) if self.output_format == "glb" else {"bytes": len(data)}
@@ -373,6 +426,7 @@ class MeshyModel:
             "elapsed_sec": round(elapsed, 2),
             "credits": task.get("credits_consumed", task.get("credits")),
             "cached": False,
+            "resumed": resumed,
             "cache_key": cache_key,
             "format": self.output_format,
             # The provider's own render of what it produced. Recording the URL
@@ -396,26 +450,53 @@ class MeshyModel:
             "provider": self.PROVIDER, "payload": payload,
             **{k: v for k, v in self.last_call_info.items() if k != "cache_key"},
         }, ext=self.output_format)
+        # Clear refine first: a cleanup failure must not leave an orphaned
+        # refine ID without its preview ID. The completed cache is authoritative.
+        for store in (refine, first):
+            if store is not None:
+                try:
+                    store.clear()
+                except OSError:
+                    logger.warning("[meshy] could not remove checkpoint %s", store.path)
+                    break
         return data
 
+    @staticmethod
+    def _recovery_error(exc: cloud_api.CloudAPIError,
+                        store: Optional[PendingTaskStore], task_id: str) -> None:
+        exc.task_id = exc.task_id or task_id
+        if store is not None:
+            exc.args = (f"{exc} Task {task_id} checkpoint: {store.path}. "
+                        "Rerun the same input to resume; remove the checkpoint only "
+                        "to explicitly allow a new paid task.",)
+
     def _submit_and_wait(self, endpoint: str, payload: dict, *,
-                         verbose: bool, task_ids: list[str]) -> dict:
-        """Create one task on `endpoint`, poll it to a terminal state, return it."""
-        created = self.client.request("POST", endpoint, json_body=payload)
-        task_id = self._task_id_of(created)
+                         verbose: bool, task_ids: list[str],
+                         store: Optional[PendingTaskStore] = None,
+                         task_id: Optional[str] = None) -> dict:
+        """Resume a stage, or checkpoint its accepted ID before polling."""
+        if task_id is None:
+            created = self.client.request("POST", endpoint, json_body=payload)
+            task_id = self._task_id_of(created)
+            if store is not None:
+                store.save(task_id)
         task_ids.append(task_id)
         if verbose:
-            print(f"[meshy] task {task_id} submitted ({endpoint}, "
+            print(f"[meshy] polling task {task_id} ({endpoint}, "
                   f"mode={payload.get('mode', 'image')})")
-        return cloud_api.poll_task(
-            lambda: self._fetch_task(endpoint, task_id),
-            task_id=task_id,
-            timeout=self.timeout,
-            poll_interval=self.poll_interval,
-            done_states=DONE_STATES,
-            failed_states=FAILED_STATES,
-            verbose=verbose,
-        )
+        try:
+            return cloud_api.poll_task(
+                lambda: self._fetch_task(endpoint, task_id),
+                task_id=task_id,
+                timeout=self.timeout,
+                poll_interval=self.poll_interval,
+                done_states=DONE_STATES,
+                failed_states=FAILED_STATES,
+                verbose=verbose,
+            )
+        except cloud_api.CloudAPIError as exc:
+            self._recovery_error(exc, store, task_id)
+            raise
 
     def infer_and_save(
         self,
