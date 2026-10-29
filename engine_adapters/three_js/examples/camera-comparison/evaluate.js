@@ -1,15 +1,47 @@
 import * as THREE from 'three';
+import { A3GameCameraRig, A3GameFeedback } from '@a3game/playable';
+import { createArenaCameraProfile } from '../arena-fighter-example/src/camera-profile.js';
 import { createCameraController as control } from './control.js';
 import { createCameraController as treatment } from './treatment.js';
-import { framing, playerAt } from '../game-feel-comparison/comparison.js';
 
+export const DURATION = 8;
 export const factories = { control, treatment };
-function screenBounds(camera, position) {
+export const groups = {
+  reference: {
+    static: () => ({ update() {}, setPreferences() {}, pause() {}, resume() {}, dispose() {} }),
+    chase: (_, camera) => {
+      const rig = new A3GameCameraRig(camera, createArenaCameraProfile());
+      const feedback = new A3GameFeedback({ navigator: {}, window: null, document: null, media: null });
+      let paused = false, disposed = false;
+      return {
+        update(dt, { player, impact, cut }) {
+          if (paused || disposed) return;
+          if (impact) feedback.trigger({ strength: 0.05 });
+          rig.update(dt, player, { ...feedback.update(dt), reducedMotion: feedback.reducedMotion, cut });
+        },
+        setPreferences(preferences) { feedback.setPreferences(preferences); rig.clear(); },
+        pause() { paused = true; feedback.setSuspended(true); rig.clear(); },
+        resume() { paused = false; feedback.setSuspended(false); },
+        dispose() { if (!disposed) { feedback.dispose(); rig.clear(); disposed = true; } },
+      };
+    },
+  },
+  generated: factories,
+};
+
+export function playerAt(seconds) {
+  return new THREE.Vector3(10 * Math.sin(seconds * Math.PI / 4), 0, 0);
+}
+
+function framing(camera, position) {
   const points = [];
   for (const x of [-0.3, 0.3]) for (const y of [0, 1.7]) for (const z of [-0.3, 0.3]) {
     points.push(position.clone().add(new THREE.Vector3(x, y, z)).project(camera));
   }
-  return { x0: Math.min(...points.map(p => p.x)), x1: Math.max(...points.map(p => p.x)),
+  const focus = position.clone().add(new THREE.Vector3(0, 1.2, 0)).project(camera);
+  return { fullyVisible: points.every(p => Math.abs(p.x) <= 1 && Math.abs(p.y) <= 1 && Math.abs(p.z) <= 1),
+    focusError: Math.hypot(focus.x, focus.y),
+    x0: Math.min(...points.map(p => p.x)), x1: Math.max(...points.map(p => p.x)),
     y0: Math.min(...points.map(p => p.y)), y1: Math.max(...points.map(p => p.y)) };
 }
 function overlap(a, b) {
@@ -26,19 +58,22 @@ export function createTake(factory, reducedMotion = false) {
   return { camera, controller, samples: [], lastTime: 0 };
 }
 export function step(take, time, impacts = true) {
+  if (!Number.isFinite(time) || time < take.lastTime) throw new RangeError('time must advance monotonically');
   const player = playerAt(time), target = player.clone().add(new THREE.Vector3(0, 0, 3));
   const impact = impacts && [3, 6].some(t => take.lastTime < t && time >= t);
   take.controller.update(time - take.lastTime, { player, target, impact, cut: time === 0 });
   take.camera.updateMatrixWorld(true);
-  take.samples.push({ time, player: framing(take.camera, player), target: framing(take.camera, target),
-    projectedBoundsIou: overlap(screenBounds(take.camera, player), screenBounds(take.camera, target)),
+  const playerBounds = framing(take.camera, player), targetBounds = framing(take.camera, target);
+  take.samples.push({ time, player: playerBounds, target: targetBounds,
+    projectedBoundsIou: overlap(playerBounds, targetBounds),
     position: take.camera.position.toArray(), fov: take.camera.fov,
     finite: [...take.camera.position.toArray(), ...take.camera.quaternion.toArray(), take.camera.fov].every(Number.isFinite) });
   take.lastTime = time;
 }
 export function measure(factory, { fps = 60, reducedMotion = false, impacts = true } = {}) {
+  if (!Number.isInteger(fps) || fps < 1) throw new RangeError('fps must be a positive integer');
   const take = createTake(factory, reducedMotion);
-  for (let frame = 0; frame <= 8 * fps; frame++) step(take, frame / fps, impacts);
+  for (let frame = 0; frame <= DURATION * fps; frame++) step(take, frame / fps, impacts);
   const fraction = predicate => take.samples.filter(predicate).length / take.samples.length;
   const report = { fps, reducedMotion, samples: take.samples.length,
     bothFullyInFrameFraction: fraction(s => s.player.fullyVisible && s.target.fullyVisible),
@@ -77,7 +112,7 @@ function immediateClear(factory, action) {
     positionError, fovError, quaternionError };
 }
 export function study() {
-  return { schema: 'a3game.generated_camera_pair.v1', durationSeconds: 8, opponentOffset: [0, 0, 3],
+  return { schema: 'a3game.generated_camera_pair.v1', durationSeconds: DURATION, opponentOffset: [0, 0, 3],
     scope: 'one independent native-agent generation per condition; no statistical or comfort claim',
     conditions: Object.fromEntries(Object.entries(factories).map(([name, factory]) => [name, {
       lifecycle: lifecycle(factory),
