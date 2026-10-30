@@ -133,3 +133,18 @@ automatic target discovery is provided. See `engine_adapters/three_js/examples/b
 
 Run `npm ci` then `npm test` from this plugin directory. Tests cover runtime and
 example logic without WebGL; rendering, comfort and physical haptics need live review.
+
+
+## Uniform code-video cameras
+
+Public exports `compileCameraStrategy`, `validateCameraStrategy` and
+`inspectCameraTargets` support parameterized code-video shots and independent
+geometric framing checks. The single schema ships beside the implementation as
+`src/engine/camera-view.schema.json` for generation-time tools.
+
+Install through `ThreeClient.plugin.install_framework()` and keep the project's
+Three.js r185 dependency. Strategy selection, native overview recording, timing,
+cleanup and limits are documented once in
+`agent_skills/game-feel/references/camera-view.md` in the source repository.
+`npm test` includes portable camera regressions; no host or recorder API changes
+or automatic obstacle avoidance are provided.

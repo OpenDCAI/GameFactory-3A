@@ -1,7 +1,15 @@
+---
+name: game-feel
+description: Improve playable game feedback and cameras, or author uniform camera strategies for code-rendered video datasets. Use the CG director for prompts targeting video-generation models.
+---
+
 # Game Feel and Playable Cameras
 
 Read for impact/action feedback, device vibration, screen dynamics, camera follow,
-composition or transitions. For generated CG clips use the CG director instead.
+composition or transitions. For code-rendered video datasets, read
+[the camera configuration guide](references/camera-view.md): every video uses the
+same parameter schema with an explicit fixed, follow, follow_move, orbit or move strategy.
+For video-model-generated CG clips use the CG director instead.
 Paths below are repository-root-relative.
 
 ## Ownership and handoff

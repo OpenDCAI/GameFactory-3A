@@ -1215,6 +1215,7 @@ Keep generated imports at `@a3game/playable`; packaged subpaths are not needed f
 | `engine_adapters/three_js/plugin/A3GamePlayable/src/data-types/runtime-types.js`, `engine_adapters/three_js/plugin/A3GamePlayable/src/interfaces/contracts.js` | Wire records and duck-typed contracts |
 | `engine_adapters/three_js/plugin/A3GamePlayable/src/components/`, `engine_adapters/three_js/plugin/A3GamePlayable/src/subsystems/` | Identity, input-state component, entity/session lifecycle |
 | `engine_adapters/three_js/plugin/A3GamePlayable/src/engine/runtime-host.js`, `engine_adapters/three_js/plugin/A3GamePlayable/src/engine/runtime-channel.js` | Renderer/scheduling and command transport |
+| `engine_adapters/three_js/plugin/A3GamePlayable/src/engine/camera-view.js`, `engine_adapters/three_js/plugin/A3GamePlayable/src/engine/camera-framing.js`, `engine_adapters/three_js/plugin/A3GamePlayable/src/engine/camera-view.schema.json` | Uniform camera strategies, visible-geometry framing and the single configuration schema |
 | `engine_adapters/three_js/plugin/A3GamePlayable/src/engine/asset-library.js`, `engine_adapters/three_js/plugin/A3GamePlayable/src/engine/scene-loader.js`, `engine_adapters/three_js/plugin/A3GamePlayable/src/engine/scene-kit.js` | Runtime assets, Worlds, generic layout helpers |
 | `engine_adapters/three_js/plugin/A3GamePlayable/src/engine/visual-kit.js`, `engine_adapters/three_js/plugin/A3GamePlayable/src/engine/wind-field.js`, `engine_adapters/three_js/plugin/A3GamePlayable/src/engine/water-body.js`, `engine_adapters/three_js/plugin/A3GamePlayable/src/engine/surface-flow.js` | Materials/sky/water/wind/fluid implementation limits |
 | `engine_adapters/three_js/plugin/A3GamePlayable/src/engine/motion-kit.js`, `engine_adapters/three_js/plugin/A3GamePlayable/src/engine/animation-director.js` | Rigging/motion and mixer control |
@@ -1251,3 +1252,24 @@ it does not generate attacks, launch physics or confirmed events. See the runtim
 README and `engine_adapters/three_js/examples/boss-action-demo/` for vertical action,
 live input and reduced-motion handling. Actor heights, distance bounds and explicit
 blockers are configurable; its blocker query remains center-line only.
+
+
+## Uniform cameras in native Three.js projects
+
+For code-authored videos, read `agent_skills/game-feel/references/camera-view.md`
+through the game-feel Skill. Keep the existing ThreeClient project, framework
+host and native recorder. Author a separate camera_view.json using stable subject
+names and the single Camera View 2.0 schema.
+
+Public package exports: `compileCameraStrategy(THREE, input, {scene, aspect,
+duration_sec, fps})`, `validateCameraStrategy(input)` and
+`inspectCameraTargets(THREE, scene, camera, names, width, height, padding)`.
+The sole schema ships in the framework's `src/engine/camera-view.schema.json`.
+Install the framework with `client.plugin.install_framework()` before project
+dependencies; use the project's Three.js r185 module.
+
+Use the existing synchronous review hook with `mode='overview'`, `look='off'`
+and `warmup=0`. It evaluates clip time after host.tick and before final render.
+Keep controls, camera-dependent aiming and followed-object interpolation out of
+this authored-scene profile. The single camera guide documents wiring, units,
+cleanup and checks; no adapter deep imports or separate renderer are required.
