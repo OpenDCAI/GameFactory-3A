@@ -5,12 +5,10 @@ description: Improve playable game feedback and cameras, or author uniform camer
 
 # Game Feel and Playable Cameras
 
-Read for impact/action feedback, device vibration, screen dynamics, camera follow,
-composition or transitions. For code-rendered video datasets, read
-[the camera configuration guide](references/camera-view.md): every video uses the
-same parameter schema with an explicit fixed, follow, follow_move, orbit or move strategy.
-For video-model-generated CG clips use the CG director instead.
-Paths below are repository-root-relative.
+For code-rendered videos, follow the [camera steps](references/camera-view.md)
+and use the [shared view template](references/view_template/camera-view.schema.json).
+For video-model CG clips, use the [CG director](../asset_qa/cg_video/game-cg-director/SKILL.md).
+For playable cameras and action feedback, follow the steps below.
 
 ## Ownership and handoff
 
@@ -56,8 +54,8 @@ prove clearance for the camera volume. Do not add an unrelated engine dependency
 
 Public exports: `A3GameFeedback`, `A3GameCameraRig` and
 `A3GameActionCameraDirector` from `@a3game/playable`.
-Read `engine_adapters/three_js/plugin/A3GamePlayable/src/engine/game-feel.js` and
-its README contract before using them. The arena fighter boot example consumes
+Read the [implementation](../../engine_adapters/three_js/plugin/A3GamePlayable/src/engine/game-feel.js)
+and [framework contract](../../engine_adapters/three_js/plugin/A3GamePlayable/README.md) before using them. The arena fighter boot example consumes
 confirmed `damaged` events, follows the local player after simulation and exposes
 settings/pause/resume/dispose. The reusable rig supports offset/FOV shot changes
 and an optional center-line blocker query, not a full collision sweep.
@@ -73,7 +71,7 @@ movement and static outcome cues remain readable. Never freeze gameplay for dram
 
 `A3GameActionCameraDirector` selects bounded same-side shots from caller-owned
 modes and fits a conservative two-actor sphere. Its distance cap can still limit
-framing; inspect `framingLimited`. The original `boss-action-demo/` shows scripted
+framing; inspect `framingLimited`. The [boss action example](../../engine_adapters/three_js/examples/boss-action-demo/) shows scripted
 vertical combat and separate live move/jump/attack inputs with the public runtime.
 Its authored action comparison is separate from the preserved independent
 generation pair; do not label it as another generated-skill experiment.
@@ -93,7 +91,7 @@ scene, viewport and action trace. Preserve prompts and raw outputs for generatio
 comparisons. Report readability and comfort observations beside objective metrics;
 passing tests alone do not establish better feel. Change one presentation setting
 at a time, rerun the same trace, and update this skill from reproducible observations.
-Use `engine_adapters/three_js/examples/camera-comparison/` for reference-camera
+Use the [camera comparison](../../engine_adapters/three_js/examples/camera-comparison/) for reference-camera
 and generated-module comparisons; one generated pair does not establish general effectiveness.
 Choose a lateral composition when player/target silhouettes obscure the action,
 then verify both actors in the actual game. Numeric defaults stay game-specific.
