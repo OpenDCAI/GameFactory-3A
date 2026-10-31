@@ -133,3 +133,9 @@ automatic target discovery is provided. See `engine_adapters/three_js/examples/b
 
 Run `npm ci` then `npm test` from this plugin directory. Tests cover runtime and
 example logic without WebGL; rendering, comfort and physical haptics need live review.
+
+## Code-video cameras
+
+Use `compileCameraStrategy`, `validateCameraStrategy` and `inspectCameraTargets`
+from `@a3game/playable`. Follow the [game-feel Skill](../../../../agent_skills/game-feel/SKILL.md)
+in the source repository for configuration templates and recording steps.

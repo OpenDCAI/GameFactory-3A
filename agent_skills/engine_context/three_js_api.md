@@ -1237,7 +1237,7 @@ Update signatures, contracts, limits, and indexes together; exclude implementati
 ## Game feel and playable cameras
 
 For confirmed-event feedback and camera framing use public `A3GameFeedback` and
-`A3GameCameraRig` exports. Follow `agent_skills/game-feel/SKILL.md` and the plugin
+`A3GameCameraRig` exports. Follow the [game-feel Skill](../game-feel/SKILL.md) and the plugin
 README section “Gameplay feedback and camera framing” for units, limits, settings
 and cleanup. They are presentation components, not Mechanic rules. The arena
 example demonstrates event consumption and pause/exit cleanup. Local-browser
@@ -1251,3 +1251,5 @@ it does not generate attacks, launch physics or confirmed events. See the runtim
 README and `engine_adapters/three_js/examples/boss-action-demo/` for vertical action,
 live input and reduced-motion handling. Actor heights, distance bounds and explicit
 blockers are configurable; its blocker query remains center-line only.
+
+For code-video camera configuration, follow the [game-feel Skill](../game-feel/SKILL.md).
