@@ -211,3 +211,7 @@ export async function bootA3GameRuntime(options = {}) {
 
   return { host, assets, sceneLoader, hud, session, runtime, world };
 }
+
+export { compileCameraStrategy, validateCameraStrategy } from './engine/camera-view.js';
+
+export { inspectCameraTargets } from './engine/camera-framing.js';

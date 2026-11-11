@@ -92,3 +92,8 @@ export { A3GameRuntimeChannel } from './runtime-channel.js';
 
 export { A3GameFeedback, A3GameCameraRig } from './game-feel.js';
 export { A3GameActionCameraDirector } from './action-camera.js';
+
+// Uniform code-video camera strategies; inject the project's own THREE module.
+export { compileCameraStrategy, validateCameraStrategy } from './camera-view.js';
+
+export { inspectCameraTargets } from './camera-framing.js';

@@ -1,0 +1,530 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Camera View 2.0 strategies",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "coordinate_system",
+    "projection",
+    "strategy"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "2.0"
+    },
+    "coordinate_system": {
+      "const": "Y_UP_RIGHT_HANDED"
+    },
+    "projection": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "fov_y_deg",
+            "near",
+            "far"
+          ],
+          "properties": {
+            "type": {
+              "const": "perspective"
+            },
+            "fov_y_deg": {
+              "type": "number",
+              "minimum": 10,
+              "maximum": 100
+            },
+            "near": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "far": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "vertical_size",
+            "near",
+            "far"
+          ],
+          "properties": {
+            "type": {
+              "const": "orthographic"
+            },
+            "vertical_size": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "near": {
+              "type": "number",
+              "minimum": 0
+            },
+            "far": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            }
+          }
+        }
+      ]
+    },
+    "strategy": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "pose"
+          ],
+          "properties": {
+            "type": {
+              "const": "fixed"
+            },
+            "pose": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "target",
+                "azimuth_deg",
+                "elevation_deg",
+                "distance"
+              ],
+              "properties": {
+                "target": {
+                  "type": "array",
+                  "minItems": 3,
+                  "maxItems": 3,
+                  "items": {
+                    "type": "number"
+                  }
+                },
+                "azimuth_deg": {
+                  "type": "number",
+                  "minimum": -180,
+                  "maximum": 180
+                },
+                "elevation_deg": {
+                  "type": "number",
+                  "minimum": -85,
+                  "maximum": 85
+                },
+                "distance": {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "focus",
+            "offset"
+          ],
+          "properties": {
+            "type": {
+              "const": "follow"
+            },
+            "focus": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "subjects",
+                "axes",
+                "anchor"
+              ],
+              "properties": {
+                "subjects": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "id",
+                      "weight"
+                    ],
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "weight": {
+                        "type": "number",
+                        "minimum": 0
+                      }
+                    }
+                  }
+                },
+                "axes": {
+                  "type": "array",
+                  "minItems": 1,
+                  "uniqueItems": true,
+                  "items": {
+                    "enum": [
+                      "x",
+                      "y",
+                      "z"
+                    ]
+                  }
+                },
+                "anchor": {
+                  "type": "array",
+                  "minItems": 3,
+                  "maxItems": 3,
+                  "items": {
+                    "type": "number"
+                  }
+                }
+              }
+            },
+            "offset": {
+              "type": "array",
+              "minItems": 3,
+              "maxItems": 3,
+              "items": {
+                "type": "number"
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "start",
+            "end",
+            "easing"
+          ],
+          "properties": {
+            "type": {
+              "const": "orbit"
+            },
+            "start": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "target",
+                "azimuth_deg",
+                "elevation_deg",
+                "distance"
+              ],
+              "properties": {
+                "target": {
+                  "type": "array",
+                  "minItems": 3,
+                  "maxItems": 3,
+                  "items": {
+                    "type": "number"
+                  }
+                },
+                "azimuth_deg": {
+                  "type": "number",
+                  "minimum": -180,
+                  "maximum": 180
+                },
+                "elevation_deg": {
+                  "type": "number",
+                  "minimum": -85,
+                  "maximum": 85
+                },
+                "distance": {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                }
+              }
+            },
+            "end": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "target",
+                "azimuth_deg",
+                "elevation_deg",
+                "distance"
+              ],
+              "properties": {
+                "target": {
+                  "type": "array",
+                  "minItems": 3,
+                  "maxItems": 3,
+                  "items": {
+                    "type": "number"
+                  }
+                },
+                "azimuth_deg": {
+                  "type": "number",
+                  "minimum": -180,
+                  "maximum": 180
+                },
+                "elevation_deg": {
+                  "type": "number",
+                  "minimum": -85,
+                  "maximum": 85
+                },
+                "distance": {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                }
+              }
+            },
+            "easing": {
+              "enum": [
+                "linear",
+                "smootherstep"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "start",
+            "end",
+            "easing"
+          ],
+          "properties": {
+            "type": {
+              "const": "move"
+            },
+            "start": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "position",
+                "target"
+              ],
+              "properties": {
+                "position": {
+                  "type": "array",
+                  "minItems": 3,
+                  "maxItems": 3,
+                  "items": {
+                    "type": "number"
+                  }
+                },
+                "target": {
+                  "type": "array",
+                  "minItems": 3,
+                  "maxItems": 3,
+                  "items": {
+                    "type": "number"
+                  }
+                }
+              }
+            },
+            "end": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "position",
+                "target"
+              ],
+              "properties": {
+                "position": {
+                  "type": "array",
+                  "minItems": 3,
+                  "maxItems": 3,
+                  "items": {
+                    "type": "number"
+                  }
+                },
+                "target": {
+                  "type": "array",
+                  "minItems": 3,
+                  "maxItems": 3,
+                  "items": {
+                    "type": "number"
+                  }
+                }
+              }
+            },
+            "easing": {
+              "enum": [
+                "linear",
+                "smootherstep"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "frames"
+          ],
+          "properties": {
+            "type": {
+              "const": "recorded"
+            },
+            "frames": {
+              "type": "array",
+              "minItems": 2,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "time_sec",
+                  "position",
+                  "quaternion"
+                ],
+                "properties": {
+                  "time_sec": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "position": {
+                    "type": "array",
+                    "minItems": 3,
+                    "maxItems": 3,
+                    "items": {
+                      "type": "number"
+                    }
+                  },
+                  "quaternion": {
+                    "type": "array",
+                    "minItems": 4,
+                    "maxItems": 4,
+                    "items": {
+                      "type": "number"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "focus",
+            "start_offset",
+            "end_offset",
+            "easing"
+          ],
+          "properties": {
+            "type": {
+              "const": "follow_move"
+            },
+            "focus": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "subjects",
+                "axes",
+                "anchor"
+              ],
+              "properties": {
+                "subjects": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "id",
+                      "weight"
+                    ],
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "weight": {
+                        "type": "number",
+                        "minimum": 0
+                      }
+                    }
+                  }
+                },
+                "axes": {
+                  "type": "array",
+                  "minItems": 1,
+                  "uniqueItems": true,
+                  "items": {
+                    "enum": [
+                      "x",
+                      "y",
+                      "z"
+                    ]
+                  }
+                },
+                "anchor": {
+                  "type": "array",
+                  "minItems": 3,
+                  "maxItems": 3,
+                  "items": {
+                    "type": "number"
+                  }
+                }
+              }
+            },
+            "start_offset": {
+              "type": "array",
+              "minItems": 3,
+              "maxItems": 3,
+              "items": {
+                "type": "number"
+              }
+            },
+            "end_offset": {
+              "type": "array",
+              "minItems": 3,
+              "maxItems": 3,
+              "items": {
+                "type": "number"
+              }
+            },
+            "easing": {
+              "enum": [
+                "linear",
+                "smootherstep"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "framing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "required_targets",
+        "safe_margin"
+      ],
+      "properties": {
+        "required_targets": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "safe_margin": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 0.4
+        }
+      }
+    }
+  },
+  "description": "Strategies evaluated at absolute seconds after scene update. Lens is constant per clip; strategy selects camera motion."
+}
