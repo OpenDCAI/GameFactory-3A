@@ -439,6 +439,42 @@ class VibeMotionTest(unittest.TestCase):
         np.testing.assert_allclose(actual, expected, atol=1e-6)
         self.assert_bone_lengths(config, result["joints"])
 
+    def test_three_bone_hinge_chain_reaches_targets_inside_signed_bounds(self):
+        config = load_config("synthetic_chain")
+        skeleton = config["skeleton"]
+        skeleton["names"][3:] = ["stifle", "hock", "hoof"]
+        skeleton["parents"].append(4)
+        skeleton["rest"][3:] = [[0, 1.3, 0.12], [0, 0.6, -0.1], [0, 0, 0]]
+        probe = config["program"]["parts"]["probe"]
+        probe["joints"] = ["socket", "stifle", "hock", "hoof"]
+        params = probe["params"]
+        params["trajectory"]["values"] = [[0, 0.1, 0], [0.15, 0.45, 0.3], [0, 0.1, 0]]
+        params["flexion"] = [[1, 90], [-90, -1]]
+        params["foot"] = False
+        params["chain_solver"] = {"regularization": 0.05, "max_nfev": 200, "tolerance": 1e-10}
+        result = pipeline.generate_vibe_motion(config=config)
+        self.assertEqual(result["metrics"]["failures"], [])
+        self.assert_bone_lengths(config, result["joints"])
+        diagnostics = result["diagnostics"]["probe"]
+        self.assertTrue(diagnostics["solver_success"].all())
+        self.assertLess(diagnostics["residual"].max(), 1e-6)
+        flex = diagnostics["flex_degrees"]
+        self.assertEqual(flex.shape[1], 2)
+        self.assertTrue(np.all(flex[:, 0] > 0) and np.all(flex[:, 1] < 0))
+        rest_flex = flex[0].copy()
+        self.assertGreater(np.abs(flex - rest_flex).max(), 5)
+        missing_solver = deepcopy(config)
+        del missing_solver["program"]["parts"]["probe"]["params"]["chain_solver"]
+        implicit_foot = deepcopy(config)
+        del implicit_foot["program"]["parts"]["probe"]["params"]["foot"]
+        implicit_foot["skeleton"]["names"].append("toe")
+        implicit_foot["skeleton"]["parents"].append(5)
+        implicit_foot["skeleton"]["rest"].append([0, 0, 0.1])
+        implicit_foot["program"]["parts"]["probe"]["joints"].append("toe")
+        for case in (missing_solver, implicit_foot):
+            with self.assertRaises(ValueError):
+                pipeline.generate_vibe_motion(config=case)
+
     def test_determinism_and_caller_input_preservation(self):
         for name in FIXTURE_NAMES:
             with self.subTest(fixture=name):
@@ -748,8 +784,9 @@ def export_bound_motion(mesh, rig, weights, selected, config, output, report, *,
     from test.test_vibe_rigging import glb_document, rig_preview, write_video
     import struct
     action, result, vertices = selected['payload']
+    name = config['action']['example']
     data = animated_glb(mesh, rig, weights, result['clip'], config=config['export']['glb'])
-    path = output / 'turn_jump_chop.glb'
+    path = output / f'{name}.glb'
     path.write_bytes(data)
     data = path.read_bytes()
     doc = glb_document(data)
@@ -775,7 +812,7 @@ def export_bound_motion(mesh, rig, weights, selected, config, output, report, *,
         joint = channel['target']['node']-2
         expected = result['clip'].quats[:,joint][:,[1,2,3,0]] if channel['target']['path']=='rotation' else rig.joints[joint]+result['clip'].trans
         np.testing.assert_allclose(accessor(sampler['output'],expected.shape[1]),expected,atol=tolerance,rtol=0)
-    (output / 'turn_jump_chop.bvh').write_bytes(result['bvh_bytes'])
+    (output / f'{name}.bvh').write_bytes(result['bvh_bytes'])
     (output / 'action_config.json').write_text(json.dumps(action,indent=2))
     (output / 'motion_report.json').write_text(result['vibe_report_json'])
     np.savez_compressed(output / 'motion.npz',positions=result['joints'],quats=result['clip'].quats,
@@ -784,7 +821,7 @@ def export_bound_motion(mesh, rig, weights, selected, config, output, report, *,
     if ffmpeg is not None:
         frames = (rig_preview(mesh,rig,vertices[i],result['joints'][i],report,azimuth=25,settings=preview)
                   for i in range(result['frames']))
-        write_video(frames,output/'turn_jump_chop.mp4',ffmpeg=ffmpeg,width=preview['width'],height=preview['height'],fps=result['fps'])
+        write_video(frames,output/f'{name}.mp4',ffmpeg=ffmpeg,width=preview['width'],height=preview['height'],fps=result['fps'])
     return {'readback_passed':True,'frames':result['frames'],'bind_recomputed':True,'fixed_weights':True}
 
 

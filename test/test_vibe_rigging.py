@@ -450,6 +450,34 @@ class ExplicitRiggingTest(unittest.TestCase):
         weights = anchored_weights(mesh, prior, [], [], np.ones((16, 2), bool), config=SKIN)
         np.testing.assert_allclose(weights, prior, atol=1e-12)
 
+    def test_geodesic_gate_blocks_influence_across_air(self):
+        from operators.gen_motion.funcs.vibe_motion_utils.rigging_utils.skin_generate import geodesic_gate
+        from operators.gen_motion.funcs.vibe_motion_utils.rigging_utils.types import RigResult as Rig
+        vertices = np.r_[VERTICES * [0.3, 1, 0.3] + [-1, 0, 0], VERTICES * [0.3, 1, 0.3] + [1, 0, 0]]
+        mesh = skeleton.mesh_from_arrays(vertices, np.r_[FACES, FACES + 8], name='two_posts')
+        rig = Rig('posts', np.array([[0, -1.5, 0], [-1, -0.5, 0], [-1, 1, 0], [1, -0.5, 0], [1, 1, 0]], float),
+                  np.array([-1, 0, 1, 0, 3]), ['base', 'a.0', 'a.1', 'b.0', 'b.1'],
+                  {'base': [0], 'a': [1, 2], 'b': [3, 4]}, None, {})
+        nearest = {'seed_mode': 'nearest', 'seed_ratio': 1.5, 'gate_ratio': 1.6, 'gate_abs_ratio': 0.015,
+                   'gate_limit_ratio': 2.0, 'fallback_ratio': 1.25, 'radius_cap_ratio': 1e6}
+        visible = {**nearest, 'seed_mode': 'visible', 'ray_samples': 5, 'ray_directions': 8, 'ray_reach_ratio': 1.0}
+        config = {**SKIN, 'kernel': 'gaussian', 'radius_scale': 4.0, 'falloff': 1.0, 'max_influences': 5}
+        open_skin = skinning.skin_mesh(mesh, rig, config=config)
+        left, right = slice(0, 8), slice(8, 16)
+        self.assertGreater(open_skin.weights[left][:, [3, 4]].max(), 0.01)
+        for gate in (nearest, visible):
+            with self.subTest(seed_mode=gate['seed_mode']):
+                gated_skin = skinning.skin_mesh(mesh, rig, config={**config, 'gate': gate})
+                np.testing.assert_array_equal(gated_skin.weights[left][:, [3, 4]], 0)
+                np.testing.assert_array_equal(gated_skin.weights[right][:, [1, 2]], 0)
+        allowed, stats = geodesic_gate(mesh, rig, np.ones((16, 5)), config=nearest)
+        self.assertTrue(allowed.any(1).all())
+        self.assertIn('gated_out_fraction', stats)
+        for bad in ({**nearest, 'gate_ratio': 0.5}, {**nearest, 'seed_mode': 'rays'},
+                    {k: v for k, v in visible.items() if k != 'ray_samples'}):
+            with self.assertRaises(ValueError):
+                skinning.skin_mesh(mesh, rig, config={**config, 'gate': bad})
+
     def test_open_mesh(self):
         opened = skeleton.mesh_from_arrays(VERTICES, FACES[2:], name='open_box')
         config = deepcopy(FIT)

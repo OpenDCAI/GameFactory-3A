@@ -106,10 +106,18 @@ def rig_skeleton(mesh, *, config):
     p = resolve_rig_config(config)
     raw, triangulation = reconstruct_joints(p['cameras'], p['observations'], config=p['reconstruction'])
     sections, frame, axes = canonical_mesh(mesh, p['up'], p['forward'], vertical=True, config=p['geometry'])
-    joints, modes = [], {}
+    joints, modes, unfitted = [], {}, {}
     for name in p['names']:
         target = (raw[name] - frame.origin) @ axes.T / frame.scale
-        point, modes[name] = fit_joint_prior(sections, target, p['fit'][name], config=p['geometry'])
+        try:
+            point, modes[name] = fit_joint_prior(sections, target, p['fit'][name], config=p['geometry'])
+        except ValueError as error:
+            # Fused or self-intersecting parts may have no section inside the window;
+            # only conflict_policy='retain_annotation' keeps the triangulated landmark.
+            if p['reconstruction']['conflict_policy'] != 'retain_annotation':
+                raise ValueError(f'{name}: {error}') from error
+            point, modes[name] = target, 'retained_annotation_no_section'
+            unfitted[name] = str(error)
         joints.append(point @ axes * frame.scale + frame.origin)
     rig = RigResult(p['name'], np.asarray(joints), np.asarray(p['parents'], int), p['names'],
                     {k: [p['names'].index(n) for n in ns] for k, ns in p['chains'].items()}, frame, p)
@@ -122,7 +130,8 @@ def rig_skeleton(mesh, *, config):
             rig.joints[i] = raw[name]
             if max(triangulation[name]['reprojection_pixels'].values()) > p['reconstruction']['max_fitted_reprojection_pixels']:
                 raise ValueError(f'{name}: retained annotation also violates fitted tolerance')
-    rig.params = {**p, 'diagnostics': {'triangulation': triangulation, 'fit_modes': modes, 'fit_conflicts': conflicts}}
+    rig.params = {**p, 'diagnostics': {'triangulation': triangulation, 'fit_modes': modes, 'fit_conflicts': conflicts,
+                                       'unfitted_landmarks': unfitted}}
     rig.notes = ['Calibrated visual landmarks and explicit topology; no reference rig or unguided tracing.',
                  'Open-section fits and retained annotations do not certify solid containment. No surface snapping.']
     return rig
