@@ -12,6 +12,10 @@
   <img src="https://img.shields.io/badge/Assets-Image%20%7C%203D%20%7C%20Motion%20%7C%20Audio%20%7C%20CG%20Video-00897b?style=flat-square" alt="资产能力覆盖" />
 </p>
 
+> **📚 新报告即将开源 — 我们即将开源几份新的报告，敬请期待。**
+>
+> **🚀 重磅升级预告 — 我们即将对仓库进行重大更新与简化，适配 Astra、ops5.5 等能力强大的模型。**
+
 # 3AGameFactory
 
 **3AGameFactory 让 Coding Agent 根据游戏需求生成可用于游戏构建的资产与引擎代码。**
