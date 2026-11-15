@@ -5,6 +5,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 import numpy as np
 
+from .generate import chain_flexion_bounds
 from .skeleton_templates import SkeletonTemplate, topological_order
 from .timing import Rhythm, curve, fields, number, numbers
 from .units import unit
@@ -19,8 +20,45 @@ class MotionPlan:
     frame: np.ndarray
 
 
+LIMB_OPTIONS = ('foot', 'chain_solver')
+
+
 def _direction(value, label, epsilon):
     return unit(numbers(value, (3,), label=label), epsilon=epsilon)
+
+
+def _validate_limb(chain, p):
+    """Two-bone limbs take one flexion pair; longer chains need explicit solver settings.
+
+    ``foot`` marks the last bone as an oriented end segment outside IK. It defaults to false
+    for three joints and true for four, and must be explicit beyond four.
+    """
+    if 'foot' in p and type(p['foot']) is not bool:
+        raise ValueError('foot must be a boolean')
+    if 'foot' not in p and len(chain) > 4:
+        raise ValueError('Limbs longer than four joints must state whether the last bone is an oriented foot')
+    foot = p.get('foot', len(chain) == 4)
+    nodes = len(chain) - 1 if foot else len(chain)
+    if nodes < 3:
+        raise ValueError('Position IK needs at least three continuous IK joints (two bones)')
+    if nodes == 3:
+        if 'chain_solver' in p:
+            raise ValueError('chain_solver applies only to IK chains with three or more bones')
+        low, high = numbers(p['flexion'], (2,), label='flexion')
+        if not 0 < low < high < 180:
+            raise ValueError('Flexion bounds must lie inside (0,180)')
+        return
+    if 'chain_solver' not in p:
+        raise ValueError('IK chains with three or more bones need explicit chain_solver settings')
+    solver = p['chain_solver']
+    fields(solver, ('regularization', 'max_nfev', 'tolerance'), label='chain_solver')
+    number(solver['regularization'], label='chain_solver.regularization', positive=True)
+    if type(solver['max_nfev']) is not int or solver['max_nfev'] < 10:
+        raise ValueError('chain_solver.max_nfev must be an integer >= 10')
+    tolerance = number(solver['tolerance'], label='chain_solver.tolerance', positive=True)
+    if not np.finfo(float).eps < tolerance < 1:
+        raise ValueError('chain_solver.tolerance must exceed machine epsilon and stay below one')
+    chain_flexion_bounds(p['flexion'], nodes - 2)
 
 
 def _validate_params(spec, rhythm, times, epsilon):
@@ -36,12 +74,12 @@ def _validate_params(spec, rhythm, times, epsilon):
             curve(track, rhythm, times, width=3)
     elif op == 'position':
         fields(p, ('trajectory', 'space', 'scale', 'contacts', 'pole', 'rest_pole',
-                   'flexion', 'orientation'), label='position.params')
+                   'flexion', 'orientation'), optional=LIMB_OPTIONS, label='position.params')
         curve(p['trajectory'], rhythm, times, width=3)
         rhythm.windows(p['contacts'])
     elif op == 'contact_path':
         fields(p, ('contacts', 'anchor_times', 'arcs', 'scale', 'ground_height',
-                   'pole', 'rest_pole', 'flexion', 'orientation'), label='contact_path.params')
+                   'pole', 'rest_pole', 'flexion', 'orientation'), optional=LIMB_OPTIONS, label='contact_path.params')
         windows = rhythm.windows(p['contacts'])
         if len(windows) < 2 or windows[0, 0] != 0 or windows[-1, 1] != 1:
             raise ValueError('Contact paths need at least two windows covering the start and end')
@@ -92,11 +130,7 @@ def _validate_params(spec, rhythm, times, epsilon):
     if op in ('position', 'aim') and p['space'] not in ('world', 'root', 'parent'):
         raise ValueError('Position space must be world, root or parent')
     if op in ('position', 'contact_path'):
-        if len(chain) not in (3, 4):
-            raise ValueError('Position IK needs three or four continuous joints')
-        low, high = numbers(p['flexion'], (2,), label='flexion')
-        if not 0 < low < high < 180:
-            raise ValueError('Flexion bounds must lie inside (0,180)')
+        _validate_limb(chain, p)
         orientations = ('body', 'rest', 'contact') if op == 'contact_path' else ('body', 'rest')
         if op == 'position' and isinstance(p['orientation'], dict):
             curve(p['orientation'], rhythm, times, width=0)

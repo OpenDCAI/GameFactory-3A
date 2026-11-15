@@ -4,16 +4,33 @@ from __future__ import annotations
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from .generate import solve_arm_ik, solve_two_bone_ik
+from .generate import solve_arm_ik, solve_chain_ik
 from .timing import curve, smooth
 from .units import basis, fk, quat_to_matrix, root_index, set_world_rotation
+
+
+def yaw_matrices(degrees):
+    """(T,3,3) rotations about +Y."""
+    return Rotation.from_euler('y', np.reshape(np.asarray(degrees, float), (-1, 1)), degrees=True).as_matrix()
+
+
+def limb_layout(spec):
+    """Split a position/contact chain into its IK nodes and the joint that receives the end orientation.
+
+    ``foot`` (optional) marks the last bone as an oriented end segment that is not solved by IK;
+    it defaults to false for three joints and true for four.
+    """
+    chain, params = spec['joints'], spec['params']
+    foot = params.get('foot', len(chain) == 4)
+    ik = chain[:-1] if foot else chain
+    return ik, ik[-1], bool(foot)
 
 
 def design_root(plan, times):
     p = plan.program['root']['params']
     offsets = np.column_stack([curve(p[k], plan.rhythm, times, width=0) for k in ('x', 'y', 'z')])
     yaw = curve(p['yaw'], plan.rhythm, times, width=0)
-    heading = plan.frame @ Rotation.from_euler('y', yaw, degrees=True).as_matrix()
+    heading = plan.frame @ yaw_matrices(yaw)
     position = plan.template.rest[root_index(plan.template)] + offsets @ plan.frame.T * p['scale']
     return {'position': position, 'heading': heading, 'rotation': heading @ plan.frame.T, 'yaw': yaw}
 
@@ -56,7 +73,7 @@ def _contact_path(plan, spec, times, root):
         mask = (contact_ids < 0) & (fraction > b) & (fraction < end)
         target[mask] = path[mask]
         yaw[mask] = ((1 - blend) * sampled['yaw'][index] + blend * sampled['yaw'][index + 1])[mask]
-    rotation = plan.frame @ Rotation.from_euler('y', yaw, degrees=True).as_matrix() @ plan.frame.T
+    rotation = plan.frame @ yaw_matrices(yaw) @ plan.frame.T
     return target, contact_ids, rotation
 
 
@@ -106,19 +123,20 @@ def solve_part(clip, plan, spec, times, root):
         contact_rotation = None
     if isinstance(p['orientation'], dict):
         yaw = curve(p['orientation'], plan.rhythm, times, width=0)
-        rotation = plan.frame @ Rotation.from_euler('y', yaw, degrees=True).as_matrix() @ plan.frame.T
+        rotation = plan.frame @ yaw_matrices(yaw) @ plan.frame.T
     elif p['orientation'] == 'body':
         rotation = root['rotation']
     elif p['orientation'] == 'rest':
         rotation = np.broadcast_to(np.eye(3), (len(times), 3, 3))
     else:
         rotation = contact_rotation
-    ankle_offset = plan.template.rest[chain[-1]] - plan.template.rest[chain[2]]
+    ik, oriented, _ = limb_layout(spec)
+    ankle_offset = plan.template.rest[chain[-1]] - plan.template.rest[oriented]
     ankle_target = target - np.einsum('tij,j->ti', rotation, ankle_offset)
     pole = np.einsum('tij,j->ti', root['heading'], p['pole'])
-    diagnostics = solve_two_bone_ik(clip, chain[:3], ankle_target, pole,
-                                 flexion=p['flexion'], rest_pole=p['rest_pole'], epsilon=epsilon)
-    set_world_rotation(clip, chain[2], rotation)
+    diagnostics = solve_chain_ik(clip, ik, ankle_target, pole, flexion=p['flexion'], rest_pole=p['rest_pole'],
+                                 solver=p.get('chain_solver'), epsilon=epsilon)
+    set_world_rotation(clip, oriented, rotation)
     positions, _ = fk(clip)
     diagnostics['residual'] = np.linalg.norm(positions[:, chain[-1]] - target, axis=-1)
     return {chain[-1]: target}, {chain[-1]: contact}, diagnostics

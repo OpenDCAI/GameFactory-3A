@@ -29,11 +29,12 @@ def refine_orientation(mesh, rig, limbs, evaluate, *, config, quality):
     for key, spec in limbs.items():
         require_config(spec, ('chain', 'forward'), 'orientation limb')
         ids = np.asarray(spec['chain'])
-        if ids.shape != (3,) or ids.dtype.kind not in 'iu' or np.any((ids < 0) | (ids >= rig.num_joints)):
-            raise ValueError('Orientation needs a three-joint chain')
-        a, b, c = ids
-        if rig.parents[b] != a or rig.parents[c] != b:
+        if (ids.ndim != 1 or len(ids) < 3 or len(set(ids.tolist())) != len(ids) or ids.dtype.kind not in 'iu'
+                or np.any((ids < 0) | (ids >= rig.num_joints))):
+            raise ValueError('Orientation needs a chain of at least three distinct joints')
+        if any(rig.parents[child] != parent for parent, child in zip(ids[:-1], ids[1:])):
             raise ValueError('Orientation chain must follow hierarchy')
+        a, inner, c = ids[0], ids[1:-1], ids[-1]
         anchor = deepcopy(current)
         lengths = np.linalg.norm(np.diff(anchor.joints[ids], axis=0), axis=1)
         axis = anchor.joints[c] - anchor.joints[a]
@@ -53,10 +54,16 @@ def refine_orientation(mesh, rig, limbs, evaluate, *, config, quality):
             try:
                 candidate = deepcopy(anchor)
                 if ratio is not None:
-                    along = np.dot(anchor.joints[b] - anchor.joints[a], axis)
-                    if not 0 < along < np.linalg.norm(anchor.joints[c] - anchor.joints[a]):
-                        raise ValueError('Middle joint projects outside limb')
-                    candidate.joints[b] = anchor.joints[a] + along * axis + ratio * lengths.sum() * preferred
+                    span = np.linalg.norm(anchor.joints[c] - anchor.joints[a])
+                    along = (anchor.joints[inner] - anchor.joints[a]) @ axis
+                    if np.any(along <= 0) or np.any(along >= span) or np.any(np.diff(along) <= 0):
+                        raise ValueError('Interior joints must project inside the limb in order')
+                    # A sine bow peaking at one: a single middle joint receives the full pre-bend,
+                    # longer chains bend smoothly with fixed endpoints.
+                    bow = np.sin(np.pi * along / span)
+                    bow /= bow.max()
+                    candidate.joints[inner] = (anchor.joints[a] + along[:, None] * axis
+                                               + ratio * lengths.sum() * bow[:, None] * preferred)
                     displacement = np.linalg.norm(candidate.joints - anchor.joints, axis=1).max()
                     new_lengths = np.linalg.norm(np.diff(candidate.joints[ids], axis=0), axis=1)
                     if displacement > p['max_displacement_ratio'] * lengths.sum() or np.max(np.abs(new_lengths / lengths - 1)) > p['max_length_change_ratio']:
