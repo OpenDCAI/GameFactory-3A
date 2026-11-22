@@ -3,11 +3,15 @@ from copy import deepcopy
 import numpy as np
 from .checks import MeshContainment, enclosure_evidence, validate_tree
 from .generate import reprojection_report
+from .orientation import limb_orientation
 from .templates import require_config, finite_number
 
 
-def refine_orientation(mesh, rig, limbs, evaluate, *, config, quality):
-    """Keep endpoints and skin weights fixed; accept only improved valid candidates."""
+def refine_orientation(mesh, rig, limbs, evaluate, *, config, quality, accept_geometry=None):
+    """Keep endpoints and skin weights fixed; accept only improved valid candidates.
+
+    ``accept_geometry(candidate)`` may raise ``ValueError`` to veto a candidate rig. Three-joint chains also get
+    ``limb_orientation`` diagnostics before and after the search."""
     p = require_config(config, ('candidate_prebend_ratios', 'max_displacement_ratio', 'max_length_change_ratio',
                                 'min_enclosure_fraction', 'max_enclosure_drop', 'min_improvement',
                                 'max_reprojection_pixels', 'epsilon'), 'orientation')
@@ -26,6 +30,7 @@ def refine_orientation(mesh, rig, limbs, evaluate, *, config, quality):
     if not np.isfinite(best['score']):
         raise ValueError('Non-finite baseline score')
     initial = float(best['score'])
+    baseline_metrics = deepcopy(best.get('metrics', {}))
     for key, spec in limbs.items():
         require_config(spec, ('chain', 'forward'), 'orientation limb')
         ids = np.asarray(spec['chain'])
@@ -74,6 +79,8 @@ def refine_orientation(mesh, rig, limbs, evaluate, *, config, quality):
                 status = checker.classify(candidate.joints, candidate.joint_names)
                 if any(v['passed'] and not status['joints'][name]['passed'] for name, v in certified['joints'].items()):
                     raise ValueError('Candidate loses certified containment')
+                if accept_geometry is not None:
+                    accept_geometry(candidate)
                 errors = reprojection_report(candidate, config=rig.params)
                 if max(e for views in errors.values() for e in views.values()) > p['max_reprojection_pixels']:
                     raise ValueError('Candidate exceeds reprojection budget')
@@ -88,6 +95,12 @@ def refine_orientation(mesh, rig, limbs, evaluate, *, config, quality):
             except ValueError as error:
                 entry['rejected_reason'] = str(error)
             history.append(entry)
-    return current, poles, best, {'initial_score': initial, 'final_score': float(best['score']), 'history': history,
-                                 'rest_poles': poles, 'rest_positions_changed': bool(not np.array_equal(current.joints, rig.joints)),
-                                 'scope': 'Finite motion-evaluated search; no surface snapping or anatomical guarantee.'}
+    three = {k: spec for k, spec in limbs.items() if len(spec['chain']) == 3}
+    report = {'initial_score': initial, 'final_score': float(best['score']), 'history': history,
+              'baseline_metrics': baseline_metrics, 'final_metrics': best.get('metrics', {}),
+              'before': {k: limb_orientation(rig, s['chain'], s['forward']) for k, s in three.items()},
+              'after': {k: limb_orientation(current, s['chain'], s['forward']) for k, s in three.items()},
+              'rest_poles': poles, 'rest_positions_changed': bool(not np.array_equal(current.joints, rig.joints)),
+              'scope': 'Finite motion-evaluated search; no surface snapping or anatomical guarantee.'}
+    current.notes.append('Motion-evaluated rest orientation; no surface snapping or reference skeleton.')
+    return current, poles, best, report

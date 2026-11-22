@@ -308,9 +308,15 @@ def skin_mesh(mesh: CreatureMesh, rig: RigResult, *, config: dict,
         require_config(anchors, ('ids', 'values'), 'anchors')
         ids, values = anchors['ids'], anchors['values']
     weights = anchored_weights(mesh, weights, ids, values, allowed, config=p)
+    voted = 0
+    if p['component_rigid']:
+        from .skin_gating import component_vote
+        weights, voted = component_vote(mesh, weights, rigid=True, max_fraction=p['component_max_fraction'], keep=ids)
     if np.any(weights[~allowed] != 0):
         raise ValueError('Forbidden influence escaped constrained diffusion')
     notes = [f'bone_convention={p["bone_convention"]}; topology diffusion with {len(ids)} exact anchors']
+    if voted:
+        notes.append(f'{voted} connected components bound rigidly to one bone')
     if fallback:
         notes.append(f'{fallback} vertices bound to the nearest bone within the allowed set')
     if gate_stats is not None:

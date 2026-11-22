@@ -4,6 +4,8 @@ from .templates import finite_number, integer, require_config
 KERNELS = ('inverse', 'gaussian', 'linear')
 GATE_FIELDS = ('seed_mode', 'seed_ratio', 'gate_ratio', 'gate_abs_ratio', 'gate_limit_ratio', 'fallback_ratio',
                'radius_cap_ratio')
+SKIN_RANGES = {'falloff': (0.1, 16.0), 'radius_scale': (0.01, 4.0), 'max_influences': (1, 12), 'floor': (0.0, 0.5),
+               'smooth_iterations': (0, 64), 'smooth_rate': (0.0, 1.0)}
 RAY_FIELDS = ('ray_samples', 'ray_directions', 'ray_reach_ratio')
 
 
@@ -39,8 +41,16 @@ def resolve_skin_config(config):
     if not isinstance(config, dict):
         raise ValueError('skin config must be a dictionary')
     gate = resolve_gate_config(config.get('gate'))
-    p = require_config({k: v for k, v in config.items() if k != 'gate'}, fields, 'skin')
+    optional = ('gate', 'component_rigid', 'component_max_fraction')
+    p = require_config({k: v for k, v in config.items() if k not in optional}, fields, 'skin')
     p['gate'] = gate
+    p['component_rigid'] = config.get('component_rigid', False)
+    p['component_max_fraction'] = config.get('component_max_fraction', 1.0)
+    if not isinstance(p['component_rigid'], bool):
+        raise ValueError('component_rigid must be a boolean')
+    finite_number(p['component_max_fraction'], 'component_max_fraction', positive=True)
+    if p['component_max_fraction'] > 1:
+        raise ValueError('component_max_fraction must lie in (0,1]')
     if p['kernel'] not in KERNELS:
         raise ValueError(f'unknown kernel {p["kernel"]!r}, available {KERNELS}')
     if p['bone_convention'] not in ('incoming', 'outgoing'):
@@ -53,4 +63,7 @@ def resolve_skin_config(config):
         raise ValueError('floor and smooth_rate must lie in [0,1]')
     integer(p['max_influences'], 'max_influences', 1)
     integer(p['smooth_iterations'], 'smooth_iterations', 0)
+    for name, (low, high) in SKIN_RANGES.items():
+        if not low <= p[name] <= high:
+            raise ValueError(f'{name} must lie in [{low},{high}], got {p[name]}')
     return p

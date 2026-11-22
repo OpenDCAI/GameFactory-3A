@@ -379,7 +379,7 @@ class GenMotionOperator:
         inp: dict,
     ) -> dict[str, Any]:
         """Generate local procedural rig, skin, motion and optional animated GLB artifacts."""
-        from .funcs.vibe_motion_utils.pipeline import generate_vibe_motion
+        from .funcs.vibe_motion_utils.pipeline import generate_vibe_motion, normalize_config
 
         legacy = {"preset", "segments", "transitions", "creature", "template", "rig_preset",
                   "skin_preset", "num_frames", "heading_deg", "skin", "motion_overrides",
@@ -388,7 +388,8 @@ class GenMotionOperator:
             raise ValueError(f"Legacy vibe arguments were removed: {sorted(legacy)}; supply config")
         config = inp.get("config")
         if not isinstance(config, dict):
-            raise ValueError("vibe requires an explicit config containing skeleton, rhythm and program")
+            raise ValueError("vibe requires a config containing skeleton, rhythm, style and program")
+        config = normalize_config(config)
         mesh = None
         has_mesh = bool(inp.get("target_mesh_path") or inp.get("target_glb_path"))
         if inp.get("task_type", "").lower() == "vibe_retarget":
@@ -445,13 +446,8 @@ class GenMotionOperator:
             outputs["joints_npy_path"].parent.mkdir(parents=True, exist_ok=True)
             np.save(outputs["joints_npy_path"], joints, allow_pickle=False)
 
-        failures = (artifacts.get("metrics") or {}).get("failures") or []
-        if failures:
-            logger.warning(
-                "[gen_motion] vibe clip %s failed %s",
-                artifacts.get("action"),
-                ", ".join(map(str, failures)),
-            )
+        for warning in artifacts.get("warnings") or []:
+            logger.warning("[gen_motion] vibe clip %s: %s", artifacts.get("action"), warning)
         for note in artifacts.get("notes") or []:
             logger.info("[gen_motion] vibe: %s", note)
         return artifacts

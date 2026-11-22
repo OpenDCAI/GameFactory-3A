@@ -19,12 +19,15 @@ import numpy as np
 from operators.gen_motion import operator as operator_module
 from operators.gen_motion.funcs.vibe_motion_utils import skeleton, skinning
 from operators.gen_motion.funcs.vibe_motion_utils.pipeline import generate_vibe_motion
-from operators.gen_motion.funcs.vibe_motion_utils.rigging_utils import reconstruct_joints, refine_orientation
+from operators.gen_motion.funcs.vibe_motion_utils.rigging_utils import (
+    JointContainmentError, ReferenceRig, calibrate_limb_prebend, compare_to_reference_skin, component_vote,
+    containment_summary, enforce_joint_containment, limb_orientation, motion_twist, quantize_weights,
+    reconstruct_joints, refine_orientation, related_joints, verify_rig, weight_checks, weld, weld_by_node)
 from operators.gen_motion.funcs.vibe_motion_utils.rigging_utils.checks import MeshContainment, enclosure_evidence
 from operators.gen_motion.funcs.vibe_motion_utils.rigging_utils.sections import canonical_mesh
 from operators.gen_motion.funcs.vibe_motion_utils.rigging_utils.types import RigResult
 from operators.gen_motion.funcs.vibe_motion_utils.rigging_utils.export import animated_glb
-from operators.gen_motion.funcs.vibe_motion_utils.rigging_utils.skin_checks import bend_pose
+from operators.gen_motion.funcs.vibe_motion_utils.rigging_utils.skin_checks import bend_pose, check_smoothness, validate_skin
 from operators.gen_motion.funcs.vibe_motion_utils.rigging_utils.skin_units import deform, pose_matrices, validate_weights
 from operators.gen_motion.funcs.vibe_motion_utils.motion_utils import MotionClip, SkeletonTemplate
 from operators.gen_motion.funcs.vibe_motion_utils.motion_utils.units import fk, matrix_to_quat, quat_from_axis_angle, quat_to_matrix
@@ -82,17 +85,14 @@ def motion_config(*, fitted, skinned) -> dict[str, Any]:
     config: dict[str, Any] = {
         'skeleton': {'name': 'explicit', 'names': ['spine.0', 'spine.1', 'spine.2'],
                      'parents': [-1, 0, 1], 'rest': [[0, -0.8, 0], [0, 0, 0], [0, 0.8, 0]]},
-        'rhythm': {'duration': 1, 'fps': 12, 'events': {'begin': 0, 'finish': 1}},
+        'rhythm': {'duration': 1, 'fps': 12, 'time_unit': 'seconds', 'events': {}},
+        'style': {'turn_degrees': 0, 'travel_ratio': 0, 'jump_ratio': 0, 'crouch_ratio': 0, 'arm_reach': 0.5,
+                  'arm_clearance': 0.1},
         'program': {'action': 'rest_in_box', 'forward': [0, 0, 1],
-                    'root': {'operator': 'curves', 'params': {'scale': 1, **{
-                        axis: {'keys': ['begin', 'finish'], 'values': [0, 0], 'interpolation': 'linear'}
-                        for axis in ('x', 'y', 'z', 'yaw')}}},
+                    'root': {'operator': 'curves', 'params': {axis: {'initial': 0} for axis in ('x', 'y', 'z', 'yaw')}},
                     'parts': {'support': {'category': 'trunk', 'joints': ['spine.0', 'spine.1', 'spine.2'],
                                           'operator': 'rest', 'params': {}}},
-                    'solver': {'epsilon': 1e-9},
-                    'quality': {'target_tolerance': 1e-6, 'contact_tolerance': 1e-6,
-                                'bone_length_tolerance': 1e-6, 'ground_height': -1,
-                                'ground_tolerance': 1e-6, 'limit_tolerance': 1e-6}},
+                    'refine': {'iterations': 0, 'foot_margin_ratio': 0, 'residual_weight': 1, 'ground_weight': 5}},
         'rig_quality': deepcopy(RIG_QA), 'export': deepcopy(EXPORT),
     }
     if fitted:
@@ -565,7 +565,7 @@ class ExplicitRiggingTest(unittest.TestCase):
                 np.testing.assert_allclose(weights.sum(1), 1)
 
     def test_rigid_weights(self):
-        config = {**SKIN, 'max_influences': 1, 'radius_scale': 0.001, 'smooth_iterations': 0}
+        config = {**SKIN, 'max_influences': 1, 'radius_scale': 0.01, 'smooth_iterations': 0}
         rigid = skinning.skin_mesh(self.mesh, self.rig, config=config)
         np.testing.assert_array_equal(rigid.influences, np.ones(len(VERTICES)))
 
@@ -604,7 +604,7 @@ class ExplicitRiggingTest(unittest.TestCase):
                 result: dict[str, Any] = generate_vibe_motion(config=config, mesh=self.mesh)
                 self.assertEqual(config, before)
                 self.assertEqual(result['joints'].shape, (13, 3, 3))
-                self.assertEqual(result['metrics']['failures'], [])
+                self.assertTrue(result['metrics']['finite'])
                 self.assertTrue(json.loads(result['rig_report_json'])['ok'])
                 self.assertEqual('animated_glb_bytes' in result, skinned)
                 if skinned:
@@ -661,6 +661,184 @@ class ExplicitRiggingTest(unittest.TestCase):
                     self.assertEqual(retarget.call_args.kwargs['fps'], 12)
                 else:
                     retarget.assert_not_called()
+
+
+class PortedRiggingTest(unittest.TestCase):
+    """Reference-derived rigging pieces: gating, orientation, containment policies, welding, GLB readback."""
+
+    def setUp(self):
+        self.mesh = skeleton.mesh_from_arrays(VERTICES, FACES, name='cube')
+        self.rig = skeleton.fit_skeleton(self.mesh, config=FIT)
+        self.skin = skinning.skin_mesh(self.mesh, self.rig, config=SKIN)
+
+    def two_posts(self):
+        vertices = np.r_[VERTICES * [0.3, 1, 0.3] + [-1, 0, 0], VERTICES * [0.3, 1, 0.3] + [1, 0, 0]]
+        mesh = skeleton.mesh_from_arrays(vertices, np.r_[FACES, FACES + 8], name='two_posts')
+        rig = RigResult('posts', np.array([[0, -1.5, 0], [-1, -0.5, 0], [-1, 1, 0], [1, -0.5, 0], [1, 1, 0]], float),
+                        np.array([-1, 0, 1, 0, 3]), ['base', 'a.0', 'a.1', 'b.0', 'b.1'],
+                        {'base': [0], 'a': [1, 2], 'b': [3, 4]}, None, {})
+        return mesh, rig
+
+    def test_related_joints_and_component_vote(self):
+        related = related_joints([-1, 0, 1, 0, 3])
+        self.assertTrue(related[1, 3] and related[2, 0] and related[2, 1] and not related[2, 4])
+        mesh, rig = self.two_posts()
+        mixed = np.zeros((16, 5))
+        mixed[:, 1], mixed[:, 3] = .6, .4
+        mixed[8:, 1], mixed[8:, 3] = .1, .9
+        voted, count = component_vote(mesh, mixed, rigid=True)
+        self.assertEqual(count, 2)
+        self.assertTrue(np.all(voted[:8, 1] == 1) and np.all(voted[8:, 3] == 1))
+        kept, count = component_vote(mesh, mixed, rigid=True, keep=[0])
+        np.testing.assert_array_equal(kept[0], mixed[0])
+        none, count = component_vote(mesh, mixed, rigid=False)
+        self.assertEqual(count, 0)
+        np.testing.assert_array_equal(none, mixed)
+        skin = skinning.skin_mesh(mesh, rig, config={**SKIN, 'max_influences': 5, 'component_rigid': True})
+        self.assertTrue(np.all(np.count_nonzero(skin.weights, axis=1) == 1))
+        self.assertEqual(len(set(np.argmax(skin.weights[:8], 1))), 1)
+        for bad in ({'component_rigid': 'yes'}, {'component_max_fraction': 1.5}):
+            with self.assertRaises(ValueError):
+                skinning.skin_mesh(mesh, rig, config={**SKIN, **bad})
+        with self.assertRaises(ValueError):
+            skinning.skin_mesh(mesh, rig, config={**SKIN, 'falloff': 100.0})
+
+    def test_weight_checks_report_bleed_and_unused_bones(self):
+        mesh, rig = self.two_posts()
+        wrong = np.zeros((16, 5))
+        wrong[:8, 4] = 1.
+        wrong[8:, 2] = 1.
+        report = weight_checks(mesh, rig, wrong)
+        self.assertGreaterEqual(report['severe_bleed_ratio'], 0.5)
+        self.assertGreater(report['severe_bleed_by_bone']['b.1'], 0)
+        self.assertEqual(report['max_influences'], 1)
+        self.assertIn('base', report['unused_bones'])
+        good = skinning.skin_mesh(mesh, rig, config={**SKIN, 'max_influences': 5, 'component_rigid': True}).weights
+        self.assertEqual(weight_checks(mesh, rig, good)['severe_bleed_ratio'], 0.0)
+
+    def test_limb_orientation_twist_and_prebend(self):
+        rig = RigResult('limb', np.array([[0, 2, 0], [0, 1, 0.02], [0, 0, 0]], float), np.array([-1, 0, 1]),
+                        ['a', 'b', 'c'], {'limb': [0, 1, 2]}, None, {})
+        info = limb_orientation(rig, [0, 1, 2], [0, 0, 1])
+        self.assertTrue(info['near_straight'] and not info['reversed'] and info['alignment'] > 0.99)
+        self.assertTrue(limb_orientation(rig, [0, 1, 2], [0, 0, -1])['reversed'])
+        for chain in ([0, 2, 1], [0, 0, 1], [0, 1]):
+            with self.assertRaises(ValueError):
+                limb_orientation(rig, chain, [0, 0, 1])
+        with self.assertRaises(ValueError):
+            limb_orientation(rig, [0, 1, 2], [0, 1, 0])
+        joints, correction = calibrate_limb_prebend(rig.joints, rig.joints, [0, 1, 2], forward=[0, 0, 1],
+                                                    prebend_ratio=0.05)
+        np.testing.assert_array_equal(joints[[0, 2]], rig.joints[[0, 2]])
+        self.assertGreater(joints[1, 2], rig.joints[1, 2])
+        self.assertFalse(correction['surface_projection'])
+        with self.assertRaises(ValueError):
+            calibrate_limb_prebend(rig.joints, rig.joints, [0, 1, 2], forward=[0, 0, 1], prebend_ratio=0.2,
+                                   max_displacement_ratio=0.01)
+        rest = np.tile(np.eye(4), (3, 1, 1))
+        rest[:, :3, 3] = rig.joints
+        angle = np.deg2rad(np.linspace(0, 60, 5))
+        world = np.tile(rest, (5, 1, 1, 1))
+        world[:, 0, :3, :3] = np.stack([[[np.cos(t), 0, np.sin(t)], [0, 1, 0], [-np.sin(t), 0, np.cos(t)]] for t in angle])
+        report = motion_twist(rig, world, rest, [0, 1, 2])
+        self.assertAlmostEqual(report['a']['twist_p95_degrees'], 60 * .95, delta=2.5)
+        self.assertEqual(report['a']['undefined_samples'], 0)
+        with self.assertRaises(ValueError):
+            motion_twist(rig, world[:, :2], rest, [0, 1, 2])
+
+    def test_refine_orientation_reports_before_and_after(self):
+        config = {**MESH_TEST['orientation'], 'min_enclosure_fraction': 0., 'max_enclosure_drop': 1.,
+                  'max_reprojection_pixels': 20.}
+        vetoed = []
+
+        def veto(candidate):
+            vetoed.append(candidate)
+            raise ValueError('vetoed')
+
+        result = refine_orientation(self.mesh, self.rig, {'probe': {'chain': [0, 1, 2], 'forward': [0, 0, 1]}},
+                                    lambda rig, poles: {'score': 1., 'metrics': {}}, config=config, quality=RIG_QA,
+                                    accept_geometry=veto)
+        report = result[3]
+        self.assertTrue(vetoed and report['history'][-1]['rejected_reason'] == 'vetoed')
+        self.assertEqual(set(report['before']), {'probe'})
+        self.assertIn('flex_degrees', report['after']['probe'])
+
+    def test_containment_policies_and_nearest_surface(self):
+        report = MeshContainment(self.mesh, config=RIG_QA).classify([[0, 0, 0], [1.5, 0, 0]], ['inside', 'outside'])
+        item = report['joints']['outside']
+        self.assertFalse(item['passed'])
+        np.testing.assert_allclose(item['nearest_surface_point'], [1.0, 0, 0], atol=1e-9)
+        self.assertAlmostEqual(item['surface_distance'], .5)
+        self.assertEqual(report['joints']['inside']['reason'], 'closed_convex_component_halfspaces')
+        rig = RigResult('r', np.array([[0, 0, 0], [1.5, 0, 0]], float), np.array([-1, 0]), ['inside', 'outside'],
+                        {}, None, {})
+        with self.assertRaises(JointContainmentError) as caught:
+            enforce_joint_containment(self.mesh, rig, config=RIG_QA)
+        self.assertIn('outside', str(caught.exception))
+        with self.assertRaises(JointContainmentError):
+            enforce_joint_containment(self.mesh, rig, config=RIG_QA, policy='project_surface')
+        moved, projected = enforce_joint_containment(self.mesh, rig, config=RIG_QA, policy='project_surface',
+                                                     max_correction_ratio=0.5)
+        np.testing.assert_allclose(moved.joints[1], [1, 0, 0], atol=1e-9)
+        self.assertIn('outside', projected['corrections'])
+        wide = {**RIG_QA, 'containment': {**RIG_QA['containment'], 'radius_ratio': 1.0}}
+        kept, evidence = enforce_joint_containment(self.mesh, rig, config=wide, policy='report_only')
+        np.testing.assert_array_equal(kept.joints, rig.joints)
+        self.assertFalse(evidence['enclosure_evidence']['joint_positions_changed'])
+        self.assertGreater(evidence['enclosure_evidence']['joints']['inside']['opposed_pair_fraction'], 0)
+        summary = containment_summary(self.mesh, rig, config=RIG_QA)
+        self.assertEqual(summary['counts'], {'inside': 1, 'uncertified': 1})
+        with self.assertRaises(ValueError):
+            enforce_joint_containment(self.mesh, rig, config=RIG_QA, policy='snap')
+
+    def test_weld_merges_coincident_vertices(self):
+        vertices = np.r_[VERTICES, VERTICES]
+        faces = np.r_[FACES, FACES + 8]
+        welded, new_faces, mapping = weld(vertices, faces, 1e-6)
+        self.assertEqual(len(welded), 8)
+        np.testing.assert_array_equal(mapping[:8], mapping[8:])
+        np.testing.assert_allclose(welded[mapping], vertices)
+        self.assertEqual(len(weld(vertices, faces, 0.)[0]), 16)
+        separate, _, mapping = weld_by_node(vertices, faces, np.r_[np.zeros(8), np.ones(8)], 1e-6)
+        self.assertEqual(len(separate), 16)
+        self.assertEqual(len(set(mapping)), 16)
+
+    def test_skin_smoothness_baseline_and_reference_comparison(self):
+        artist = ReferenceRig(list(self.rig.joint_names), self.rig.parents, self.rig.joints, self.skin.weights)
+        value = check_smoothness(self.skin, self.mesh, quantile=0.95).value
+        informational = check_smoothness(self.skin, self.mesh, quantile=0.95)
+        self.assertTrue(informational.ok and 'informational' in informational.detail)
+        self.assertFalse(check_smoothness(self.skin, self.mesh, quantile=0.95, baseline=value / 10).ok)
+        self.assertTrue(check_smoothness(self.skin, self.mesh, quantile=0.95, baseline=value).ok)
+        weights, deformation = compare_to_reference_skin(self.mesh, artist, SKIN, quality=SKIN_QA)
+        self.assertAlmostEqual(weights.value, 0., places=9)
+        self.assertTrue(deformation.ok)
+        report = validate_skin(self.skin, self.mesh, self.rig, config=SKIN_QA, reference=artist, skinning=SKIN)
+        self.assertTrue(report.reference and report.ok)
+        self.assertEqual([f.check for f in report.findings][-2:], ['weights_vs_reference', 'deform_vs_reference'])
+        plain = validate_skin(self.skin, self.mesh, self.rig, config=SKIN_QA)
+        self.assertFalse(plain.reference)
+        with self.assertRaises(ValueError):
+            compare_to_reference_skin(self.mesh, ReferenceRig(artist.joint_names, artist.parents, artist.rest),
+                                      SKIN, quality=SKIN_QA)
+
+    def test_quantized_weights_match_glb_readback(self):
+        template = SkeletonTemplate('explicit', list(self.rig.joint_names), self.rig.parents, self.rig.joints, {})
+        quats = np.tile([1., 0, 0, 0], (2, 3, 1))
+        clip = MotionClip(template, quats, np.zeros((2, 3)), 10.)
+        glb = animated_glb(self.mesh, self.rig, self.skin, clip, config=EXPORT['glb'])
+        joints, weights = quantize_weights(self.mesh, self.skin.weights)
+        self.assertEqual((joints.dtype, weights.dtype), (np.uint16, np.float32))
+        np.testing.assert_allclose(weights.sum(1), 1, atol=1e-6)
+        report, found_joints, found_weights = verify_rig(glb, self.rig, joints, weights)
+        self.assertTrue(report['passed'], report)
+        self.assertEqual(report['joints'], 3)
+        np.testing.assert_array_equal(found_joints[found_weights > 0], joints.astype(np.int64)[found_weights > 0])
+        wrong = joints.copy()
+        wrong[0, 0] = (wrong[0, 0] + 1) % 3
+        self.assertFalse(verify_rig(glb, self.rig, wrong, weights)[0]['passed'])
+        shifted = RigResult('x', self.rig.joints + 1., self.rig.parents, list(self.rig.joint_names), {}, None, {})
+        self.assertFalse(verify_rig(glb, shifted, joints, weights)[0]['passed'])
 
 
 class ObjMeshInputTest(unittest.TestCase):
