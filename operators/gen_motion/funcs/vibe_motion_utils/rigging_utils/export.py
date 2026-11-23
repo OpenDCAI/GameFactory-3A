@@ -110,3 +110,74 @@ def animated_glb(mesh, rig, skin, clip, *, config) -> bytes:
     return (struct.pack('<4sII', b'glTF', 2, 28 + len(encoded) + len(data))
             + struct.pack('<I4s', len(encoded), b'JSON') + encoded
             + struct.pack('<I4s', len(data), b'BIN\x00') + data)
+
+
+def quantize_weights(mesh, weights):
+    """Keep the four largest influences per raw vertex (via ``mesh.weld_map``), as written to JOINTS_0 / WEIGHTS_0.
+
+    Returns ``(joints uint16 (V,4), weights float32 (V,4))``; weights below 1e-6 are zeroed, rows renormalised and the
+    joint index of a zero weight is 0.
+    """
+    raw = np.asarray(weights, float)[np.asarray(mesh.weld_map)]
+    order = np.argsort(-raw, axis=1, kind='stable')[:, :4]
+    quantized = np.take_along_axis(raw, order, axis=1).astype(np.float32)
+    if order.shape[1] < 4:
+        pad = ((0, 0), (0, 4 - order.shape[1]))
+        order, quantized = np.pad(order, pad), np.pad(quantized, pad)
+    joints = order.astype(np.uint16)
+    quantized[quantized < 1e-6] = 0
+    quantized /= quantized.sum(axis=1, keepdims=True)
+    joints[quantized == 0] = 0
+    return joints, quantized
+
+
+def verify_rig(glb: bytes, rig, expect_joints, expect_weights):
+    """Read the GLB back and compare joint positions, inverse bind matrices, weights and joint indices.
+
+    Expects one skin with identity rest rotations. Returns ``(report, joint indices, weights)`` read from the file.
+    """
+    from ..motion_utils.asset import accessor, read_glb
+    document, binary = read_glb(glb)
+    skins = document.get('skins', [])
+    if len(skins) != 1:
+        raise ValueError('expected exactly one skin')
+    skin, nodes = skins[0], document['nodes']
+    names = [nodes[i].get('name') for i in skin['joints']]
+    if names != list(rig.joint_names):
+        raise ValueError('joint order mismatch')
+    ibm = accessor(document, binary, skin['inverseBindMatrices']).reshape(-1, 4, 4).transpose(0, 2, 1)
+    parent = {c: i for i, n in enumerate(nodes) for c in n.get('children', [])}
+    world = {}
+
+    def position(i):
+        if i not in world:
+            if nodes[i].get('rotation') and not np.allclose(nodes[i]['rotation'], [0, 0, 0, 1]):
+                raise ValueError('rest rotation must be identity')
+            world[i] = np.asarray(nodes[i].get('translation', [0, 0, 0]), float) + (position(parent[i]) if i in parent else 0)
+        return world[i]
+    points = np.stack([position(i) for i in skin['joints']])
+    joint_error = float(np.abs(points - rig.joints).max())
+    bind = np.tile(np.eye(4), (len(points), 1, 1))
+    bind[:, :3, 3] = points
+    ibm_error = float(np.abs(np.einsum('nij,njk->nik', bind, ibm) - np.eye(4)).max())
+    joint_rows, weight_rows = [], []
+    for node in nodes:
+        if 'mesh' not in node:
+            continue
+        if node.get('skin') != 0:
+            raise ValueError('mesh node without skin')
+        for primitive in document['meshes'][node['mesh']]['primitives']:
+            joint_rows.append(accessor(document, binary, primitive['attributes']['JOINTS_0']).astype(np.int64))
+            weight_rows.append(accessor(document, binary, primitive['attributes']['WEIGHTS_0']))
+    found_joints, found_weights = np.concatenate(joint_rows), np.concatenate(weight_rows)
+    expect_joints, expect_weights = np.asarray(expect_joints), np.asarray(expect_weights, float)
+    if found_joints.shape != expect_joints.shape:
+        raise ValueError('vertex count mismatch')
+    weight_error = float(np.abs(found_weights - expect_weights).max())
+    same_joints = bool(np.all((found_joints == expect_joints) | (found_weights == 0)))
+    sums = float(np.abs(found_weights.sum(1) - 1).max())
+    passed = bool(joint_error < 1e-4 * max(1, np.abs(points).max()) and ibm_error < 1e-4 and weight_error < 1e-6
+                  and same_joints and sums < 1e-5)
+    return {'joints': len(names), 'joint_position_max_error': joint_error, 'ibm_identity_max_error': ibm_error,
+            'weights_max_error': weight_error, 'joint_indices_match': same_joints, 'weight_sum_max_error': sums,
+            'max_joint_index': int(found_joints.max()), 'passed': passed}, found_joints, found_weights

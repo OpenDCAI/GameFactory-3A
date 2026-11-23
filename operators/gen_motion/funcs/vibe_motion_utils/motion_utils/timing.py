@@ -1,131 +1,191 @@
-"""Sample position curves using named events and interpolation modes."""
+"""Named event timing, action phases and any number of independent contact schedules.
+
+Time references (accepted everywhere a time is expected: curve keys, segments, windows, ballistic stages):
+  number            fraction of the duration (time_unit='fraction', default) or seconds (time_unit='seconds')
+  'start' / 'end'   0 / duration
+  '<event>'         a named event (same unit as numbers)
+  '<phase>.start' | '<phase>.end' | '<phase>.mid' | '<phase>@<f>'   phase boundaries / fraction f in [0,1] of a phase
+  '<t>s'            absolute seconds, e.g. '1.25s'
+  any of the above + '+<x>s' / '-<x>s'   offset in seconds, e.g. 'jump.end-0.1s'
+Phases: {name: [start_ref, end_ref]} describe the coarse action states (e.g. crouch / flight / land); detail inside a
+phase is then designed with per-window endpoint values (curve segments, effector keys / plants).
+Beats: {name: {start, count, period (s) | end, swing? in [-0.45, 0.45]}} subdivide a stretch of time into `count`
+consecutive generated phases 'name[1]' ... 'name[count]' (usable wherever a phase is: {'phase': 'stomp[2]'},
+'stomp[2].mid', 'stomp[2]@0.3', 'stomp[3].start-0.05s'). swing > 0 lengthens odd beats and shortens even ones
+(long-short groove); start / end may reference events and phases.
+"""
 from __future__ import annotations
 
-from dataclasses import dataclass
-from numbers import Real
+from dataclasses import dataclass, field
+import re
+
 import numpy as np
-from scipy.interpolate import CubicHermiteSpline, PchipInterpolator
+from scipy.interpolate import PchipInterpolator
 
-
-def fields(value, required, *, optional=(), label):
-    if not isinstance(value, dict):
-        raise ValueError(f'{label} must be an object')
-    missing = set(required) - value.keys()
-    extra = value.keys() - set(required) - set(optional)
-    if missing or extra:
-        raise ValueError(f'{label}: missing fields {sorted(missing)}, unknown fields {sorted(extra)}')
-
-
-def number(value, *, label, positive=False, nonnegative=False):
-    if isinstance(value, bool) or not isinstance(value, Real) or not np.isfinite(value):
-        raise ValueError(f'{label} must be a finite number')
-    if positive and value <= 0 or nonnegative and value < 0:
-        raise ValueError(f'{label} has an invalid sign')
-    return float(value)
-
-
-def numbers(value, shape, *, label):
-    array = np.asarray(value)
-    if array.shape != shape or array.dtype.kind not in 'iuf' or not np.isfinite(array).all():
-        raise ValueError(f'{label} must contain finite numbers with shape {shape}')
-    return array.astype(float)
+_SECONDS = re.compile(r'^(?P<t>\d*\.?\d+)s$')
+_OFFSET = re.compile(r'^(?P<base>.+?)(?P<off>[+-]\d*\.?\d+)s$')
+_PHASE = re.compile(r'^(?P<phase>[^@]+?)(?:\.(?P<edge>start|end|mid)|@(?P<frac>\d*\.?\d+))$')
 
 
 def smooth(value):
-    x = np.clip(value, 0, 1)
-    return x ** 3 * (10 + x * (-15 + 6 * x))
+    x = np.clip(value, 0., 1.)
+    return x*x*x*(10.+x*(-15.+6.*x))
+
+
+def interval(t, start, end):
+    if not np.isfinite([start, end]).all() or end <= start:
+        raise ValueError('Time interval must be finite and increasing')
+    return np.clip((np.asarray(t)-start)/(end-start), 0., 1.)
+
+
+def key_curve(t, keys, values):
+    keys, values, t = np.asarray(keys, float), np.asarray(values, float), np.asarray(t, float)
+    if keys.ndim != 1 or len(keys) < 2 or np.any(np.diff(keys) <= 0) or len(values) != len(keys):
+        raise ValueError('Expected ordered keys and matching values')
+    if not all(np.isfinite(a).all() for a in (keys, values, t)):
+        raise ValueError('Non-finite trajectory')
+    return PchipInterpolator(keys, values, axis=0)(np.clip(t, keys[0], keys[-1]))
 
 
 @dataclass(frozen=True)
 class Rhythm:
     duration: float
     fps: float
-    events: dict
+    events: dict[str, float]
+    phases: dict = field(default_factory=dict)
+    time_unit: str = 'fraction'
+    beats: dict = field(default_factory=dict)
 
     def __post_init__(self):
-        number(self.duration, label='rhythm.duration', positive=True)
-        number(self.fps, label='rhythm.fps', positive=True)
-        count = self.duration * self.fps
-        tolerance = np.spacing(max(count, 1.0))
-        if not np.isfinite(count) or round(count) < 1 or abs(count - round(count)) > tolerance:
-            raise ValueError('duration * fps must be a positive integer so exported cadence matches event timing')
-        if not isinstance(self.events, dict):
-            raise ValueError('rhythm.events must be an object')
-        for key, value in self.events.items():
-            if not isinstance(key, str) or not key.strip() or key in ('start', 'end'):
-                raise ValueError('Event names must be nonempty; start/end are reserved')
-            self.fraction(number(value, label=f'event {key}'))
+        if not np.isfinite([self.duration, self.fps]).all() or self.duration <= 0 or not 1 <= self.fps <= 240:
+            raise ValueError('Positive duration and fps in [1,240] required')
+        if round(self.duration*self.fps) < 1 or not isinstance(self.events, dict):
+            raise ValueError('Invalid sampling duration/events')
+        if self.time_unit not in ('fraction', 'seconds'):
+            raise ValueError("time_unit must be 'fraction' or 'seconds'")
+        top = 1. if self.time_unit == 'fraction' else self.duration
+        for name, value in self.events.items():
+            if not isinstance(name, str) or not name.strip() or name in ('start', 'end'):
+                raise ValueError('Event IDs must be nonempty; start/end are reserved')
+            if isinstance(value, bool) or not np.isfinite(value) or not 0 <= value <= top+1e-9:
+                raise ValueError(f'Event {name} must be a finite time in [0,{top:g}] ({self.time_unit})')
+        if not isinstance(self.phases, dict):
+            raise ValueError('phases must be a mapping {name: [start, end]}')
+        object.__setattr__(self, '_all_phases', dict(self.phases))
+        for name, window in self.phases.items():
+            if not isinstance(name, str) or not name.strip() or name in self.events or name in ('start', 'end') \
+                    or any(c in name for c in '.@+[]'):
+                raise ValueError(f'Invalid phase name {name!r} (unique, not an event, no ".", "@", "+", "[", "]")')
+            if not isinstance(window, (list, tuple)) or len(window) != 2:
+                raise ValueError(f'Phase {name} needs [start, end]')
+            a, b = (self.seconds(v) for v in window)
+            if b <= a:
+                raise ValueError(f'Phase {name} must have end > start')
+        if not isinstance(self.beats, dict):
+            raise ValueError('beats must be a mapping {name: {start, count, period | end, swing?}}')
+        for name, spec in self.beats.items():
+            self._add_beats(name, spec)
 
-    def fraction(self, value):
-        if isinstance(value, str):
-            if value == 'start':
-                return 0.0
-            if value == 'end':
-                return 1.0
-            if value not in self.events:
-                raise ValueError(f'Unknown timing event: {value}')
-            value = self.events[value]
-        value = number(value, label='time reference')
-        if not 0 <= value <= 1:
-            raise ValueError('Time references must be fractions in [0,1]')
-        return value
+    def _add_beats(self, name, spec):
+        if not isinstance(name, str) or not name.strip() or name in self.events or name in self._all_phases \
+                or name in ('start', 'end') or any(c in name for c in '.@+[]'):
+            raise ValueError(f'Invalid beat name {name!r}')
+        if not isinstance(spec, dict) or set(spec)-{'start', 'end', 'period', 'count', 'swing'} \
+                or not {'start', 'count'} <= set(spec) or ('end' in spec) == ('period' in spec):
+            raise ValueError(f'Beat {name}: needs start, count and exactly one of end / period (s), optional swing')
+        count = spec['count']
+        if isinstance(count, bool) or not isinstance(count, (int, np.integer)) or not 1 <= count <= 400:
+            raise ValueError(f'Beat {name}: count must be an integer in [1, 400]')
+        swing = float(spec.get('swing', 0.))
+        if not np.isfinite(swing) or abs(swing) > .45:
+            raise ValueError(f'Beat {name}: swing in [-0.45, 0.45]')
+        a = self.seconds(spec['start'])
+        weights = np.array([1.+swing if i % 2 == 0 else 1.-swing for i in range(count)])
+        if 'end' in spec:
+            b = self.seconds(spec['end'])
+            if b <= a:
+                raise ValueError(f'Beat {name}: end must be after start')
+            period = (b-a)/weights.sum()
+        else:
+            period = spec['period']
+            if isinstance(period, bool) or not np.isfinite(period) or period <= 0:
+                raise ValueError(f'Beat {name}: period must be positive seconds')
+        edges = a+np.concatenate([[0.], np.cumsum(weights*float(period))])
+        if edges[-1] > self.duration+1e-6:
+            raise ValueError(f'Beat {name}: beats end after the duration ({edges[-1]:.3f}s)')
+        for i in range(count):
+            self._all_phases[f'{name}[{i+1}]'] = [f'{edges[i]:.9f}s', f'{min(edges[i+1], self.duration):.9f}s']
+
+    @property
+    def all_phases(self):
+        """authored phases plus the generated beat phases."""
+        return self._all_phases
 
     def sample(self):
-        return np.arange(round(self.duration * self.fps) + 1) / self.fps
+        return np.linspace(0., self.duration, round(self.duration*self.fps)+1)
 
-    def windows(self, values):
-        if not isinstance(values, list):
-            raise ValueError('Contact windows must be a list')
-        result = []
-        for window in values:
-            if not isinstance(window, (list, tuple)) or len(window) != 2:
-                raise ValueError('Each contact window needs two time references')
-            a, b = map(self.fraction, window)
-            if a > b or result and a <= result[-1][1]:
-                raise ValueError('Contact windows must be ordered and separated')
-            result.append((a, b))
-        return np.asarray(result, float).reshape(-1, 2)
+    def _number(self, value):
+        if isinstance(value, bool) or not np.isfinite(value):
+            raise ValueError('Time reference must be finite')
+        t = float(value)*self.duration if self.time_unit == 'fraction' else float(value)
+        if not -1e-9 <= t <= self.duration*(1+1e-9)+1e-9:
+            raise ValueError('Time reference outside [0, duration]')
+        return min(max(t, 0.), self.duration)
 
-    def contact_ids(self, times, windows):
-        """Closed contact windows with one-ULP protection for boundary arithmetic."""
-        times = np.asarray(times, float)
-        result = np.full(times.shape, -1, dtype=int)
-        for index, (a, b) in enumerate(self.windows(windows)):
-            lower = np.nextafter(a * self.duration, -np.inf)
-            upper = np.nextafter(b * self.duration, np.inf)
-            result[(times >= lower) & (times <= upper)] = index
-        return result
+    def _ref(self, text):
+        if text in self.events:
+            return self._number(self.events[text])
+        if text == 'start':
+            return 0.
+        if text == 'end':
+            return self.duration
+        match = _SECONDS.match(text)
+        if match:
+            return float(match['t'])
+        match = _PHASE.match(text)
+        if match and match['phase'] in self._all_phases:
+            a, b = (self.seconds(v) for v in self._all_phases[match['phase']])
+            f = {'start': 0., 'end': 1., 'mid': .5}[match['edge']] if match['edge'] else float(match['frac'])
+            if not 0 <= f <= 1:
+                raise ValueError(f'Phase fraction outside [0,1]: {text}')
+            return a+f*(b-a)
+        match = _OFFSET.match(text)
+        if match:
+            return self._ref(match['base'])+float(match['off'])
+        raise ValueError(f'Unknown timing event: {text}')
+
+    def fraction(self, name):
+        return self.seconds(name)/self.duration
+
+    def seconds(self, value):
+        if isinstance(value, str):
+            t = self._ref(value.strip())
+            if not -1e-9 <= t <= self.duration+1e-9:
+                raise ValueError(f'Time reference outside [0, duration]: {value}')
+            return min(max(t, 0.), self.duration)
+        if isinstance(value, bool) or not isinstance(value, (int, float, np.integer, np.floating)):
+            raise ValueError(f'Invalid time reference: {value!r}')
+        return self._number(value)
+
+    def window(self, spec):
+        """(start_s, end_s) of a window given as {'phase': name} or {'start': ref, 'end': ref} (end > start)."""
+        if 'phase' in spec:
+            if spec['phase'] not in self._all_phases:
+                raise ValueError(f'Unknown phase: {spec["phase"]}')
+            a, b = (self.seconds(v) for v in self._all_phases[spec['phase']])
+        else:
+            a, b = self.seconds(spec['start']), self.seconds(spec['end'])
+        if b <= a:
+            raise ValueError('Window end must be after start')
+        return a, b
 
     def contact_mask(self, times, windows):
-        return self.contact_ids(times, windows) >= 0
-
-
-def curve(track, rhythm, times, *, width):
-    fields(track, ('keys', 'values', 'interpolation'), optional=('slopes',), label='curve')
-    if not isinstance(track['keys'], list) or len(track['keys']) < 2:
-        raise ValueError('Curves need at least two keys')
-    keys = np.asarray([rhythm.fraction(k) for k in track['keys']])
-    if np.any(np.diff(keys) <= 0):
-        raise ValueError('Curve keys must be strictly increasing after event resolution')
-    shape = (len(keys), width) if width else (len(keys),)
-    values = numbers(track['values'], shape, label='curve.values')
-    samples = np.clip(np.asarray(times, float) / rhythm.duration, keys[0], keys[-1])
-    mode = track['interpolation']
-    if mode == 'hermite':
-        if 'slopes' not in track:
-            raise ValueError('Hermite curves require explicit slopes in normalized-time units')
-        slopes = numbers(track['slopes'], shape, label='curve.slopes')
-        return CubicHermiteSpline(keys, values, slopes, axis=0)(samples)
-    if 'slopes' in track:
-        raise ValueError('Slopes are only valid for Hermite interpolation')
-    if mode == 'pchip':
-        return PchipInterpolator(keys, values, axis=0)(samples)
-    if mode not in ('linear', 'smooth'):
-        raise ValueError('Interpolation must be pchip, hermite, linear or smooth')
-    index = np.clip(np.searchsorted(keys, samples, side='right') - 1, 0, len(keys) - 2)
-    weight = (samples - keys[index]) / (keys[index + 1] - keys[index])
-    if mode == 'smooth':
-        weight = smooth(weight)
-    if width:
-        weight = weight[..., None]
-    return values[index] + weight * (values[index + 1] - values[index])
+        mask = np.zeros(np.asarray(times).shape, bool)
+        last = -1.
+        for start, end in windows:
+            a, b = self.seconds(start), self.seconds(end)
+            if b < a or a <= last:
+                raise ValueError('Contact intervals must be ordered, nonoverlapping and increasing')
+            mask |= (np.asarray(times) >= a) & (np.asarray(times) <= b)
+            last = b
+        return mask

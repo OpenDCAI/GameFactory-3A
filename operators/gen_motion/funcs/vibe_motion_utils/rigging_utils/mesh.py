@@ -12,6 +12,8 @@ class CreatureMesh:
     faces: np.ndarray
     weld_map: np.ndarray
     source: Path | None = None
+    #: scene-node index per welded vertex (``None`` when the source had no node split); used by ``part_bones``
+    node_ids: np.ndarray | None = None
 
     @property
     def num_vertices(self) -> int:
@@ -94,3 +96,45 @@ def vertex_adjacency(faces: np.ndarray, num_vertices: int) -> list[np.ndarray]:
     starts = np.searchsorted(both[:, 0], np.arange(num_vertices))
     ends = np.searchsorted(both[:, 0], np.arange(num_vertices), side='right')
     return [np.unique(both[s:e, 1]) for s, e in zip(starts, ends)]
+
+
+@dataclass(frozen=True)
+class ReferenceRig:
+    'An artist skeleton and skin shipped with a file, kept for comparison. ``weights`` rows align with the welded vertices.'
+    joint_names: list[str]
+    parents: np.ndarray
+    rest: np.ndarray
+    weights: np.ndarray | None = None
+
+    @property
+    def num_joints(self) -> int:
+        return len(self.parents)
+
+
+def _merge(keys, vertices, faces):
+    _, first, inverse = np.unique(keys, axis=0, return_index=True, return_inverse=True)
+    inverse = inverse.reshape(-1)
+    order = np.argsort(first)
+    remap = np.empty(len(order), dtype=np.int64)
+    remap[order] = np.arange(len(order))
+    inverse = remap[inverse]
+    new_v = np.zeros((len(order), 3))
+    np.add.at(new_v, inverse, vertices)
+    new_v /= np.bincount(inverse, minlength=len(order)).astype(float)[:, None]
+    new_f = inverse[faces]
+    keep = (new_f[:, 0] != new_f[:, 1]) & (new_f[:, 1] != new_f[:, 2]) & (new_f[:, 0] != new_f[:, 2])
+    return new_v, new_f[keep], inverse
+
+
+def weld(vertices: np.ndarray, faces: np.ndarray, tol: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    'Merge coincident vertices by quantised coordinates; returns ``(vertices, faces, original -> new map)``.'
+    if tol <= 0:
+        return vertices, faces, np.arange(len(vertices))
+    return _merge(np.round(np.asarray(vertices, float) / tol).astype(np.int64), np.asarray(vertices, float), faces)
+
+
+def weld_by_node(vertices, faces, node_id, tol):
+    'Same as :func:`weld`, but vertices of different scene nodes (separate parts) are never merged.'
+    vertices = np.asarray(vertices, float)
+    keys = np.c_[np.round(vertices / tol).astype(np.int64), node_id]
+    return _merge(keys, vertices, faces)

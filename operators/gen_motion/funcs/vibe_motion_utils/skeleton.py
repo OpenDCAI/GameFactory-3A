@@ -17,7 +17,12 @@ def evaluate_skeleton(mesh: Any, rig: Any, *, config: dict) -> dict:
     return checks.evaluate_rig(mesh, rig, config=config)
 
 
-def mesh_from_arrays(vertices: np.ndarray, faces: np.ndarray, *, name: str) -> Any:
+def mesh_from_arrays(vertices: np.ndarray, faces: np.ndarray, *, name: str,
+                     weld_tolerance_ratio: float | None = None, node_ids: np.ndarray | None = None) -> Any:
+    """``CreatureMesh`` from raw arrays. ``weld_tolerance_ratio`` (times the bounding-box scale) merges coincident
+    vertices (UV / normal seams) so graph smoothing and gating see one connected surface; ``weld_map`` then maps the
+    raw vertices to the welded ones. ``node_ids`` (per raw vertex) keeps separate scene nodes apart, as
+    ``weld_by_node`` does. ``None`` keeps the input vertices as they are."""
     verts = np.asarray(vertices, dtype=np.float64)
     tris = np.asarray(faces)
     if verts.ndim != 2 or verts.shape[1] != 3 or not len(verts) or not np.isfinite(verts).all():
@@ -28,8 +33,27 @@ def mesh_from_arrays(vertices: np.ndarray, faces: np.ndarray, *, name: str) -> A
         raise ValueError('faces index vertices outside the vertex array')
     if not isinstance(name, str) or not name.strip():
         raise ValueError('mesh name must be a non-empty string')
-    return units.CreatureMesh(name=name, vertices=verts, faces=tris.astype(np.int64),
-                              weld_map=np.arange(len(verts)), source='arrays')
+    tris = tris.astype(np.int64)
+    weld_map = np.arange(len(verts))
+    welded_nodes = None
+    if weld_tolerance_ratio is not None:
+        finite_number(weld_tolerance_ratio, 'weld_tolerance_ratio')
+        if weld_tolerance_ratio <= 0:
+            raise ValueError('weld_tolerance_ratio must be positive')
+        tol = weld_tolerance_ratio * float(np.ptp(verts, axis=0).max())
+        if node_ids is None:
+            verts, tris, weld_map = units.weld(verts, tris, tol)
+        else:
+            node_ids = np.asarray(node_ids, np.int64)
+            if node_ids.shape != (len(verts),):
+                raise ValueError('node_ids must give one scene node per vertex')
+            verts, tris, weld_map = units.weld_by_node(verts, tris, node_ids, tol)
+            welded_nodes = np.zeros(len(verts), np.int64)
+            welded_nodes[weld_map] = node_ids
+    elif node_ids is not None:
+        raise ValueError('node_ids requires weld_tolerance_ratio')
+    return units.CreatureMesh(name=name, vertices=verts, faces=tris, weld_map=weld_map, source='arrays',
+                              node_ids=welded_nodes)
 
 
 def rig_to_text(rig: Any, *, precision: int, sum_tolerance: float,

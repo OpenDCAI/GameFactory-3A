@@ -1,4 +1,7 @@
-"""Position-first motion regressions using JSON inputs."""
+"""Motion generation regressions (JSON program -> clip) for ``vibe_motion_utils``.
+
+    python -m unittest test.test_vibe_motion
+"""
 from __future__ import annotations
 
 from copy import deepcopy
@@ -9,555 +12,275 @@ import unittest
 from unittest.mock import patch
 
 import numpy as np
-from scipy.interpolate import CubicHermiteSpline, PchipInterpolator
 from scipy.spatial.transform import Rotation
 
 from operators.gen_motion.operator import GenMotionOperator
-from operators.gen_motion.funcs.vibe_motion_utils import bvh, pipeline
+from operators.gen_motion.funcs.vibe_motion_utils import bvh, motion, pipeline
+from operators.gen_motion.funcs.vibe_motion_utils.motion_utils import (
+    MotionProgram, MotionStyle, Rhythm, SkeletonRig, asset, mesh_checks)
+from operators.gen_motion.funcs.vibe_motion_utils.motion_utils.generate import generate_motion
+from operators.gen_motion.funcs.vibe_motion_utils.motion_utils.program import ease, effector_events, sample_curve
+from operators.gen_motion.funcs.vibe_motion_utils.motion_utils.timing import key_curve
+from operators.gen_motion.funcs.vibe_motion_utils.rigging_utils import skin_mesh
+from operators.gen_motion.funcs.vibe_motion_utils.rigging_utils.export import animated_glb
+from operators.gen_motion.funcs.vibe_motion_utils.rigging_utils.mesh import CreatureMesh
+from operators.gen_motion.funcs.vibe_motion_utils.rigging_utils.probe import (
+    edge_stretch, joint_axes, probe_motion, probe_report)
+from operators.gen_motion.funcs.vibe_motion_utils.rigging_utils.types import RigResult
 
 
 FIXTURE_DIRECTORY = Path(__file__).parent / "vibe_motion_examples"
-FIXTURE_NAMES = ("horse_gallop_stop_kick", "turn_jump_chop", "synthetic_chain")
-VIDEO_OUTPUT_DIRECTORY = (
-    Path(__file__).resolve().parents[1]
-    / "test_data/outputs/_GPT6_astra_test/vibe_motion_refine260927"
-)
+FIXTURE_NAMES = ("horse_gallop_stop_kick", "turn_jump_chop", "synthetic_chain", "male02_landing",
+                 "fox_crouch_tail_spring")
+STYLE = dict(turn_degrees=0, travel_ratio=0, jump_ratio=0, crouch_ratio=0, arm_reach=.5, arm_clearance=.1)
+REFINE = {"iterations": 0, "foot_margin_ratio": 0., "residual_weight": 1., "ground_weight": 5.}
+LIMITS = {"shoulder_flexion": [-180, 180], "shoulder_abduction": [-90, 90], "shoulder_swivel": [-60, 60],
+          "elbow_flexion": [2, 165], "target_back_ratio": 1.0, "regularization": 0.005, "max_nfev": 60}
 
 
 def load_config(name):
+    """Example config; ``base`` / ``motion`` wrappers are kept as written."""
     return json.loads((FIXTURE_DIRECTORY / f"{name}.json").read_text(encoding="utf-8"))
 
 
-def event_time(config, value):
-    return config["rhythm"]["events"][value] if isinstance(value, str) else value
+def flat_config(name):
+    return pipeline.normalize_config(load_config(name))
 
 
-def sample_scalar(config, curve, times):
-    """Independent scalar interpolation oracle for fixture root trajectories."""
-    keys = np.asarray([event_time(config, key) for key in curve["keys"]])
-    values = np.asarray(curve["values"])
-    times = np.asarray(times)
-    method = curve["interpolation"]
-    if method == "hermite":
-        return CubicHermiteSpline(keys, values, curve["slopes"])(times)
-    if method == "pchip":
-        return PchipInterpolator(keys, values)(times)
-    if method == "linear":
-        return np.interp(times, keys, values)
-    indices = np.clip(np.searchsorted(keys, times, side="right") - 1, 0, len(keys) - 2)
-    phase = np.clip((times - keys[indices]) / (keys[indices + 1] - keys[indices]), 0, 1)
-    phase = phase ** 3 * (10 - 15 * phase + 6 * phase ** 2)
-    return values[indices] * (1 - phase) + values[indices + 1] * phase
+def C(value):
+    return {"initial": value}
 
 
-def root_at(config, times):
-    params = config["program"]["root"]["params"]
-    rest = np.asarray(config["skeleton"]["rest"])
-    root = config["skeleton"]["parents"].index(-1)
-    offset = np.stack([sample_scalar(config, params[key], times) for key in ("x", "y", "z")], axis=-1)
-    return rest[root] + params["scale"] * offset
+def rot(joints, cat="trunk", space="parent", **kw):
+    return {"category": cat, "joints": joints, "operator": "rotation",
+            "params": {"space": space, "weights": [round(1 / len(joints), 6)] * len(joints),
+                       "pitch": kw.get("pitch", C(0)), "twist": kw.get("twist", C(0)), "roll": kw.get("roll", C(0))}}
 
 
-def heading_at(config, time):
-    yaw = np.deg2rad(sample_scalar(config, config["program"]["root"]["params"]["yaw"], time))
-    cosine, sine = np.cos(yaw), np.sin(yaw)
-    return np.array([[cosine, 0, sine], [0, 1, 0], [-sine, 0, cosine]])
+def arm(side, angle=170, radius=.9, lateral=.3, **extra):
+    return {"category": "upper_limb", "side": side, "joints": [f"upperarm.{side}", f"forearm.{side}", f"hand.{side}"],
+            "operator": "arm_arc", "params": {"angle": C(angle) if not isinstance(angle, dict) else angle,
+                                              "radius": C(radius),
+                                              "lateral": C(lateral) if not isinstance(lateral, dict) else lateral,
+                                              "preferred_swivel_degrees": 15, "limits": deepcopy(LIMITS), **extra}}
 
 
-def flexion_degrees(joints, indices):
-    proximal = joints[:, indices[1]] - joints[:, indices[0]]
-    distal = joints[:, indices[2]] - joints[:, indices[1]]
-    cosine = np.einsum("ti,ti->t", proximal, distal)
-    cosine /= np.linalg.norm(proximal, axis=1) * np.linalg.norm(distal, axis=1)
-    return np.rad2deg(np.arccos(np.clip(cosine, -1, 1)))
+def leg(side, **params):
+    p = {"pole": [0, .3, 1], "flexion": [-5, 150]}
+    p.update(params)
+    if "plants" not in p and "gait" not in p and "keys" not in p:
+        p["plants"] = [{"start": 0, "end": "end", "anchor": "start"}]
+    return {"category": "lower_limb", "side": side,
+            "joints": [f"thigh.{side}", f"shin.{side}", f"foot.{side}", f"toe.{side}"],
+            "operator": "effector", "params": p}
 
 
-def world_rotations(clip):
-    """Compose local rotations independently of the production FK implementation."""
-    quaternions = np.asarray(clip.quats)[..., [1, 2, 3, 0]]
-    local = Rotation.from_quat(quaternions.reshape(-1, 4)).as_matrix()
-    local = local.reshape(*quaternions.shape[:-1], 3, 3)
-    world = np.empty_like(local)
-    for joint in range(clip.num_joints):
-        ancestors = []
-        cursor = joint
-        while cursor >= 0:
-            ancestors.append(cursor)
-            cursor = clip.template.parents[cursor]
-        rotation = np.broadcast_to(np.eye(3), (clip.num_frames, 3, 3))
-        for ancestor in reversed(ancestors):
-            rotation = rotation @ local[:, ancestor]
-        world[:, joint] = rotation
-    return world
+def human(parts=None, root=None, refine=None, dur=2.0, phases=None, beats=None):
+    base = {"pelvis": rot(["hips"]), "torso": rot(["spine", "chest", "chest_upper"]),
+            "head": rot(["neck", "head"], "head"), "armL": arm("L"), "armR": arm("R"), "legL": leg("L"),
+            "legR": leg("R")}
+    base.update(parts or {})
+    r = {"x": C(0), "y": C(0), "z": C(0), "yaw": C(0)}
+    r.update(root or {})
+    rhythm = {"duration": dur, "fps": 30, "events": {}, "time_unit": "seconds", "phases": phases or {}}
+    if beats:
+        rhythm["beats"] = beats
+    return {"rhythm": rhythm, "style": STYLE,
+            "program": {"action": "test", "forward": [0, 0, 1], "root": {"operator": "curves", "params": r},
+                        "parts": base, "refine": {**REFINE, **(refine or {})}}}
 
 
-class VibeMotionTest(unittest.TestCase):
+def make_rig(config):
+    skeleton = config["skeleton"]
+    return SkeletonRig(skeleton["parents"], skeleton["rest"], skeleton["names"])
+
+
+def run(rig, spec):
+    rhythm = Rhythm(**spec["rhythm"])
+    style = MotionStyle(**spec["style"], program=MotionProgram(**deepcopy(spec["program"])))
+    return generate_motion(rig, rhythm=rhythm, style=style)
+
+
+def idx(rig, name):
+    return [n.get("name") for n in rig.nodes].index(name)
+
+
+def angle(a, b):
+    a, b = np.asarray(a, float), np.asarray(b, float)
+    c = np.sum(a * b, -1) / np.linalg.norm(a, axis=-1) / np.linalg.norm(b, axis=-1)
+    return np.degrees(np.arccos(np.clip(c, -1, 1)))
+
+
+R = Rhythm(duration=4., fps=30, events={}, time_unit="seconds")
+T = R.sample()
+
+
+class CurveAndRhythmTest(unittest.TestCase):
+    def test_interp_modes_and_eases(self):
+        base = {"keys": [0, 1, 2, 4], "values": [0, 10, 0, 5]}
+        lin = sample_curve({**base, "interp": "linear"}, R, None, np.array([.5, 3.]))
+        np.testing.assert_allclose(lin, [5, 2.5])
+        smooth = sample_curve({**base, "interp": "smooth"}, R, None, np.array([.999, 1., 1.001]))
+        self.assertLess(abs(smooth[2] - smooth[0]), 1e-3)
+        cubic = sample_curve({**base, "interp": "cubic"}, R, None, np.array([0, 1, 2, 4.]))
+        np.testing.assert_allclose(cubic, [0, 10, 0, 5])
+        step = sample_curve({**base, "interp": "step"}, R, None, np.array([.99, 1.5]))
+        np.testing.assert_allclose(step, [0, 10])
+        mixed = sample_curve({**base, "eases": [None, "linear", "back_out"]}, R, None, np.array([1.5, 3.5]))
+        self.assertAlmostEqual(mixed[0], 5)
+        self.assertGreater(mixed[1], 5)
+        default = sample_curve(base, R, None, T)
+        np.testing.assert_allclose(default, key_curve(T / 4, np.array([0, .25, .5, 1.]), np.array([0, 10, 0, 5.])))
+
+    def test_new_eases_end_at_targets(self):
+        p = np.linspace(0, 1, 201)
+        for name in ("sine", "back_in", "back_out", "back_in_out", "elastic", "bounce", "snap"):
+            e = ease(p, name)
+            self.assertLess(abs(e[0]), 1e-9, name)
+            self.assertLess(abs(e[-1] - 1), 1e-6, name)
+        self.assertLess(ease(p, "back_in").min(), -.05)
+        self.assertGreater(ease(p, "back_out").max(), 1.05)
+
+    def test_rate_add_pattern_noise(self):
+        rate = {"rate": {"keys": [0, 2, 4], "values": [90, 90, 0], "interp": "linear"}}
+        full = sample_curve(rate, R, None, T)
+        self.assertAlmostEqual(full[T == 2.][0], 180, delta=.1)
+        self.assertAlmostEqual(full[-1], 270, delta=.2)
+        np.testing.assert_allclose(sample_curve(rate, R, None, np.array([3.])), full[np.isclose(T, 3.)], atol=1e-9)
+        add = sample_curve({"add": [C(2), {"keys": [0, 4], "values": [0, 4], "interp": "linear"}]}, R, None,
+                           np.array([1.]))
+        self.assertAlmostEqual(add[0], 3)
+        pattern = {"pattern": {"keys": [0, .25, 1], "values": [0, 10, 0], "interp": "linear"}, "start": 1, "end": 3,
+                   "count": 4}
+        values = sample_curve(pattern, R, None, np.array([.5, 1., 1.125, 1.5, 1.625, 3.5]))
+        np.testing.assert_allclose(values, [0, 0, 10, 0, 10, 0])
+        noise = {"initial": 0, "oscillators": [{"start": 0, "end": 4, "amplitude": 2, "frequency": 3,
+                                                "shape": "noise", "seed": 7}]}
+        n1, n2 = sample_curve(noise, R, None, T), sample_curve(noise, R, None, T)
+        np.testing.assert_allclose(n1, n2)
+        self.assertTrue(0 < np.abs(n1).max() < 4.5 and np.std(np.diff(n1)) > 0)
+
+    def test_style_references_scale_with_style(self):
+        style = MotionStyle(**{**STYLE, "turn_degrees": 90}, program=None)
+        values = sample_curve({"keys": [0, 4], "values": [0, "$turn_degrees"], "interp": "linear"}, R, style,
+                              np.array([2.]))
+        self.assertAlmostEqual(values[0], 45)
+        half = sample_curve({"keys": [0, 4], "values": [0, {"style": "turn_degrees", "factor": .5}],
+                             "interp": "linear"}, R, style, np.array([4.]))
+        self.assertAlmostEqual(half[0], 45)
+        with self.assertRaises(ValueError):
+            sample_curve({"initial": "$unknown"}, R, style, np.array([0.]))
+
+    def test_time_unit_fraction_matches_seconds(self):
+        seconds = Rhythm(duration=2., fps=30, events={"mid": 1.}, time_unit="seconds")
+        fraction = Rhythm(duration=2., fps=30, events={"mid": .5})
+        self.assertEqual(fraction.time_unit, "fraction")
+        self.assertAlmostEqual(seconds.seconds("mid"), fraction.seconds("mid"))
+        self.assertAlmostEqual(seconds.seconds(1.), 1.)
+        self.assertAlmostEqual(fraction.seconds(.5), 1.)
+        with self.assertRaises(ValueError):
+            Rhythm(duration=2., fps=30, events={}, time_unit="frames")
+
+    def test_beats_generate_phases(self):
+        r = Rhythm(duration=4., fps=30, events={}, time_unit="seconds", phases={"go": [0.5, 3.5]},
+                   beats={"stomp": {"start": "go.start", "end": "go.end", "count": 3},
+                          "sw": {"start": 0, "period": .5, "count": 4, "swing": .2}})
+        self.assertAlmostEqual(r.seconds("stomp[2].mid"), 2.0)
+        self.assertAlmostEqual(r.seconds("stomp[3].end"), 3.5)
+        self.assertAlmostEqual(r.window({"phase": "sw[1]"})[1], .6)
+        self.assertAlmostEqual(r.window({"phase": "sw[2]"})[1], 1.0)
+        segment = {"segments": [{"phase": "stomp[2]", "to": 1.}], "initial": 0}
+        self.assertAlmostEqual(sample_curve(segment, r, None, np.array([2.5]))[0], 1.)
+        with self.assertRaises(ValueError):
+            Rhythm(duration=1., fps=30, events={}, time_unit="seconds",
+                   beats={"b": {"start": 0, "period": .5, "count": 3}})
+
+
+class ExampleTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.configs = {name: load_config(name) for name in FIXTURE_NAMES}
-        cls.results = {
-            name: pipeline.generate_vibe_motion(config=deepcopy(config))
-            for name, config in cls.configs.items()
-        }
+        cls.configs = {name: flat_config(name) for name in FIXTURE_NAMES}
+        cls.results = {name: pipeline.generate_vibe_motion(config=load_config(name)) for name in FIXTURE_NAMES}
 
-    def assert_bone_lengths(self, config, joints):
-        rest = np.asarray(config["skeleton"]["rest"])
-        parents = np.asarray(config["skeleton"]["parents"])
-        children = np.flatnonzero(parents >= 0)
-        expected = np.linalg.norm(rest[children] - rest[parents[children]], axis=-1)
-        actual = np.linalg.norm(joints[:, children] - joints[:, parents[children]], axis=-1)
-        np.testing.assert_allclose(actual, np.broadcast_to(expected, actual.shape), atol=1e-6, rtol=1e-6)
-
-    def test_fixtures_are_finite_and_export_complete_bvh(self):
-        required = {"bvh_bytes", "fps", "joints", "metrics", "residuals", "action", "frames", "notes", "targets", "contacts", "clip", "vibe_report_json"}
+    def test_examples_are_finite_and_export_complete_bvh(self):
+        required = {"bvh_bytes", "fps", "joints", "metrics", "action", "frames", "notes", "clip", "vibe_report_json"}
         for name, result in self.results.items():
-            with self.subTest(fixture=name):
+            with self.subTest(example=name):
                 config = self.configs[name]
-                frames = round(config["rhythm"]["duration"] * config["rhythm"]["fps"]) + 1
-                count = len(config["skeleton"]["names"])
+                frames = len(Rhythm(**config["rhythm"]).sample())
+                names = config["skeleton"]["names"]
                 self.assertTrue(required <= result.keys())
                 self.assertEqual(result["action"], config["program"]["action"])
                 self.assertEqual(result["fps"], config["rhythm"]["fps"])
                 self.assertEqual(result["frames"], frames)
-                self.assertAlmostEqual((frames - 1) / result["fps"], config["rhythm"]["duration"])
-                self.assertEqual(result["joints"].shape, (frames, count, 3))
+                self.assertEqual(result["joints"].shape, (frames, len(names), 3))
                 self.assertTrue(np.isfinite(result["joints"]).all())
                 self.assertTrue(np.isfinite(result["clip"].quats).all())
                 self.assertTrue(np.isfinite(result["clip"].trans).all())
-                self.assert_bone_lengths(config, result["joints"])
                 self.assertEqual(result["metrics"]["failures"], [])
-                text = result["bvh_bytes"].decode("utf-8")
-                hierarchy, motion_text = text.split("MOTION\n", 1)
+                self.assertFalse([w for w in result["warnings"] if "upside down" in w])
+                self.assertLess(result["metrics"]["bone_length_max_error"], 1e-6 * max(
+                    1., float(np.ptp(np.asarray(config["skeleton"]["rest"]), axis=0).max())))
+                hierarchy, motion_text = result["bvh_bytes"].decode("utf-8").split("MOTION\n", 1)
                 self.assertTrue(hierarchy.startswith("HIERARCHY\n"))
-                for joint in config["skeleton"]["names"]:
+                for joint in names:
                     self.assertIn(f" {joint}\n", hierarchy)
                 rows = motion_text.splitlines()
                 self.assertEqual(rows[0], f"Frames: {frames}")
                 self.assertAlmostEqual(float(rows[1].split(":")[1]), 1 / result["fps"])
-                self.assertEqual(len(rows) - 2, frames)
                 channels = np.asarray([list(map(float, row.split())) for row in rows[2:]])
-                self.assertEqual(channels.shape, (frames, 3 + 3 * count))
-                self.assertTrue(np.isfinite(channels).all())
+                self.assertEqual(channels.shape, (frames, 3 + 3 * len(names)))
                 self.assertEqual(bvh.clip_to_bvh_bytes(result["clip"]), result["bvh_bytes"])
                 report = json.loads(result["vibe_report_json"])
                 self.assertEqual(report["metrics"], result["metrics"])
-                self.assertEqual(report["frames"], frames)
-                self.assertEqual(report["fps"], result["fps"])
                 json.dumps(report, allow_nan=False)
 
-    def test_root_curves_and_ballistic_height_have_explicit_timing(self):
-        for name, result in self.results.items():
-            with self.subTest(fixture=name):
-                config = self.configs[name]
-                times = np.linspace(0, 1, result["frames"])
-                root = config["skeleton"]["parents"].index(-1)
-                np.testing.assert_allclose(result["joints"][:, root], root_at(config, times), atol=1e-6)
+    def test_flip_flags_heading_poles_and_unreachable_airborne_feet(self):
+        config = flat_config("male02_landing")
+        for key in ("legL", "legR"):
+            params = config["program"]["parts"][key]["params"]
+            self.assertEqual(params.pop("pole_frame"), "body")
+        heading = pipeline.generate_vibe_motion(config=deepcopy(config))
+        self.assertTrue([w for w in heading["warnings"] if "upside down" in w and "legL" in w])
+        for key in ("legL", "legR"):
+            config["program"]["parts"][key]["params"].pop("keys")
+        grounded = pipeline.generate_vibe_motion(config=config)
+        self.assertIn("ik_residual", grounded["metrics"]["failures"])
+        self.assertEqual(set(grounded["metrics"]["ik_unreachable_parts"]), {"legL", "legR"})
+
+    def test_wrapped_config_equals_flat_config(self):
+        wrapped = load_config("male02_landing")
+        self.assertEqual(set(wrapped), {"base", "skeleton", "motion"})
+        self.assertIn("video", wrapped["motion"])
+        flat = flat_config("male02_landing")
+        self.assertNotIn("base", flat)
+        again = pipeline.generate_vibe_motion(config=flat)
+        self.assertEqual(again["bvh_bytes"], self.results["male02_landing"]["bvh_bytes"])
+
+    def test_pipeline_matches_reference_generator(self):
         config = self.configs["turn_jump_chop"]
-        result = self.results["turn_jump_chop"]
-        events = config["rhythm"]["events"]
-        times = np.arange(result["frames"]) / result["fps"] / config["rhythm"]["duration"]
-        airborne = (times[1:-1] > events["release_right"] + 1 / (result["frames"] - 1)) & (times[1:-1] < events["land_left"] - 1 / (result["frames"] - 1))
-        root = config["skeleton"]["parents"].index(-1)
-        acceleration = np.diff(result["joints"][:, root, 1], n=2) * result["fps"] ** 2
-        self.assertGreater(int(airborne.sum()), 10)
-        self.assertLess(float(acceleration[airborne].max()), 0)
-        np.testing.assert_allclose(acceleration[airborne], acceleration[airborne].mean(), atol=2e-3, rtol=2e-3)
+        rig = make_rig(config)
+        result, _, _ = run(rig, config)
+        np.testing.assert_allclose(self.results["turn_jump_chop"]["joints"], result["positions"], atol=1e-9)
 
-    def test_event_timing_changes_positions_not_frame_count(self):
-        config = load_config("synthetic_chain")
-        before = self.results["synthetic_chain"]
-        config["rhythm"]["events"]["beat"] /= 2
-        after = pipeline.generate_vibe_motion(config=config)
-        self.assertEqual(before["frames"], after["frames"])
-        self.assertFalse(np.allclose(before["targets"]["probe"], after["targets"]["probe"]))
-        self.assertFalse(np.allclose(before["joints"], after["joints"]))
-        peak = config["program"]["parts"]["probe"]["params"]["trajectory"]["values"][1]
-        frame = round(config["rhythm"]["events"]["beat"] * (after["frames"] - 1))
-        np.testing.assert_allclose(after["targets"]["probe"][frame], peak, atol=1e-7)
-
-    def test_fps_changes_sampling_density_not_trajectories(self):
-        for name in FIXTURE_NAMES:
-            with self.subTest(fixture=name):
-                config = load_config(name)
-                config["rhythm"]["fps"] *= 2
-                dense = pipeline.generate_vibe_motion(config=config)
-                original = self.results[name]
-                self.assertEqual(dense["frames"], 2 * (original["frames"] - 1) + 1)
-                self.assertAlmostEqual((dense["frames"] - 1) / dense["fps"], config["rhythm"]["duration"])
-                root = config["skeleton"]["parents"].index(-1)
-                np.testing.assert_allclose(dense["joints"][::2, root], original["joints"][:, root], atol=1e-9)
-                for part in original["targets"]:
-                    np.testing.assert_allclose(dense["targets"][part][::2], original["targets"][part], atol=1e-9)
-                for part in original["contacts"]:
-                    np.testing.assert_array_equal(dense["contacts"][part][::2], original["contacts"][part])
-                if name != "turn_jump_chop":
-                    np.testing.assert_allclose(dense["joints"][::2], original["joints"], atol=1e-9)
-
-    def test_parent_and_part_order_are_not_semantic(self):
-        for name in ("synthetic_chain", "horse_gallop_stop_kick"):
-            with self.subTest(fixture=name):
-                config = load_config(name)
-                spec = config["skeleton"]
-                order = list(reversed(range(len(spec["names"]))))
-                inverse = {old: new for new, old in enumerate(order)}
-                spec["names"] = [spec["names"][old] for old in order]
-                spec["rest"] = [spec["rest"][old] for old in order]
-                spec["parents"] = [-1 if spec["parents"][old] < 0 else inverse[spec["parents"][old]] for old in order]
-                config["program"]["parts"] = dict(reversed(list(config["program"]["parts"].items())))
-                result = pipeline.generate_vibe_motion(config=config)
-                np.testing.assert_allclose(result["joints"], self.results[name]["joints"][:, order], atol=1e-6)
-                self.assert_bone_lengths(config, result["joints"])
-                for part, target in result["targets"].items():
-                    np.testing.assert_allclose(target, self.results[name]["targets"][part], atol=1e-6)
-
-    def test_contact_targets_use_exact_anchors_and_remain_locked(self):
-        for name in ("horse_gallop_stop_kick", "turn_jump_chop"):
-            config, result = self.configs[name], self.results[name]
-            times = np.linspace(0, 1, result["frames"])
-            rest = np.asarray(config["skeleton"]["rest"])
-            names = config["skeleton"]["names"]
-            root = config["skeleton"]["parents"].index(-1)
-            for part, definition in config["program"]["parts"].items():
-                if definition["operator"] not in ("contact_path", "position"):
-                    continue
-                with self.subTest(fixture=name, part=part):
-                    params = definition["params"]
-                    expected_mask = np.zeros(result["frames"], dtype=bool)
-                    expected_ids = np.full(result["frames"], -1, dtype=int)
-                    tip = names.index(definition["joints"][-1])
-                    for index, window in enumerate(params["contacts"]):
-                        start, end = [event_time(config, value) for value in window]
-                        mask = (times >= start - 1e-10) & (times <= end + 1e-10)
-                        expected_mask |= mask
-                        expected_ids[mask] = index
-                        self.assertTrue(mask.any())
-                        if definition["operator"] == "contact_path":
-                            anchor_time = event_time(config, params["anchor_times"][index])
-                            expected = root_at(config, anchor_time) + heading_at(config, anchor_time) @ (rest[tip] - rest[root])
-                            expected[1] = params["ground_height"]
-                        else:
-                            trajectory = params["trajectory"]
-                            keys = [event_time(config, key) for key in trajectory["keys"]]
-                            expected = np.asarray(trajectory["values"])[keys.index(start)]
-                        target = result["targets"][part][mask]
-                        np.testing.assert_allclose(target, np.broadcast_to(expected, target.shape), atol=1e-6)
-                        np.testing.assert_allclose(result["joints"][mask, tip], target, atol=1e-6)
-                    self.assertEqual(result["contacts"][part].dtype.kind, "b")
-                    np.testing.assert_array_equal(result["contacts"][part], expected_mask)
-                    np.testing.assert_array_equal(result["contact_ids"][part], expected_ids)
-
-    def test_contact_endpoints_are_inclusive_and_windows_keep_identity(self):
-        config = load_config("synthetic_chain")
-        config["rhythm"]["duration"] = 3
-        config["rhythm"]["fps"] = 30
-        params = config["program"]["parts"]["probe"]["params"]
-        params["contacts"] = [[0, 0.7]]
-        result = pipeline.generate_vibe_motion(config=config)
-        boundary = round(0.7 * config["rhythm"]["duration"] * config["rhythm"]["fps"])
-        self.assertTrue(result["contacts"]["probe"][boundary])
-        self.assertFalse(result["contacts"]["probe"][boundary + 1])
-        self.assertEqual(result["contact_ids"]["probe"][boundary], 0)
-        self.assertEqual(result["contact_ids"]["probe"][boundary + 1], -1)
-        config = load_config("synthetic_chain")
-        config["rhythm"]["fps"] = 1
-        params = config["program"]["parts"]["probe"]["params"]
-        params["contacts"] = [[0, 0], [1, 1]]
-        params["trajectory"]["values"][-1] = params["trajectory"]["values"][1]
-        result = pipeline.generate_vibe_motion(config=config)
-        np.testing.assert_array_equal(result["contacts"]["probe"], [True, True])
-        np.testing.assert_array_equal(result["contact_ids"]["probe"], [0, 1])
-        tip = config["skeleton"]["names"].index("tip")
-        self.assertGreater(float(np.linalg.norm(np.diff(result["joints"][:, tip], axis=0))), 0.1)
-        self.assertEqual(result["metrics"]["contact_pairs"], 0)
-        self.assertEqual(result["metrics"]["contact_speed_max"], 0)
-        self.assertNotIn("foot_skate", result["metrics"]["failures"])
-
-    def test_contact_orientation_stays_locked_while_body_turns(self):
-        config = self.configs["turn_jump_chop"]
-        result = self.results["turn_jump_chop"]
-        rotations = world_rotations(result["clip"])
-        times = np.linspace(0, 1, result["frames"])
-        rest = np.asarray(config["skeleton"]["rest"])
-        names = config["skeleton"]["names"]
-        yaw = sample_scalar(config, config["program"]["root"]["params"]["yaw"], times)
-        for name in ("step_a", "step_b"):
-            definition = config["program"]["parts"][name]
-            params = definition["params"]
-            ankle, tip = [names.index(joint) for joint in definition["joints"][-2:]]
-            orientation = params["orientation"]
-            for index, window in enumerate(params["contacts"]):
-                with self.subTest(part=name, window=index):
-                    start, end = [event_time(config, value) for value in window]
-                    mask = (times >= start - 1e-10) & (times <= end + 1e-10)
-                    degrees = sample_scalar(config, orientation, times[mask])
-                    np.testing.assert_allclose(degrees, degrees[0], atol=1e-9)
-                    expected = Rotation.from_euler("y", float(degrees[0]), degrees=True).as_matrix()
-                    for joint in (ankle, tip):
-                        actual = rotations[mask, joint]
-                        np.testing.assert_allclose(actual, np.broadcast_to(expected, actual.shape), atol=1e-7)
-                    expected_bone = expected @ (rest[tip] - rest[ankle])
-                    actual_bone = result["joints"][mask, tip] - result["joints"][mask, ankle]
-                    np.testing.assert_allclose(actual_bone, np.broadcast_to(expected_bone, actual_bone.shape), atol=1e-7)
-                    if index == 0:
-                        self.assertGreater(float(np.ptp(yaw[mask])), 1)
-
-    def test_contact_swings_match_explicit_offsets(self):
-        name = "horse_gallop_stop_kick"
-        config, result = self.configs[name], self.results[name]
-        times = np.linspace(0, 1, result["frames"])
-        rest = np.asarray(config["skeleton"]["rest"])
-        root = config["skeleton"]["parents"].index(-1)
-        for part, definition in config["program"]["parts"].items():
-            if definition["operator"] != "contact_path":
-                continue
-            params = definition["params"]
-            tip = config["skeleton"]["names"].index(definition["joints"][-1])
-            anchors = []
-            for time in params["anchor_times"]:
-                time = event_time(config, time)
-                anchor = root_at(config, time) + heading_at(config, time) @ (rest[tip] - rest[root])
-                anchor[1] = params["ground_height"]
-                anchors.append(anchor)
-            for index, arc in enumerate(params["arcs"]):
-                with self.subTest(part=part, gap=index):
-                    start = event_time(config, params["contacts"][index][1])
-                    end = event_time(config, params["contacts"][index + 1][0])
-                    frame = int(np.argmin(abs(times - (start + end) / 2)))
-                    phase = (times[frame] - start) / (end - start)
-                    blend = phase ** 3 * (10 - 15 * phase + 6 * phase ** 2)
-                    expected = (1 - blend) * anchors[index] + blend * anchors[index + 1]
-                    expected += heading_at(config, times[frame]) @ np.asarray(arc) * params["scale"] * np.sin(np.pi * phase) ** 2
-                    np.testing.assert_allclose(result["targets"][part][frame], expected, atol=1e-6)
-
-    def test_residuals_equal_actual_target_distances(self):
-        for name, result in self.results.items():
-            config = self.configs[name]
-            maxima = []
-            for part, target in result["targets"].items():
-                with self.subTest(fixture=name, part=part):
-                    tip_name = config["program"]["parts"][part]["joints"][-1]
-                    tip = config["skeleton"]["names"].index(tip_name)
-                    target = np.asarray(target)
-                    self.assertEqual(target.shape, (result["frames"], 3))
-                    self.assertTrue(np.isfinite(target).all())
-                    actual = np.linalg.norm(result["joints"][:, tip] - target, axis=-1)
-                    np.testing.assert_allclose(result["residuals"][part], actual, atol=1e-7, rtol=1e-6)
-                    maxima.append(float(actual.max()))
-            self.assertTrue(maxima)
-            self.assertAlmostEqual(result["metrics"]["target_error_max"], max(maxima), places=6)
-            if max(maxima) > config["program"]["quality"]["target_tolerance"]:
-                self.assertTrue(result["metrics"]["failures"])
-
-    def test_unreachable_target_is_not_silently_replaced(self):
-        config = load_config("synthetic_chain")
-        trajectory = config["program"]["parts"]["probe"]["params"]["trajectory"]
-        trajectory["values"] = (np.asarray(trajectory["values"]) + [0, 10, 0]).tolist()
-        original = deepcopy(config)
-        result = pipeline.generate_vibe_motion(config=config)
-        self.assertEqual(config, original)
-        np.testing.assert_allclose(result["targets"]["probe"][0], trajectory["values"][0], atol=1e-7)
-        tip = config["skeleton"]["names"].index("tip")
-        actual = np.linalg.norm(result["joints"][:, tip] - result["targets"]["probe"], axis=-1)
-        np.testing.assert_allclose(result["residuals"]["probe"], actual, atol=1e-7)
-        self.assertGreater(float(actual.min()), 1)
-        self.assertAlmostEqual(result["metrics"]["target_error_max"], float(actual.max()), places=6)
-        self.assertTrue(result["metrics"]["failures"])
-        self.assert_bone_lengths(config, result["joints"])
-
-    def test_explicit_pole_and_flexion_bounds_control_geometry(self):
-        config = load_config("synthetic_chain")
-        part = config["program"]["parts"]["probe"]
-        params = part["params"]
-        params["trajectory"]["values"] = [params["trajectory"]["values"][0]] * len(params["trajectory"]["keys"])
-        positive = pipeline.generate_vibe_motion(config=config)
-        params["pole"] = (-np.asarray(params["pole"])).tolist()
-        negative = pipeline.generate_vibe_motion(config=config)
-        ids = [config["skeleton"]["names"].index(name) for name in part["joints"]]
-        self.assertGreater(positive["joints"][0, ids[1], 2], 0)
-        self.assertLess(negative["joints"][0, ids[1], 2], 0)
-        np.testing.assert_allclose(positive["joints"][:, ids[-1]], negative["joints"][:, ids[-1]], atol=1e-6)
-        params["flexion"] = [20, 40]
-        bounded = pipeline.generate_vibe_motion(config=config)
-        angles = flexion_degrees(bounded["joints"], ids)
-        self.assertGreaterEqual(float(angles.min()), params["flexion"][0] - 1e-5)
-        self.assertLessEqual(float(angles.max()), params["flexion"][1] + 1e-5)
-        self.assertGreater(float(np.max(bounded["residuals"]["probe"])), config["program"]["quality"]["target_tolerance"])
-        self.assert_bone_lengths(config, bounded["joints"])
-        config = self.configs["turn_jump_chop"]
-        result = self.results["turn_jump_chop"]
-        dof_names = ("shoulder_flexion", "shoulder_abduction", "shoulder_swivel", "elbow_flexion")
-        for name in ("guard", "strike"):
-            with self.subTest(arm=name):
-                part = config["program"]["parts"][name]
-                diagnostic = result["diagnostics"][name]
-                dofs = np.asarray(diagnostic["dofs_degrees"])
-                self.assertEqual(dofs.shape, (result["frames"], len(dof_names)))
-                self.assertTrue(np.isfinite(dofs).all())
-                for index, dof in enumerate(dof_names):
-                    low, high = part["params"]["limits"][dof]
-                    self.assertGreaterEqual(float(dofs[:, index].min()), low - 1e-5)
-                    self.assertLessEqual(float(dofs[:, index].max()), high + 1e-5)
-                ids = [config["skeleton"]["names"].index(joint) for joint in part["joints"]]
-                actual_flexion = flexion_degrees(result["joints"], ids)
-                np.testing.assert_allclose(diagnostic["flex_degrees"], actual_flexion, atol=1e-5)
-                np.testing.assert_allclose(dofs[:, -1], actual_flexion, atol=1e-5)
-                self.assertEqual(np.asarray(diagnostic["solver_success"]).dtype.kind, "b")
-
-    def test_quadruped_categories_do_not_depend_on_names(self):
-        config = load_config("horse_gallop_stop_kick")
-        mapping = {name: f"node_{index:02d}" for index, name in enumerate(config["skeleton"]["names"])}
-        config["skeleton"]["names"] = list(mapping.values())
-        parts = config["program"]["parts"]
-        for definition in parts.values():
-            definition["joints"] = [mapping[name] for name in definition["joints"]]
-        lower = [part for part in parts.values() if part["category"] == "lower_limb"]
-        self.assertEqual(len(lower), 4)
-        config["program"]["parts"] = {f"block_{index}": part for index, part in enumerate(parts.values())}
-        result = pipeline.generate_vibe_motion(config=config)
-        np.testing.assert_allclose(result["joints"], self.results["horse_gallop_stop_kick"]["joints"], atol=1e-6)
-        self.assertEqual(len(result["targets"]), 4)
-
-    def test_aim_uses_position_targets_and_preserves_lengths(self):
-        config = load_config("synthetic_chain")
-        definition = config["program"]["parts"]["support"]
-        rest = np.asarray(config["skeleton"]["rest"])
-        first, child = [config["skeleton"]["names"].index(name) for name in definition["joints"]]
-        desired = rest[child].copy()
-        desired[0] += np.linalg.norm(rest[child] - rest[first])
-        probe = config["program"]["parts"]["probe"]["params"]
-        definition["operator"] = "aim"
-        definition["params"] = {
-            "targets": [{"keys": ["start", "end"], "values": [desired.tolist(), desired.tolist()], "interpolation": "linear"}],
-            "space": "world", "scale": 1,
-            "pole": probe["pole"], "rest_pole": probe["rest_pole"],
-        }
-        result = pipeline.generate_vibe_motion(config=config)
-        actual = result["joints"][:, child] - result["joints"][:, first]
-        expected = desired - result["joints"][:, first]
-        actual /= np.linalg.norm(actual, axis=1, keepdims=True)
-        expected /= np.linalg.norm(expected, axis=1, keepdims=True)
-        np.testing.assert_allclose(actual, expected, atol=1e-6)
-        self.assert_bone_lengths(config, result["joints"])
-
-    def test_determinism_and_caller_input_preservation(self):
-        for name in FIXTURE_NAMES:
-            with self.subTest(fixture=name):
-                config = load_config(name)
-                original = deepcopy(config)
-                result = pipeline.generate_vibe_motion(config=config)
-                self.assertEqual(config, original)
-                np.testing.assert_array_equal(result["joints"], self.results[name]["joints"])
-                np.testing.assert_array_equal(result["clip"].quats, self.results[name]["clip"].quats)
-                self.assertEqual(result["bvh_bytes"], self.results[name]["bvh_bytes"])
-                self.assertEqual(result["vibe_report_json"], self.results[name]["vibe_report_json"])
-                for part in result["targets"]:
-                    np.testing.assert_array_equal(result["targets"][part], self.results[name]["targets"][part])
-
-    def test_missing_required_config_and_operator_parameters_are_rejected(self):
-        groups = {
-            "synthetic_chain": [(), ("skeleton",), ("rhythm",), ("program",), ("program", "root"), ("program", "root", "params"), ("program", "solver"), ("program", "quality"), ("program", "parts", "probe", "params")],
-            "horse_gallop_stop_kick": [("program", "parts", "fore_a", "params")],
-            "turn_jump_chop": [("program", "parts", "guard", "params"), ("program", "parts", "guard", "params", "limits"), ("program", "parts", "step_a", "params"), ("program", "parts", "step_a", "params", "orientation")],
-        }
-        for fixture, paths in groups.items():
-            for path in paths:
-                base = load_config(fixture)
-                source = base
-                for key in path:
-                    source = source[key]
-                for missing in source:
-                    with self.subTest(fixture=fixture, path=path, missing=missing):
-                        config = deepcopy(base)
-                        node = config
-                        for key in path:
-                            node = node[key]
-                        del node[missing]
-                        with self.assertRaises(ValueError):
-                            pipeline.generate_vibe_motion(config=config)
+    def test_input_is_preserved_and_output_deterministic(self):
         config = load_config("turn_jump_chop")
-        del config["program"]["parts"]["guard"]["side"]
-        with self.assertRaises(ValueError):
-            pipeline.generate_vibe_motion(config=config)
-        with self.assertRaises((TypeError, ValueError)):
-            pipeline.generate_vibe_motion()
-
-    def test_invalid_curves_and_hierarchy_are_rejected(self):
-        mutations = [
-            (("rhythm", "duration"), 1.01),
-            (("rhythm", "fps"), False),
-            (("rhythm", "events", "unused"), "start"),
-            (("rhythm", "events", "unused"), "beat"),
-            (("rhythm", "events", "beat"), "start"),
-            (("rhythm", "events", "beat"), True),
-            (("program", "solver", "epsilon"), 0),
-            (("program", "forward"), [0, 1, 0]),
-            (("skeleton", "parents"), [-1, 0, 3, 2, 3]),
-            (("program", "parts", "probe", "joints"), ["socket", "tip", "hinge"]),
-            (("program", "parts", "probe", "params", "pole"), [0, 0, 0]),
-            (("program", "parts", "probe", "params", "flexion"), [145, 5]),
-            (("program", "parts", "probe", "params", "trajectory", "interpolation"), "automatic"),
-            (("program", "parts", "probe", "params", "trajectory", "keys"), [0, 0, 1]),
-            (("program", "parts", "probe", "params", "trajectory", "values"), [[0, 0, 0], [1, 1, 1]]),
-            (("program", "parts", "probe", "params", "trajectory", "values"), [[0, 0, 0], [1, float("nan"), 1], [0, 0, 0]]),
-        ]
-        for path, invalid in mutations:
-            with self.subTest(path=path, invalid=invalid):
-                config = load_config("synthetic_chain")
-                node = config
-                for key in path[:-1]:
-                    node = node[key]
-                node[path[-1]] = invalid
-                with self.assertRaises(ValueError):
-                    pipeline.generate_vibe_motion(config=config)
-        for field in ("interpolation", "slopes"):
-            config = load_config("turn_jump_chop")
-            del config["program"]["root"]["params"]["y"][field]
-            with self.subTest(missing_curve_field=field), self.assertRaises(ValueError):
-                pipeline.generate_vibe_motion(config=config)
-
-    def test_malformed_skeleton_names_are_rejected(self):
-        base = load_config("synthetic_chain")
-        names = base["skeleton"]["names"]
-        invalid_names = [
-            None, 42, "origin", {name: index for index, name in enumerate(names)},
-            names[:-1], names[:-1] + [names[0]], names[:-1] + [""],
-            names[:-1] + [None], names[:-1] + [42], names[:-1] + [[names[-1]]],
-        ]
-        for invalid in invalid_names:
-            with self.subTest(names=invalid):
-                config = deepcopy(base)
-                config["skeleton"]["names"] = invalid
-                with self.assertRaises(ValueError):
-                    pipeline.generate_vibe_motion(config=config)
-
-    def test_legacy_presets_and_rotation_programs_are_rejected(self):
-        for field, value in (("preset", "walk"), ("segments", [{"preset": "walk"}]), ("style", {"jump_ratio": 0.5})):
-            config = load_config("synthetic_chain")
-            config[field] = value
-            with self.subTest(field=field), self.assertRaises(ValueError):
-                pipeline.generate_vibe_motion(config=config)
-        config = load_config("synthetic_chain")
-        config["program"]["parts"]["probe"]["operator"] = "rotation"
-        with self.assertRaises(ValueError):
-            pipeline.generate_vibe_motion(config=config)
-        with self.assertRaises((TypeError, ValueError)):
-            pipeline.generate_vibe_motion(preset="walk")
-        with tempfile.TemporaryDirectory() as directory:
-            operator = GenMotionOperator(output_dir=directory)
-            with self.assertRaises(ValueError):
-                operator.run({"task_type": "vibe", "preset": "walk"})
+        before = deepcopy(config)
+        first = pipeline.generate_vibe_motion(config=config)
+        self.assertEqual(config, before)
+        self.assertEqual(first["bvh_bytes"], pipeline.generate_vibe_motion(config=config)["bvh_bytes"])
 
     def test_operator_accepts_config_without_mesh(self):
         with tempfile.TemporaryDirectory() as directory:
             operator = GenMotionOperator(output_dir=directory)
             for name in FIXTURE_NAMES:
-                with self.subTest(fixture=name):
+                with self.subTest(example=name):
                     task = {"task_type": "vibe", "task_id": name, "config": load_config(name)}
                     original = deepcopy(task)
-                    with patch.object(pipeline, "generate_vibe_motion", wraps=pipeline.generate_vibe_motion) as generate:
+                    with patch.object(pipeline, "generate_vibe_motion",
+                                      wraps=pipeline.generate_vibe_motion) as generate:
                         output = operator.run(task)
                     generate.assert_called_once()
-                    self.assertEqual(generate.call_args.kwargs["config"], task["config"])
                     self.assertIsNone(generate.call_args.kwargs.get("mesh"))
                     self.assertEqual(task, original)
                     self.assertEqual(Path(output["motion_bvh_path"]).read_bytes(), self.results[name]["bvh_bytes"])
@@ -567,14 +290,417 @@ class VibeMotionTest(unittest.TestCase):
                     self.assertIsNone(output.get("animated_glb_path"))
                     score = operator.eval(output, task)
                     self.assertEqual(score["vibe_metrics"], report["metrics"])
-                    self.assertEqual(score["motion_valid"], not bool(report["metrics"]["failures"]))
+                    self.assertTrue(score["motion_valid"])
 
-    def test_fixtures_and_motion_utilities_have_no_chinese_text(self):
+    def test_legacy_arguments_and_missing_config_are_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            operator = GenMotionOperator(output_dir=directory)
+            for task in ({"task_type": "vibe"}, {"task_type": "vibe", "preset": "walk"},
+                         {"task_type": "vibe", "config": {"skeleton": {}}}):
+                with self.subTest(task=task), self.assertRaises(ValueError):
+                    operator.run(task)
+
+    def test_no_chinese_text_in_sources_and_examples(self):
         utility = Path(pipeline.__file__).parent
         paths = list(utility.rglob("*.py")) + list(FIXTURE_DIRECTORY.glob("*.json"))
         for path in paths:
-            with self.subTest(path=path):
+            with self.subTest(path=path.name):
                 self.assertNotRegex(path.read_text(encoding="utf-8"), r"[\u3400-\u9fff]")
+
+
+class OperatorTest(unittest.TestCase):
+    """Rig-based operators on the human and quadruped example skeletons (skeleton only, no mesh)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.male = make_rig(flat_config("male02_landing"))
+        cls.fox = make_rig(flat_config("fox_crouch_tail_spring"))
+
+    def test_gait_and_heading_travel(self):
+        male = self.male
+        spec = human(dur=3., root={"forward_speed": C(1.0), "yaw": {"rate": C(30)}},
+                     parts={"legL": leg("L", lift=.25, gait={"start": 0, "end": 3, "period": 1., "duty": .6, "offset": 0.}),
+                            "legR": leg("R", lift=.25, gait={"start": 0, "end": 3, "period": 1., "duty": .6, "offset": .5})})
+        result, blocks, report = run(male, spec)
+        root = result["root"]
+        self.assertAlmostEqual(root["yaw_degrees"][-1], 90, delta=.5)
+        radius = 1.0 / np.deg2rad(30) * blocks.leg_length
+        travel = np.linalg.norm(root["position"][-1] - root["position"][0])
+        self.assertAlmostEqual(travel, radius * np.sqrt(2), delta=.02 * radius * np.sqrt(2))
+        contact = result["tracks"].contacts["legL"]
+        self.assertTrue(0.5 < contact.mean() < 0.75)
+        self.assertLess(report["metrics"]["contact_foot_max_speed"]["legL"], .05 * blocks.leg_length * 30)
+
+    def test_aim_keys_and_target(self):
+        fox = self.fox
+        tail = ["tail.0", "tail.1", "tail.2", "tail.3"]
+        up, back_up = [0, 1, 0], [0, .7, -.7]
+        spec = deepcopy(flat_config("fox_crouch_tail_spring"))
+        spec["rhythm"]["duration"] = 1.5
+        parts = spec["program"]["parts"]
+        parts["tail"] = {"category": "tail", "joints": tail, "operator": "aim", "params": {
+            "frame": "body", "keys": [{"t": 0, "dirs": [back_up] * 4}, {"t": 1., "dirs": [up] * 4}]}}
+        spec["program"]["root"]["params"] = {"x": C(0), "y": C(0), "z": C(0),
+                                             "yaw": {"keys": [0, 1.5], "values": [0, 60]}}
+        result, blocks, _ = run(fox, spec)
+        positions, heading = result["positions"], result["root"]["heading"]
+        ids = [idx(fox, j) for j in tail + ["tail.4"]]
+        for frame, want in ((0, back_up), (len(positions) - 1, up)):
+            for a, b in zip(ids, ids[1:]):
+                self.assertLess(angle(positions[frame, b] - positions[frame, a], heading[frame] @ np.asarray(want, float)), 1.0)
+        look = deepcopy(spec)
+        look["program"]["parts"]["tail"]["params"] = {"target": {"joint": "head", "offset": [0, .5, 0]}}
+        result, blocks, _ = run(fox, look)
+        positions = result["positions"]
+        target = positions[:, idx(fox, "head")] + np.einsum("tij,j->ti", result["root"]["heading"],
+                                                            [0, .5 * blocks.leg_length, 0])
+        tip = positions[:, idx(fox, "tail.4")] - positions[:, idx(fox, "tail.3")]
+        self.assertLess(angle(tip, target - positions[:, idx(fox, "tail.3")]).max(), 1.0)
+
+    def test_post_ik_orientation_wrist_swivel(self):
+        male = self.male
+        pitch = {"keys": [0, 2], "values": [0, 60]}
+        spec = human(parts={"armL": arm("L", angle={"keys": [0, 2], "values": [170, 60]},
+                                        wrist={"space": "world", "pitch": pitch}),
+                            "armR": arm("R", angle=100, swivel={"keys": [0, 2], "values": [-50, 50]})})
+        result, blocks, _ = run(male, spec)
+        world = result["world"]
+        j = idx(male, "hand.L")
+        want = (blocks.frame[None] @ Rotation.from_euler("x", np.linspace(0, 60, len(world)), degrees=True).as_matrix()
+                @ blocks.frame.T @ male.rest_world[j, :3, :3])
+        error = Rotation.from_matrix(np.swapaxes(world[:, j, :3, :3], -1, -2) @ want).magnitude()
+        self.assertLess(np.degrees(error).max(), .5)
+        elbow = result["positions"][:, idx(male, "forearm.R")]
+        self.assertGreater(np.linalg.norm(elbow[0] - elbow[-1]), .1 * blocks.leg_length)
+        hand = result["positions"][:, idx(male, "hand.R")]
+        self.assertLess(np.linalg.norm(hand[0] - hand[-1]), .02 * blocks.leg_length)
+        leaf = human(parts={"armL": arm("L", angle={"keys": [0, 2], "values": [170, 80]}),
+                            "handend": {**rot(["hand_end.L"], "upper_limb", "world", twist={"initial": 40}), "side": "L"}})
+        result, blocks, _ = run(male, leaf)
+        j = idx(male, "hand_end.L")
+        want = (blocks.frame @ Rotation.from_euler("y", 40, degrees=True).as_matrix() @ blocks.frame.T
+                @ male.rest_world[j, :3, :3])
+        error = Rotation.from_matrix(np.swapaxes(result["world"][:, j, :3, :3], -1, -2) @ want).magnitude()
+        self.assertLess(np.degrees(error).max(), .5)
+
+    def test_end_rotation_and_spline_keys(self):
+        male = self.male
+        keys = [{"t": 0, "offset": [0, 0, 0]}, {"t": .5, "offset": [0, .3, .3]}, {"t": 1., "offset": [0, .4, .0]},
+                {"t": 1.5, "offset": [0, .3, -.3]}, {"t": 2., "offset": [0, 0, 0]}]
+        spec = human(parts={"legL": leg("L", keys=keys, interp="spline",
+                                        end_rotation={"twist": {"keys": [0, 2], "values": [0, 30]}})})
+        result, blocks, _ = run(male, spec)
+        speed = np.linalg.norm(np.diff(result["tracks"].feet["legL"], axis=0), axis=-1)
+        self.assertGreater(speed[int(round(1.0 * 30)) - 1], .3 * speed.max())
+        j = idx(male, "foot.L")
+        rel = Rotation.from_matrix(result["world"][-1, j, :3, :3] @ male.rest_world[j, :3, :3].T)
+        m = blocks.frame.T @ rel.as_matrix() @ blocks.frame
+        self.assertAlmostEqual(np.degrees(np.arctan2(m[0, 2], m[0, 0])), 30, delta=1.)
+
+    def test_world_translate_and_follow(self):
+        male = self.male
+        prop = {"category": "upper_limb", "side": "L", "joints": ["hand_end.L"], "operator": "translate",
+                "params": {"space": "world", "x": C(.5), "y": {"keys": [0, 2], "values": [0, 1]}, "z": C(0)}}
+        spec = human(parts={"armL": arm("L", angle={"keys": [0, 2], "values": [170, 20]}), "prop": prop})
+        result, blocks, _ = run(male, spec)
+        j = idx(male, "hand_end.L")
+        want = blocks.rest[j] + blocks.frame @ (np.array([.5, 1., 0]) * blocks.leg_length)
+        self.assertLess(np.linalg.norm(result["positions"][-1, j] - want), 1e-6)
+        prop["params"]["follow"] = {"joint": "hand.R", "weight": {"keys": [0, 1, 2], "values": [0, 0, 1]}}
+        result, blocks, _ = run(male, human(parts={"prop": prop}))
+        grip = np.linalg.inv(male.rest_world[idx(male, "hand.L")]) @ male.rest_world[j]
+        carried = result["world"][-1, idx(male, "hand.R")] @ grip
+        self.assertLess(np.linalg.norm(result["positions"][-1, j] - carried[:3, 3]), 1e-6)
+
+    def test_spring_ground_and_collision(self):
+        fox = self.fox
+        spec = flat_config("fox_crouch_tail_spring")
+        tail = ["tail.0", "tail.1", "tail.2", "tail.3", "tail.4"]
+        ids = [idx(fox, j) for j in tail]
+        ground = float(fox.rest_world[list(fox.joints), 1, 3].min())
+        result, _, _ = run(fox, spec)
+        self.assertGreaterEqual(result["positions"][:, ids, 1].min(), ground - 1e-6)
+        free = deepcopy(spec)
+        del free["program"]["parts"]["tail"]["params"]["ground"]
+        result2, _, _ = run(fox, free)
+        self.assertLess(result2["positions"][:, ids, 1].min(), ground)
+        hit = deepcopy(spec)
+        hit["program"]["parts"]["tail"]["params"]["collide"] = ["hL", "hR"]
+        result3, _, _ = run(fox, hit)
+        self.assertTrue(np.isfinite(result3["positions"]).all())
+
+    def test_smooth_despike(self):
+        male = self.male
+        jump = {"keys": [0, 1., 1.034, 1.067, 2], "values": [0, 0, 80, 0, 0], "interp": "linear"}
+        raw, _, _ = run(male, human(parts={"head": rot(["neck", "head"], "head", pitch=jump)}))
+        smoothed, _, _ = run(male, human(parts={"head": rot(["neck", "head"], "head", pitch=jump)},
+                                         refine={"smooth": {"parts": ["head"], "sigma_frames": 1.,
+                                                            "despike_degrees": 20}}))
+        j = idx(male, "head")
+
+        def step(result):
+            q = result["quats"][:, j]
+            return np.degrees(2 * np.arccos(np.clip(np.abs(np.sum(q[1:] * q[:-1], -1)), 0, 1))).max()
+        self.assertLess(step(smoothed), .5 * step(raw))
+
+    def test_root_parent_space_keeps_root_yaw(self):
+        male = self.male
+        spec = human(root={"yaw": {"keys": [0, 2], "values": [0, 90]}}, parts={"pelvis": rot(["hips"], twist=C(0))})
+        result, blocks, _ = run(male, spec)
+        j = idx(male, "hips")
+        rel = blocks.frame.T @ result["world"][-1, j, :3, :3] @ male.rest_world[j, :3, :3].T @ blocks.frame
+        self.assertAlmostEqual(np.degrees(np.arctan2(rel[0, 2], rel[0, 0])), 90, delta=.5)
+
+    def test_gait_plant_merge_lock_and_pre_ik_smoothing(self):
+        male = self.male
+        legs = {s: leg(s, lift=.2, plant_orient="lock", plants=[{"start": 0, "end": "walk.start", "anchor": "start"}],
+                       gait={"phase": "walk", "period": 1., "duty": .6, "offset": off})
+                for s, off in (("L", 0.), ("R", .5))}
+        spec = human(dur=3., phases={"walk": [.3, 2.8]},
+                     root={"y": C(-.09),
+                           "forward_speed": {"segments": [{"start": .3, "end": .8, "to": .6}], "initial": 0},
+                           "yaw": {"rate": {"segments": [{"start": .3, "end": .8, "to": 30}], "initial": 0}}},
+                     parts={"legL": legs["L"], "legR": legs["R"],
+                            "torso": rot(["spine", "chest", "chest_upper"], twist={"initial": 0, "oscillators": [
+                                {"phase": "walk", "amplitude": 8, "frequency": 1, "shape": "noise"}]})},
+                     refine={"smooth": {"parts": ["torso"], "sigma_frames": 2.}})
+        _, plants = effector_events(spec["program"]["parts"]["legR"]["params"], Rhythm(**spec["rhythm"]))
+        self.assertTrue(plants[0][0] == 0 and plants[0][1] > .3 + 1e-6)
+        result, blocks, report = run(male, spec)
+        self.assertLess(max(report["metrics"]["contact_foot_max_speed"].values()), .02 * blocks.leg_length)
+        j = idx(male, "foot.L")
+        contact = result["tracks"].contacts["legL"]
+        runs = np.flatnonzero(np.diff(np.r_[0, contact.astype(int), 0]))
+        a, b = runs[2], runs[3] - 1
+        rel = Rotation.from_matrix(np.swapaxes(result["world"][a, j, :3, :3], -1, -2) @ result["world"][b, j, :3, :3])
+        self.assertLess(np.degrees(rel.magnitude()), .5)
+
+    def test_signed_bend_weights_fold_fore_leg(self):
+        fox = self.fox
+        chain = ["shoulder.L", "elbow.L", "wrist.L", "paw.L"]
+        for weights, key in (([1, 1], "same"), ([1, -1], "z")):
+            spec = flat_config("fox_crouch_tail_spring")
+            spec["program"]["root"]["params"]["y"] = C(0)
+            spec["rhythm"]["duration"] = 1.
+            spec["program"]["parts"] = {"trunk": rot(["hips", "spine", "chest"]), "fL": {
+                "category": "lower_limb", "side": "L", "joints": chain, "operator": "effector", "params": {
+                    "pole": "rest", "flexion": [[-110, 110], [-110, 110]], "tip": 0, "bend_weights": weights,
+                    "keys": [{"t": 0, "offset": [0, 0, 0]}, {"t": 1, "offset": [0, .45, 0]}]}}}
+            result, blocks, _ = run(fox, spec)
+            self.assertLess(result["residuals"]["fL"].max(), .01 * blocks.leg_length, key)
+            pos, rest = result["positions"][-1], fox.rest_world[:, :3, 3]
+            n = blocks.frame[:, 0]
+
+            def bend(points, a, b, c):
+                u, v = points[b] - points[a], points[c] - points[b]
+                return np.degrees(np.arctan2(np.cross(u, v) @ n, u @ v))
+            ids = [idx(fox, j) for j in chain]
+            d = [bend(pos, *ids[i:i + 3]) - bend(rest, *ids[i:i + 3]) for i in range(2)]
+            self.assertEqual(np.sign(d[0]) != np.sign(d[1]), key == "z", (key, d))
+
+    def test_effector_plants_hold_world_position(self):
+        male = self.male
+        spec = human(root={"yaw": {"keys": [0, 2], "values": [0, 40]}})
+        result, blocks, report = run(male, spec)
+        positions = result["positions"][:, idx(male, "toe.L")]
+        tolerance = report["metrics"]["ik_max_residual"]["legL"] + 1e-6
+        self.assertLess(np.abs(positions - positions[0]).max(), tolerance)
+        self.assertLess(tolerance, .01 * blocks.leg_length)
+
+    def test_parts_may_use_category_aliases(self):
+        spec = human()
+        alias = deepcopy(spec)
+        alias["program"]["parts"]["torso"]["category"] = "\u8eaf\u5e72"
+        np.testing.assert_allclose(run(self.male, spec)[0]["positions"], run(self.male, alias)[0]["positions"])
+
+
+class ValidationTest(unittest.TestCase):
+    def build(self, spec):
+        r = Rhythm(**spec["rhythm"])
+        return r, MotionStyle(**spec["style"], program=MotionProgram(**deepcopy(spec["program"])))
+
+    def test_validation_messages(self):
+        bad = human(parts={"x": {"category": "tail", "joints": ["tail"], "operator": "aim", "params": {}}})
+        r, style = self.build(bad)
+        with self.assertRaisesRegex(ValueError, "exactly one of keys / target"):
+            style.program.validate(r, None)
+        g = human(parts={"legL": leg("L", gait={"start": 0, "end": 2, "period": 1, "duty": 1.2})})
+        r, style = self.build(g)
+        with self.assertRaisesRegex(ValueError, "duty"):
+            style.program.validate(r, None)
+
+    def test_defaults_fill_optional_effector_fields(self):
+        rig = make_rig(flat_config("male02_landing"))
+        spec = human(parts={"legL": {"category": "lower_limb", "side": "L",
+                                     "joints": ["thigh.L", "shin.L", "foot.L", "toe.L"], "operator": "effector",
+                                     "params": {"pole": "rest", "flexion": [-5, 150]}}})
+        result, _, report = run(rig, spec)
+        self.assertTrue(report["metrics"]["finite"])
+        self.assertLess(report["metrics"]["ik_max_residual"]["legL"], 1e-9)
+
+    def test_required_fields_and_unknown_fields_are_rejected(self):
+        spec = human()
+        for change in ("pole", "flexion", "unknown_field"):
+            bad = deepcopy(spec)
+            params = bad["program"]["parts"]["legL"]["params"]
+            if change == "unknown_field":
+                params["unknown_field"] = 1
+            else:
+                del params[change]
+            r, style = self.build(bad)
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                style.program.validate(r, None)
+        for key in ("iterations", "foot_margin_ratio", "residual_weight", "ground_weight"):
+            bad = deepcopy(spec)
+            del bad["program"]["refine"][key]
+            with self.subTest(refine=key), self.assertRaises(ValueError):
+                self.build(bad)[1].program.validate(self.build(bad)[0], None)
+
+    def test_malformed_skeletons_are_rejected(self):
+        config = flat_config("synthetic_chain")
+        for key, value in (("names", ["a", "a", "b", "c", "d"]), ("names", ["a b", "c", "d", "e", "f"]),
+                           ("parents", [-1, 0, 2, 1, 0]), ("parents", [-1, -1, 0, 2, 3])):
+            bad = deepcopy(config)
+            bad["skeleton"][key] = value
+            with self.subTest(key=key, value=value), self.assertRaises(ValueError):
+                pipeline.generate_vibe_motion(config=bad)
+
+    def test_pipeline_rejects_missing_and_legacy_config(self):
+        config = flat_config("synthetic_chain")
+        for key in ("skeleton", "rhythm", "style", "program"):
+            bad = deepcopy(config)
+            del bad[key]
+            with self.subTest(missing=key), self.assertRaises(ValueError):
+                pipeline.generate_vibe_motion(config=bad)
+        bad = {**deepcopy(config), "preset": "walk"}
+        with self.assertRaises(ValueError):
+            pipeline.generate_vibe_motion(config=bad)
+
+
+MESH_SKIN = {"kernel": "inverse", "falloff": 4.0, "radius_scale": 2.0, "max_influences": 3, "floor": 0.0001,
+             "smooth_iterations": 2, "smooth_rate": 0.5, "bone_convention": "outgoing",
+             "distance_epsilon_ratio": 1e-6, "sum_tolerance": 1e-9, "screening": 0.08, "edge_epsilon_ratio": 1e-6}
+MESH_GLB = {"bind_tolerance": 1e-9, "sum_tolerance": 1e-9, "material": None, "interpolation": "LINEAR"}
+
+
+def column_mesh():
+    """A tall box (9 rings x 4 sides) around the Y axis, welded and triangulated."""
+    rings, sides = 9, 4
+    vertices = []
+    for ring in range(rings):
+        y = -1.0 + 2.0 * ring / (rings - 1)
+        for k in range(sides):
+            angle_ = 2 * np.pi * k / sides + np.pi / 4
+            vertices.append([0.3 * np.cos(angle_), y, 0.3 * np.sin(angle_)])
+    faces = []
+    for ring in range(rings - 1):
+        for k in range(sides):
+            a, b = ring * sides + k, ring * sides + (k + 1) % sides
+            c, d = a + sides, b + sides
+            faces += [[a, b, d], [a, d, c]]
+    top, bottom = len(vertices), len(vertices) + 1
+    vertices += [[0, 1, 0], [0, -1, 0]]
+    for k in range(sides):
+        faces.append([(rings - 1) * sides + k, (rings - 1) * sides + (k + 1) % sides, top])
+        faces.append([(k + 1) % sides, k, bottom])
+    vertices = np.asarray(vertices, float)
+    return CreatureMesh("column", vertices, np.asarray(faces, np.int64), np.arange(len(vertices))), vertices
+
+
+def spine_motion(*, y_values=(0, 0), refine=None):
+    skeleton = {"name": "spine", "names": ["s0", "s1", "s2"], "parents": [-1, 0, 1],
+                "rest": [[0, -0.8, 0], [0, 0, 0], [0, 0.8, 0]]}
+    rhythm = {"duration": 1.0, "fps": 12, "time_unit": "seconds", "events": {}}
+    program = {
+        "action": "sway", "forward": [0, 0, 1],
+        "root": {"operator": "curves", "params": {
+            "x": C(0), "y": {"keys": [0, 1], "values": list(y_values), "interp": "linear"}, "z": C(0), "yaw": C(0)}},
+        "parts": {"spine": {"category": "trunk", "joints": ["s0", "s1", "s2"], "operator": "rotation", "params": {
+            "space": "parent", "weights": [0, 1, 1], "pitch": {"keys": [0, 1], "values": [0, 25], "interp": "linear"},
+            "twist": C(0), "roll": C(0)}}},
+        "refine": {**REFINE, **(refine or {})}}
+    return skeleton, rhythm, program
+
+
+class MeshFeedbackTest(unittest.TestCase):
+    """Skin-feedback refinement, probe motion, capsule depth and GLB readback on a skinned mesh."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.mesh, _ = column_mesh()
+        cls.skeleton, rhythm, program = spine_motion()
+        cls.result = motion.generate_clip(cls.skeleton, rhythm=rhythm, style=STYLE, program=program)
+        cls.rig = RigResult(name="spine", joints=np.asarray(cls.skeleton["rest"], float),
+                            parents=np.asarray(cls.skeleton["parents"]), joint_names=list(cls.skeleton["names"]),
+                            chains={"spine": [0, 1, 2]})
+        cls.skin = skin_mesh(cls.mesh, cls.rig, config=MESH_SKIN)
+
+    def test_probe_motion_is_explicit_and_finite(self):
+        config = {"fps": 12, "seconds": 2, "amp": 20.0, "cycles": 2}
+        times, rotations, translations = probe_motion(self.rig, config)
+        self.assertEqual(rotations.shape, (24, 3, 4))
+        self.assertTrue(np.isfinite(rotations).all())
+        np.testing.assert_allclose(np.linalg.norm(rotations, axis=-1), 1.0, atol=1e-9)
+        self.assertEqual(translations, {})
+        first, second = joint_axes(self.rig)
+        self.assertAlmostEqual(abs(float(first[1] @ second[1])), 0.0, places=9)
+        for bad in ({"fps": 12, "seconds": 2, "amp": 20.0}, {**config, "extra": 1}, {**config, "fps": 0},
+                    {**config, "joints": {"s1": {"type": "spin"}}},
+                    {**config, "joints": {"ghost": {"type": "oscillate"}}}):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                probe_motion(self.rig, bad)
+
+    def test_probe_report_measures_edge_stretch(self):
+        config = {"fps": 12, "seconds": 2, "amp": 20.0, "cycles": 2}
+        report = probe_report(self.mesh, self.rig, self.skin, config, influences=3)
+        self.assertTrue(report["finite"])
+        self.assertGreaterEqual(report["edge_stretch"]["max"], 1.0)
+        rest = np.asarray(self.mesh.vertices, float)
+        stretch = edge_stretch(rest, [rest], np.array([[0, 1], [1, 2]]))
+        self.assertAlmostEqual(stretch["max"], 1.0)
+
+    def test_skinned_generation_reports_mesh_metrics(self):
+        skeleton, rhythm, program = spine_motion(refine={"iterations": 1})
+        result = motion.generate_clip(skeleton, rhythm=rhythm, style=STYLE, program=program, mesh=self.mesh,
+                                      skin=self.skin)
+        metrics = result.report["metrics"]
+        self.assertTrue(metrics["finite"])
+        self.assertEqual(result.result["vertices"].shape, (result.clip.num_frames, self.mesh.num_vertices, 3))
+        np.testing.assert_allclose(result.result["vertices"][0], self.mesh.vertices, atol=1e-9)
+        self.assertGreaterEqual(metrics["edge_stretch_max"], metrics["edge_stretch_p99"])
+
+    def test_body_ground_lifts_skinned_vertices(self):
+        ground = float(self.mesh.vertices[:, 1].min())
+        lowest = {}
+        for lift in (False, True):
+            skeleton, rhythm, program = spine_motion(
+                y_values=(0, -.5), refine={"iterations": 2, "body_ground": {"lift": lift}})
+            result = motion.generate_clip(skeleton, rhythm=rhythm, style=STYLE, program=program, mesh=self.mesh,
+                                          skin=self.skin)
+            lowest[lift] = float(result.result["vertices"][..., 1].min())
+        self.assertLess(lowest[False], ground - 1e-3)
+        self.assertGreater(lowest[True], lowest[False])
+
+    def test_capsule_depth_pushes_points_out(self):
+        a, b = np.zeros((1, 1, 3)), np.array([[[0., 1., 0.]]])
+        points = np.array([[[0.05, 0.5, 0.0], [1.0, 0.5, 0.0]]])
+        depth, push = mesh_checks.capsule_depth(points, a, b, np.array([0.2]))
+        self.assertAlmostEqual(float(depth[0, 0]), 0.15)
+        self.assertLess(float(depth[0, 1]), 0.0)
+        np.testing.assert_allclose(push[0, 0], [0.15, 0.0, 0.0], atol=1e-9)
+        np.testing.assert_allclose(push[0, 1], 0.0)
+
+    def test_glb_readback_matches_the_clip_and_detects_tampering(self):
+        glb = animated_glb(self.mesh, self.rig, self.skin, self.result.clip, config=MESH_GLB)
+        report = asset.verify_export(glb, self.result.clip, self.mesh, self.skin, self.rig,
+                                     position_tolerance=1e-5, time_tolerance=1e-6)
+        self.assertEqual(report["frames_checked"], self.result.clip.num_frames)
+        self.assertTrue(report["bind_mesh_preserved"])
+        tampered = deepcopy(self.result.clip)
+        tampered.quats[3, 1] = np.array([0.7071068, 0.7071068, 0.0, 0.0])
+        with self.assertRaises(ValueError):
+            asset.verify_export(glb, tampered, self.mesh, self.skin, self.rig, position_tolerance=1e-5,
+                                time_tolerance=1e-6)
 
 
 class BvhValidationTest(unittest.TestCase):
@@ -590,241 +716,86 @@ class BvhValidationTest(unittest.TestCase):
         np.testing.assert_allclose(bvh.quats_to_zxy_degrees(np.array([1e308, 1e308, 0, 0])), [0, 90, 0], atol=1e-6)
 
 
-def _preview_frames(config, result):
-    """Render fixed-camera skeleton views."""
-    from PIL import Image, ImageDraw, ImageFont
-
-    width, height = 1280, 768
-    font = ImageFont.load_default(size=19)
-    small = ImageFont.load_default(size=14)
-    title = ImageFont.load_default(size=26)
-    positions = result["joints"]
-    parents = np.asarray(config["skeleton"]["parents"])
-    children = np.flatnonzero(parents >= 0)
-    root = int(np.flatnonzero(parents == -1)[0])
-    colors = [(94, 192, 250), (248, 175, 83), (198, 156, 255), (242, 125, 148), (72, 212, 187)]
-    joint_colors = [(210, 222, 239)] * len(parents)
-    for index, spec in enumerate(config["program"]["parts"].values()):
-        for joint in spec["joints"]:
-            joint = config["skeleton"]["names"].index(joint) if isinstance(joint, str) else joint
-            joint_colors[joint] = colors[index % len(colors)]
-    points = np.concatenate([positions.reshape(-1, 3), *result["targets"].values()])
-    lower, upper = points.min(axis=0), points.max(axis=0)
-    ground = config["program"]["quality"]["ground_height"]
-    lower[1] = min(lower[1], ground)
-    span = max(float(np.max(upper - lower)), np.finfo(float).eps)
-    lower[[0, 2]] -= span * 0.08
-    upper[[0, 2]] += span * 0.08
-    corners = np.array([[x, y, z] for x in (lower[0], upper[0])
-                        for y in (lower[1], upper[1]) for z in (lower[2], upper[2])])
-    grid = []
-    for x in np.linspace(lower[0], upper[0], 9):
-        grid.append(np.array([[x, ground, lower[2]], [x, ground, upper[2]]]))
-    for z in np.linspace(lower[2], upper[2], 9):
-        grid.append(np.array([[lower[0], ground, z], [upper[0], ground, z]]))
-    panels = []
-    for label, azimuth, elevation, left in (("Perspective", 35, 22, 20), ("Side", 90, 0, 650)):
-        azimuth, elevation = np.deg2rad([azimuth, elevation])
-        right = np.array([np.cos(azimuth), 0, -np.sin(azimuth)])
-        up = np.array([np.sin(azimuth) * np.sin(elevation), np.cos(elevation),
-                       np.cos(azimuth) * np.sin(elevation)])
-        axes = np.column_stack([right, up])
-        projected = corners @ axes
-        center = (projected.min(axis=0) + projected.max(axis=0)) / 2
-        size = projected.max(axis=0) - projected.min(axis=0)
-        scale = min(550 / max(size[0], span * 0.1), 410 / max(size[1], span * 0.1))
-        panels.append((label, left, axes, center, scale))
-    events = sorted(config["rhythm"]["events"].items(), key=lambda item: item[1])
-    for frame, joints in enumerate(positions):
-        image = Image.new("RGB", (width, height), (13, 20, 33))
-        draw = ImageDraw.Draw(image)
-        draw.text((24, 18), config["program"]["action"], font=title, fill=(238, 245, 255))
-        draw.text((24, 53), "POSITION TRAJECTORIES  /  RHYTHM  /  INVERSE KINEMATICS", font=small, fill=(135, 162, 188))
-        for label, left, axes, center, scale in panels:
-            def project(values):
-                return (np.asarray(values) @ axes - center) * [scale, -scale] + [left + 305, 350]
-
-            def line(values, color, weight):
-                draw.line([tuple(p) for p in project(values)], fill=color, width=weight)
-
-            draw.rounded_rectangle((left, 88, left + 610, 617), radius=12,
-                                   fill=(20, 31, 47), outline=(43, 62, 81))
-            draw.text((left + 18, 105), f"{label} | Y-up | fixed camera", font=font, fill=(203, 219, 236))
-            for segment in grid:
-                line(segment, (35, 51, 67), 1)
-            line(positions[:, root], (61, 86, 111), 2)
-            for target in result["targets"].values():
-                line(target, (59, 75, 92), 1)
-            depth = joints @ np.cross(axes[:, 0], axes[:, 1])
-            for child in children[np.argsort(depth[children])]:
-                line(joints[[parents[child], child]], joint_colors[child], 6)
-            for joint, (x, y) in enumerate(project(joints)):
-                draw.ellipse((x - 4, y - 4, x + 4, y + 4), fill=joint_colors[joint])
-            for key, target in result["targets"].items():
-                x, y = project(target[frame])
-                draw.rectangle((x - 4, y - 4, x + 4, y + 4), outline=(244, 242, 201), width=2)
-                if key in result["contacts"] and result["contacts"][key][frame]:
-                    actual_x, actual_y = project(joints[result["target_joints"][key]])
-                    draw.ellipse((actual_x - 9, actual_y - 9, actual_x + 9, actual_y + 9),
-                                 outline=(104, 244, 158), width=3)
-            draw.text((left + 18, 585), "Square: IK target    Green ring: contact", font=small, fill=(150, 172, 192))
-        fraction = frame / (len(positions) - 1)
-        event = next((key for key, value in reversed(events) if value <= fraction), "start")
-        draw.text((24, 633), f"{frame / result['fps']:.3f}s / {config['rhythm']['duration']:.3f}s"
-                  f"   |   frame {frame + 1}/{len(positions)}   |   {event}", font=font, fill=(224, 236, 249))
-        draw.line((24, 678, 1256, 678), fill=(57, 75, 94), width=6)
-        for _, value in events:
-            x = 24 + 1232 * value
-            draw.line((x, 670, x, 686), fill=(146, 166, 187), width=2)
-        cursor = 24 + 1232 * fraction
-        draw.ellipse((cursor - 7, 671, cursor + 7, 685), fill=(96, 219, 224))
-        error = max((float(values[frame]) for values in result["residuals"].values()), default=0.0)
-        draw.text((24, 701), f"Target error: {error:.3g} world units   |   Skeleton preview, not a skinned character",
-                  font=small, fill=(152, 177, 199))
-        yield image
-
-
 def evaluate_bound_motion(mesh, rig, weights, config, poles):
-    """Evaluate a position/IK action on a new bind with fixed skin weights."""
+    """Run an example action on a new bind (fixed skin weights) and score the skinned result."""
     from operators.gen_motion.funcs.vibe_motion_utils.motion_utils.units import fk, quat_to_matrix
     from operators.gen_motion.funcs.vibe_motion_utils.rigging_utils.skin_units import deform
-    action = load_config(config['action']['example'])
-    original = action['skeleton']
-    rest = np.asarray(original['rest'])
-    mapping = config['action']['joint_map']
-    scale = config['action']['scale']
-    if set(mapping) != set(original['names']) or set(mapping.values()) != set(rig.joint_names):
-        raise ValueError('Action binding requires a complete one-to-one joint mapping')
-    for part, spec in action['program']['parts'].items():
-        old = [original['names'].index(n) for n in spec['joints']]
-        ids = [rig.joint_names.index(mapping[n]) for n in spec['joints']]
-        spec['joints'] = [mapping[n] for n in spec['joints']]
-        p = spec['params']
-        if spec['operator'] == 'position' and p['space'] == 'world':
-            p['trajectory']['values'] = (rig.joints[ids[-1]] + (np.asarray(p['trajectory']['values'])-rest[old[-1]])*scale).tolist()
-        elif spec['operator'] == 'arm_arc':
-            p['scale'] = float(np.linalg.norm(np.diff(rig.joints[ids], axis=0), axis=1).sum())
-        if part in poles:
-            p['rest_pole'] = list(poles[part])
-    action['program']['root']['params']['scale'] *= scale
-    action['program']['quality']['ground_height'] = config['action']['ground_height']
-    action['skeleton'] = {'name': rig.name, 'names': rig.joint_names, 'parents': rig.parents.tolist(), 'rest': rig.joints.tolist()}
-    result = pipeline.generate_vibe_motion(config=action)
-    positions, quaternions = fk(result['clip'])
+    action = flat_config(config["action"]["example"])
+    original = action["skeleton"]
+    mapping = config["action"]["joint_map"]
+    if set(mapping) != set(original["names"]) or set(mapping.values()) != set(rig.joint_names):
+        raise ValueError("Action binding requires a complete one-to-one joint mapping")
+    for key, spec in action["program"]["parts"].items():
+        spec["joints"] = [mapping[n] for n in spec["joints"]]
+        if key in poles and spec["operator"] in ("foot_swing", "contact_path"):
+            spec["params"]["rest_pole"] = list(poles[key])
+    skeleton = {"name": rig.name, "names": list(rig.joint_names), "parents": rig.parents.tolist(),
+                "rest": rig.joints.tolist()}
+    result = motion.generate_clip(skeleton, rhythm=action["rhythm"], style=action["style"],
+                                  program=action["program"], mesh=mesh, skin=weights)
+    clip, report = result.clip, result.report
+    positions, quaternions = fk(clip)
     rotations = quat_to_matrix(quaternions)
     matrices = np.broadcast_to(np.eye(4), (*positions.shape[:2], 4, 4)).copy()
     matrices[..., :3, :3] = rotations
-    matrices[..., :3, 3] = positions-np.einsum('tnij,nj->tni', rotations, rig.joints)
+    matrices[..., :3, 3] = positions - np.einsum("tnij,nj->tni", rotations, rig.joints)
     vertices = np.asarray([deform(mesh.vertices, weights.weights, m) for m in matrices])
-    edges = np.unique(np.sort(mesh.faces[:, [[0,1],[1,2],[2,0]]].reshape(-1,2), axis=1), axis=0)
-    length = np.linalg.norm(mesh.vertices[edges[:,0]]-mesh.vertices[edges[:,1]], axis=1)
-    valid = length > action['program']['solver']['epsilon']
-    ratio = np.linalg.norm(vertices[:,edges[valid,0]]-vertices[:,edges[valid,1]], axis=-1)/length[valid]
-    low, twist_quantile, high = config['action']['metric_quantiles']
+    edges = np.unique(np.sort(mesh.faces[:, [[0, 1], [1, 2], [2, 0]]].reshape(-1, 2), axis=1), axis=0)
+    length = np.linalg.norm(mesh.vertices[edges[:, 0]] - mesh.vertices[edges[:, 1]], axis=1)
+    epsilon = np.finfo(float).eps
+    valid = length > epsilon
+    ratio = np.linalg.norm(vertices[:, edges[valid, 0]] - vertices[:, edges[valid, 1]], axis=-1) / length[valid]
+    low, twist_quantile, high = config["action"]["metric_quantiles"]
     stretch, compression = float(np.quantile(ratio, high)), float(np.quantile(ratio, low))
     twist = []
-    for spec in config['probe_parts'].values():
-        ids = [rig.joint_names.index(n) for n in spec['chain']]
+    for spec in config["probe_parts"].values():
+        ids = [rig.joint_names.index(n) for n in spec["chain"]]
         for joint, child in zip(ids, ids[1:]):
-            axis = rig.joints[child]-rig.joints[joint]
+            axis = rig.joints[child] - rig.joints[joint]
             axis /= np.linalg.norm(axis)
-            component = quaternions[:,joint,1:] @ axis
-            valid = np.hypot(component,quaternions[:,joint,0]) > action['program']['solver']['epsilon']
+            component = quaternions[:, joint, 1:] @ axis
+            valid = np.hypot(component, quaternions[:, joint, 0]) > epsilon
             if valid.any():
-                twist.append(float(np.quantile(2*np.arctan2(abs(component[valid]),abs(quaternions[valid,joint,0])), twist_quantile))/np.pi)
-    steps = 2*np.arccos(np.clip(abs(np.sum(quaternions[1:]*quaternions[:-1],axis=-1)),0,1))
-    foot_error = max((result['residual_summary'][name] for name in config['probe_parts']), default=0.)/mesh.scale
-    terms = {'log_strain_p99': max(abs(np.log(stretch)),abs(np.log(max(compression,np.finfo(float).tiny)))),
-             'twist_p95': max(twist,default=0.), 'rotation_step': float(steps.max())/np.pi,
-             'foot_error': foot_error, 'ground_penetration': float(max(0,action['program']['quality']['ground_height']-vertices[...,1].min()))/mesh.scale}
-    score = sum(config['score_weights'][k]*v for k,v in terms.items())
-    metrics = {'score_terms': terms, 'edge_stretch_p99': stretch, 'edge_stretch_max': float(ratio.max()),
-               'edge_compression_p01': compression, 'motion': result['metrics']}
-    return {'score': score, 'metrics': metrics, 'payload': (action, result, vertices)}
+                twist.append(float(np.quantile(2 * np.arctan2(abs(component[valid]), abs(quaternions[valid, joint, 0])),
+                                               twist_quantile)) / np.pi)
+    steps = 2 * np.arccos(np.clip(abs(np.sum(quaternions[1:] * quaternions[:-1], axis=-1)), 0, 1))
+    residuals = report["metrics"]["ik_max_residual"]
+    foot_error = max((residuals[name] for name in config["probe_parts"] if name in residuals), default=0.) / mesh.scale
+    ground = float(mesh.vertices[:, 1].min())
+    terms = {"log_strain_p99": max(abs(np.log(stretch)), abs(np.log(max(compression, np.finfo(float).tiny)))),
+             "twist_p95": max(twist, default=0.), "rotation_step": float(steps.max()) / np.pi,
+             "foot_error": foot_error,
+             "ground_penetration": float(max(0, ground - vertices[..., 1].min())) / mesh.scale}
+    score = sum(config["score_weights"][k] * v for k, v in terms.items())
+    metrics = {"score_terms": terms, "edge_stretch_p99": stretch, "edge_stretch_max": float(ratio.max()),
+               "edge_compression_p01": compression, "motion": report["metrics"]}
+    return {"score": score, "metrics": metrics, "payload": (action, result, vertices)}
 
 
 def export_bound_motion(mesh, rig, weights, selected, config, output, report, *, ffmpeg):
-    from operators.gen_motion.funcs.vibe_motion_utils.rigging_utils.export import animated_glb
-    from test.test_vibe_rigging import glb_document, rig_preview, write_video
-    import struct
-    action, result, vertices = selected['payload']
-    data = animated_glb(mesh, rig, weights, result['clip'], config=config['export']['glb'])
-    path = output / 'turn_jump_chop.glb'
-    path.write_bytes(data)
-    data = path.read_bytes()
-    doc = glb_document(data)
-    start = 28 + struct.unpack_from('<I', data, 12)[0]
-    def accessor(index, width):
-        item = doc['accessors'][index]
-        view = doc['bufferViews'][item['bufferView']]
-        dtype = {5126:'<f4',5123:'<u2',5125:'<u4'}[item['componentType']]
-        return np.frombuffer(data, dtype=dtype, count=item['count']*width,
-                             offset=start+view.get('byteOffset',0)+item.get('byteOffset',0)).reshape(-1,width)
-    inverse = accessor(doc['skins'][0]['inverseBindMatrices'],16).reshape(-1,4,4).transpose(0,2,1)
-    tolerance = config['readback_tolerance']
-    np.testing.assert_allclose(inverse[:,:3,3],-rig.joints,atol=tolerance,rtol=0)
-    attributes = doc['meshes'][0]['primitives'][0]['attributes']
-    indices, sparse = accessor(attributes['JOINTS_0'],4), accessor(attributes['WEIGHTS_0'],4)
-    dense = np.zeros_like(weights.weights)
-    np.add.at(dense, (np.arange(len(dense))[:,None], indices), sparse)
-    np.testing.assert_allclose(dense,weights.weights,atol=tolerance,rtol=0)
-    np.testing.assert_allclose(accessor(attributes['POSITION'],3),mesh.vertices,atol=tolerance,rtol=0)
-    for channel in doc['animations'][0]['channels']:
-        sampler = doc['animations'][0]['samplers'][channel['sampler']]
-        np.testing.assert_allclose(accessor(sampler['input'],1).ravel(),np.arange(result['frames'])/result['fps'],atol=tolerance,rtol=0)
-        joint = channel['target']['node']-2
-        expected = result['clip'].quats[:,joint][:,[1,2,3,0]] if channel['target']['path']=='rotation' else rig.joints[joint]+result['clip'].trans
-        np.testing.assert_allclose(accessor(sampler['output'],expected.shape[1]),expected,atol=tolerance,rtol=0)
-    (output / 'turn_jump_chop.bvh').write_bytes(result['bvh_bytes'])
-    (output / 'action_config.json').write_text(json.dumps(action,indent=2))
-    (output / 'motion_report.json').write_text(result['vibe_report_json'])
-    np.savez_compressed(output / 'motion.npz',positions=result['joints'],quats=result['clip'].quats,
-                        translations=result['clip'].trans,vertices=vertices,fps=result['fps'])
-    preview = config['preview']
+    from operators.gen_motion.funcs.vibe_motion_utils.motion_utils.asset import verify_export
+    from operators.gen_motion.funcs.vibe_motion_utils.rigging_utils.export import animated_glb as write_glb
+    from test.test_vibe_rigging import rig_preview, write_video
+    action, result, vertices = selected["payload"]
+    name = config["action"]["example"]
+    clip = result.clip
+    data = write_glb(mesh, rig, weights, clip, config=config["export"]["glb"])
+    (output / f"{name}.glb").write_bytes(data)
+    verify_export(data, clip, mesh, weights, rig, position_tolerance=config["readback_tolerance"],
+                  time_tolerance=config["readback_tolerance"])
+    (output / f"{name}.bvh").write_bytes(bvh.clip_to_bvh_bytes(clip))
+    (output / "action_config.json").write_text(json.dumps(action, indent=2))
+    (output / "motion_report.json").write_text(json.dumps(result.report, indent=2, default=lambda v: np.asarray(v).tolist()))
+    np.savez_compressed(output / "motion.npz", positions=result.result["positions"], quats=clip.quats,
+                        translations=clip.trans, vertices=vertices, fps=clip.fps)
+    preview = config["preview"]
     if ffmpeg is not None:
-        frames = (rig_preview(mesh,rig,vertices[i],result['joints'][i],report,azimuth=25,settings=preview)
-                  for i in range(result['frames']))
-        write_video(frames,output/'turn_jump_chop.mp4',ffmpeg=ffmpeg,width=preview['width'],height=preview['height'],fps=result['fps'])
-    return {'readback_passed':True,'frames':result['frames'],'bind_recomputed':True,'fixed_weights':True}
-
-
-def export_example_videos(*, ffmpeg, output_dir=VIDEO_OUTPUT_DIRECTORY, names=FIXTURE_NAMES):
-    """Write real H.264 previews only when explicitly requested, never during tests."""
-    from test.test_vibe_rigging import write_video
-
-    output_dir = Path(output_dir).resolve()
-    names = tuple(names)
-    if not names or len(set(names)) != len(names) or any(name not in FIXTURE_NAMES for name in names):
-        raise ValueError("Select unique known motion examples")
-    for name in names:
-        for suffix in (".mp4", "_report.json"):
-            if (output_dir / f"{name}{suffix}").exists():
-                raise FileExistsError(f"Refusing to overwrite {output_dir / (name + suffix)}")
-    output_dir.mkdir(parents=True, exist_ok=True)
-    videos = []
-    for name in names:
-        config = load_config(name)
-        result = pipeline.generate_vibe_motion(config=config)
-        target = output_dir / f"{name}.mp4"
-        write_video(_preview_frames(config, result), target, ffmpeg=ffmpeg,
-                    width=1280, height=768, fps=result["fps"])
-        (output_dir / f"{name}_report.json").write_text(result["vibe_report_json"], encoding="utf-8")
-        videos.append(target)
-    return videos
+        frames = (rig_preview(mesh, rig, vertices[i], result.result["positions"][i], report, azimuth=25,
+                              settings=preview) for i in range(clip.num_frames))
+        write_video(frames, output / f"{name}.mp4", ffmpeg=ffmpeg, width=preview["width"],
+                    height=preview["height"], fps=clip.fps)
+    return {"readback_passed": True, "frames": clip.num_frames, "bind_recomputed": True, "fixed_weights": True}
 
 
 if __name__ == "__main__":
-    import sys
-
-    if len(sys.argv) > 1 and sys.argv[1] == "export-videos":
-        import argparse
-
-        parser = argparse.ArgumentParser(description="Export position-first skeleton motion previews")
-        parser.add_argument("--ffmpeg", required=True)
-        parser.add_argument("--output-dir", type=Path, default=VIDEO_OUTPUT_DIRECTORY)
-        parser.add_argument("--examples", nargs="+", choices=FIXTURE_NAMES, default=FIXTURE_NAMES)
-        args = parser.parse_args(sys.argv[2:])
-        for video in export_example_videos(ffmpeg=args.ffmpeg, output_dir=args.output_dir, names=args.examples):
-            print(video)
-    else:
-        unittest.main()
+    unittest.main()

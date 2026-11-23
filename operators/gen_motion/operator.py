@@ -10,6 +10,9 @@ logger = logging.getLogger(__name__)
 
 
 TASK_KIND = "motion"
+# Coincident-vertex merge for vibe meshes (UV / normal seams), relative to the bounding-box scale; the reference
+# framework welds the same way before skinning so graph smoothing and gating see one surface per scene node.
+MESH_WELD_TOLERANCE_RATIO = 1e-5
 SUPPORTED_TASK_TYPES = {
     "retarget", "rig", "text_to_motion", "humanoid",
     # Cloud-backend equivalents: no local weights, no subprocess, no BVH step.
@@ -379,7 +382,7 @@ class GenMotionOperator:
         inp: dict,
     ) -> dict[str, Any]:
         """Generate local procedural rig, skin, motion and optional animated GLB artifacts."""
-        from .funcs.vibe_motion_utils.pipeline import generate_vibe_motion
+        from .funcs.vibe_motion_utils.pipeline import generate_vibe_motion, normalize_config
 
         legacy = {"preset", "segments", "transitions", "creature", "template", "rig_preset",
                   "skin_preset", "num_frames", "heading_deg", "skin", "motion_overrides",
@@ -388,7 +391,8 @@ class GenMotionOperator:
             raise ValueError(f"Legacy vibe arguments were removed: {sorted(legacy)}; supply config")
         config = inp.get("config")
         if not isinstance(config, dict):
-            raise ValueError("vibe requires an explicit config containing skeleton, rhythm and program")
+            raise ValueError("vibe requires a config containing skeleton, rhythm, style and program")
+        config = normalize_config(config)
         mesh = None
         has_mesh = bool(inp.get("target_mesh_path") or inp.get("target_glb_path"))
         if inp.get("task_type", "").lower() == "vibe_retarget":
@@ -404,8 +408,10 @@ class GenMotionOperator:
             from .funcs.vibe_motion_utils.skeleton import mesh_from_arrays
 
             mesh_path = self._target_mesh(inp)
-            vertices, faces = _load_mesh_arrays(mesh_path)
-            mesh = mesh_from_arrays(vertices, faces, name=mesh_path.stem)
+            loaded = _load_mesh_arrays(mesh_path)
+            mesh = mesh_from_arrays(loaded[0], loaded[1], name=mesh_path.stem,
+                                    node_ids=loaded[2] if len(loaded) > 2 else None,
+                                    weld_tolerance_ratio=MESH_WELD_TOLERANCE_RATIO)
 
         artifacts = generate_vibe_motion(config=config, mesh=mesh)
 
@@ -445,13 +451,8 @@ class GenMotionOperator:
             outputs["joints_npy_path"].parent.mkdir(parents=True, exist_ok=True)
             np.save(outputs["joints_npy_path"], joints, allow_pickle=False)
 
-        failures = (artifacts.get("metrics") or {}).get("failures") or []
-        if failures:
-            logger.warning(
-                "[gen_motion] vibe clip %s failed %s",
-                artifacts.get("action"),
-                ", ".join(map(str, failures)),
-            )
+        for warning in artifacts.get("warnings") or []:
+            logger.warning("[gen_motion] vibe clip %s: %s", artifacts.get("action"), warning)
         for note in artifacts.get("notes") or []:
             logger.info("[gen_motion] vibe: %s", note)
         return artifacts
@@ -853,20 +854,105 @@ class GenMotionOperator:
         return evaluate(result, task)
 
 
-def _load_mesh_arrays(path: Path) -> tuple[Any, Any]:
-    """Read a mesh file into ``(vertices, faces)`` with vertex order preserved."""
+def _load_mesh_arrays(path: Path) -> tuple[Any, Any, Any]:
+    """Read a mesh file into ``(vertices, faces, node_ids)`` in world space with vertex order preserved.
+
+    ``node_ids`` gives each vertex's scene-node index, so welding never merges separate parts. GLB files are read
+    directly (all primitives of one glTF node share its id, as in the reference ``Geometry``); other formats go
+    through trimesh, one id per scene geometry.
+    """
     import numpy as np
+
+    if Path(path).suffix.lower() == ".glb":
+        return _load_glb_arrays(Path(path))
     import trimesh
 
-    mesh = trimesh.load(
-        str(path), force="mesh", process=False, maintain_order=True
-    )
-    if isinstance(mesh, trimesh.Scene):
-        mesh = mesh.dump(concatenate=True)
-    return (
-        np.asarray(mesh.vertices, dtype=np.float64),
-        np.asarray(mesh.faces, dtype=np.int64),
-    )
+    loaded = trimesh.load(str(path), process=False, maintain_order=True)
+    if not isinstance(loaded, trimesh.Scene):
+        vertices = np.asarray(loaded.vertices, dtype=np.float64)
+        return vertices, np.asarray(loaded.faces, dtype=np.int64), np.zeros(len(vertices), np.int64)
+    verts, faces, nodes, base = [], [], [], 0
+    for index, node in enumerate(loaded.graph.nodes_geometry):
+        transform, geometry = loaded.graph[node]
+        mesh = loaded.geometry[geometry]
+        if not isinstance(mesh, trimesh.Trimesh) or not len(mesh.faces):
+            continue
+        v = np.asarray(mesh.vertices, dtype=np.float64)
+        v = v @ np.asarray(transform)[:3, :3].T + np.asarray(transform)[:3, 3]
+        verts.append(v)
+        faces.append(np.asarray(mesh.faces, dtype=np.int64) + base)
+        nodes.append(np.full(len(v), index, np.int64))
+        base += len(v)
+    if not verts:
+        raise ValueError(f"no triangle mesh in {path}")
+    return np.concatenate(verts), np.concatenate(faces), np.concatenate(nodes)
+
+
+def _load_glb_arrays(path: Path) -> tuple[Any, Any, Any]:
+    """Triangle primitives of every mesh node of a GLB, in world space (node order, then primitive order)."""
+    import numpy as np
+    from scipy.spatial.transform import Rotation
+
+    from .funcs.vibe_motion_utils.motion_utils.asset import accessor, read_glb
+
+    document, binary = read_glb(path.read_bytes())
+    nodes = document.get("nodes", [])
+    parent = {child: i for i, node in enumerate(nodes) for child in node.get("children", [])}
+
+    def local(node):
+        if "matrix" in node:
+            return np.asarray(node["matrix"], float).reshape(4, 4).T
+        m = np.eye(4)
+        m[:3, :3] = Rotation.from_quat(node.get("rotation", [0, 0, 0, 1])).as_matrix() * np.asarray(
+            node.get("scale", [1, 1, 1]), float)
+        m[:3, 3] = node.get("translation", [0, 0, 0])
+        return m
+
+    world = {}
+
+    def world_of(i):
+        if i not in world:
+            world[i] = world_of(parent[i]) @ local(nodes[i]) if i in parent else local(nodes[i])
+        return world[i]
+
+    verts, faces, ids, base = [], [], [], 0
+    for i, node in enumerate(nodes):
+        if "mesh" not in node:
+            continue
+        palette = None
+        if "skin" in node:
+            # Skinned meshes ignore their node transform; bake the default pose through the existing skin
+            # (joint world matrices times inverse bind matrices), as the reference ``prep_static`` does.
+            skin = document["skins"][node["skin"]]
+            ibm = (accessor(document, binary, skin["inverseBindMatrices"]).reshape(-1, 4, 4).transpose(0, 2, 1)
+                   if "inverseBindMatrices" in skin else np.tile(np.eye(4), (len(skin["joints"]), 1, 1)))
+            palette = np.stack([world_of(j) for j in skin["joints"]]) @ ibm
+        transform = world_of(i)
+        for primitive in document["meshes"][node["mesh"]]["primitives"]:
+            if primitive.get("mode", 4) != 4:
+                continue
+            attributes = primitive["attributes"]
+            v = accessor(document, binary, attributes["POSITION"])
+            f = (accessor(document, binary, primitive["indices"]).astype(np.int64).reshape(-1, 3)
+                 if "indices" in primitive else np.arange(len(v), dtype=np.int64).reshape(-1, 3))
+            if palette is not None and "JOINTS_0" in attributes and "WEIGHTS_0" in attributes:
+                joints = accessor(document, binary, attributes["JOINTS_0"]).astype(np.int64)
+                weights = accessor(document, binary, attributes["WEIGHTS_0"])
+                spec = document["accessors"][attributes["WEIGHTS_0"]]
+                if spec.get("normalized") and spec["componentType"] in (5121, 5123):
+                    weights = weights / (255.0 if spec["componentType"] == 5121 else 65535.0)
+                homogeneous = np.c_[v, np.ones(len(v))]
+                v = sum(weights[:, k, None] * np.einsum("vij,vj->vi", palette[joints[:, k], :3], homogeneous)
+                        for k in range(joints.shape[1]))
+            else:
+                v = v @ transform[:3, :3].T + transform[:3, 3]
+            verts.append(v)
+            faces.append(f + base)
+            ids.append(np.full(len(v), i, np.int64))
+            base += len(v)
+    if not verts:
+        raise ValueError(f"no triangle mesh in {path}")
+    return np.concatenate(verts), np.concatenate(faces), np.concatenate(ids)
 
 
 def _write_text(path: Path, value: Any, label: str) -> None:

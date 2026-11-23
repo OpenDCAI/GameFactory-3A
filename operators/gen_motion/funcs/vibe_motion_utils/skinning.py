@@ -4,10 +4,11 @@ import numpy as np
 from . import rigging_utils as branch
 
 
-def skin_mesh(mesh: Any, rig: Any, *, config: dict, allowed_bones=None, weight_bias=None, anchors=None) -> Any:
-    """Generate constrained, anchored topology-diffused weights."""
+def skin_mesh(mesh: Any, rig: Any, *, config: dict, allowed_bones=None, weight_bias=None, anchors=None,
+              cameras=None) -> Any:
+    """Generate constrained, anchored topology-diffused weights; ``cameras`` serve ``regions`` views."""
     return branch.skin_mesh(mesh, rig, config=config, allowed_bones=allowed_bones,
-                            weight_bias=weight_bias, anchors=anchors)
+                            weight_bias=weight_bias, anchors=anchors, cameras=cameras)
 
 
 def validate_skin(skin: Any, mesh: Any, rig: Any, *, config: dict) -> Any:

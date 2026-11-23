@@ -1,0 +1,838 @@
+{
+ "base": "male02",
+ "skeleton": {
+  "name": "male02",
+  "names": [
+   "hips",
+   "spine",
+   "chest",
+   "chest_upper",
+   "neck",
+   "head",
+   "head_end",
+   "upperarm.R",
+   "forearm.R",
+   "hand.R",
+   "hand_end.R",
+   "upperarm.L",
+   "forearm.L",
+   "hand.L",
+   "hand_end.L",
+   "thigh.R",
+   "shin.R",
+   "foot.R",
+   "toe.R",
+   "thigh.L",
+   "shin.L",
+   "foot.L",
+   "toe.L"
+  ],
+  "parents": [
+   -1,
+   0,
+   1,
+   2,
+   3,
+   4,
+   5,
+   3,
+   7,
+   8,
+   9,
+   3,
+   11,
+   12,
+   13,
+   0,
+   15,
+   16,
+   17,
+   0,
+   19,
+   20,
+   21
+  ],
+  "rest": [
+   [
+    0.0,
+    98.0,
+    4.0
+   ],
+   [
+    0.0,
+    110.0,
+    4.2
+   ],
+   [
+    0.0,
+    130.0,
+    3.5
+   ],
+   [
+    0.0,
+    147.0,
+    3.0
+   ],
+   [
+    0.0,
+    153.0,
+    0.0
+   ],
+   [
+    0.0,
+    165.8,
+    2.5
+   ],
+   [
+    0.0,
+    179.1,
+    6.0
+   ],
+   [
+    -17.0,
+    148.0,
+    -1.5
+   ],
+   [
+    -19.0169,
+    121.8208,
+    -17.5991
+   ],
+   [
+    -19.8365,
+    106.0266,
+    3.5525
+   ],
+   [
+    -19.5471,
+    99.7247,
+    10.0766
+   ],
+   [
+    17.0,
+    148.0,
+    -1.5
+   ],
+   [
+    26.1651,
+    121.357,
+    2.1094
+   ],
+   [
+    26.0288,
+    95.5668,
+    10.9676
+   ],
+   [
+    24.5836,
+    85.7217,
+    16.1025
+   ],
+   [
+    -10.5,
+    94.0,
+    2.5
+   ],
+   [
+    -18.2,
+    53.0,
+    -0.2
+   ],
+   [
+    -26.0,
+    8.0,
+    -4.9
+   ],
+   [
+    -35.6718,
+    2.128,
+    8.3284
+   ],
+   [
+    10.5,
+    94.0,
+    2.5
+   ],
+   [
+    18.8,
+    53.0,
+    -2.1
+   ],
+   [
+    27.9,
+    8.0,
+    -8.8
+   ],
+   [
+    36.4649,
+    2.9767,
+    5.8052
+   ]
+  ]
+ },
+ "motion": {
+  "rhythm": {
+   "duration": 3.0,
+   "fps": 30,
+   "time_unit": "seconds",
+   "events": {}
+  },
+  "style": {
+   "turn_degrees": 0,
+   "travel_ratio": 0,
+   "jump_ratio": 0,
+   "crouch_ratio": 0,
+   "arm_reach": 0.5,
+   "arm_clearance": 0.1
+  },
+  "program": {
+   "action": "test",
+   "forward": [
+    0,
+    0,
+    1
+   ],
+   "root": {
+    "operator": "curves",
+    "params": {
+     "x": {
+      "initial": 0
+     },
+     "y": {
+      "keys": [
+       0.0,
+       0.38,
+       0.5,
+       0.82,
+       1.12,
+       1.2,
+       1.32,
+       1.5,
+       1.72,
+       2.1,
+       2.5,
+       2.75,
+       3.0
+      ],
+      "values": [
+       0.0,
+       -0.3,
+       0.02,
+       0.78,
+       0.12,
+       0.0,
+       -0.34,
+       -0.52,
+       -0.48,
+       -0.36,
+       -0.1,
+       0.02,
+       0.0
+      ]
+     },
+     "z": {
+      "keys": [
+       0.0,
+       0.5,
+       1.2,
+       1.5,
+       3.0
+      ],
+      "values": [
+       0.0,
+       0.0,
+       -0.2,
+       -0.3,
+       -0.3
+      ]
+     },
+     "yaw": {
+      "initial": 0
+     },
+     "pitch": {
+      "keys": [
+       0.0,
+       0.38,
+       0.5,
+       1.12,
+       1.2,
+       1.35,
+       1.55,
+       2.1,
+       2.6,
+       3.0
+      ],
+      "values": [
+       0.0,
+       15.0,
+       0.0,
+       -350.0,
+       -362.0,
+       -330.0,
+       -318.0,
+       -325.0,
+       -358.0,
+       -360.0
+      ]
+     }
+    }
+   },
+   "parts": {
+    "pelvis": {
+     "category": "trunk",
+     "joints": [
+      "hips"
+     ],
+     "operator": "rotation",
+     "params": {
+      "space": "parent",
+      "weights": [
+       1.0
+      ],
+      "pitch": {
+       "initial": 0
+      },
+      "twist": {
+       "initial": 0
+      },
+      "roll": {
+       "initial": 0
+      }
+     }
+    },
+    "torso": {
+     "category": "trunk",
+     "joints": [
+      "spine",
+      "chest",
+      "chest_upper"
+     ],
+     "operator": "rotation",
+     "params": {
+      "space": "parent",
+      "weights": [
+       0.333333,
+       0.333333,
+       0.333333
+      ],
+      "pitch": {
+       "keys": [
+        0.0,
+        0.38,
+        0.6,
+        0.85,
+        1.15,
+        1.3,
+        1.55,
+        1.9,
+        2.4,
+        2.75,
+        3.0
+       ],
+       "values": [
+        0.0,
+        25.0,
+        -5.0,
+        30.0,
+        5.0,
+        30.0,
+        55.0,
+        48.0,
+        20.0,
+        -4.0,
+        0.0
+       ]
+      },
+      "twist": {
+       "keys": [
+        0.0,
+        1.3,
+        1.6,
+        2.0,
+        3.0
+       ],
+       "values": [
+        0.0,
+        0.0,
+        6.0,
+        -4.0,
+        0.0
+       ]
+      },
+      "roll": {
+       "initial": 0
+      }
+     }
+    },
+    "head": {
+     "category": "head",
+     "joints": [
+      "neck",
+      "head"
+     ],
+     "operator": "rotation",
+     "params": {
+      "space": "parent",
+      "weights": [
+       0.5,
+       0.5
+      ],
+      "pitch": {
+       "keys": [
+        0.0,
+        0.45,
+        0.7,
+        1.0,
+        1.3,
+        1.6,
+        2.0,
+        2.6,
+        3.0
+       ],
+       "values": [
+        0.0,
+        -15.0,
+        -25.0,
+        0.0,
+        10.0,
+        40.0,
+        32.0,
+        5.0,
+        0.0
+       ]
+      },
+      "twist": {
+       "initial": 0
+      },
+      "roll": {
+       "initial": 0
+      }
+     }
+    },
+    "armL": {
+     "category": "upper_limb",
+     "side": "L",
+     "joints": [
+      "upperarm.L",
+      "forearm.L",
+      "hand.L"
+     ],
+     "operator": "arm_arc",
+     "params": {
+      "angle": {
+       "keys": [
+        0.0,
+        0.3,
+        0.56,
+        0.75,
+        1.0,
+        1.2,
+        1.35,
+        1.55,
+        1.8,
+        2.1,
+        2.6,
+        3.0
+       ],
+       "values": [
+        180.0,
+        228.0,
+        15.0,
+        60.0,
+        90.0,
+        110.0,
+        140.0,
+        185.0,
+        200.0,
+        190.0,
+        180.0,
+        180.0
+       ]
+      },
+      "radius": {
+       "keys": [
+        0.0,
+        0.3,
+        0.56,
+        0.75,
+        1.0,
+        1.2,
+        1.35,
+        1.55,
+        2.1,
+        2.6,
+        3.0
+       ],
+       "values": [
+        0.95,
+        0.9,
+        0.95,
+        0.7,
+        0.7,
+        0.8,
+        0.88,
+        0.94,
+        0.94,
+        0.95,
+        0.95
+       ]
+      },
+      "lateral": {
+       "keys": [
+        0.0,
+        1.2,
+        1.55,
+        1.9,
+        2.4,
+        3.0
+       ],
+       "values": [
+        0.15,
+        0.15,
+        0.38,
+        0.3,
+        0.15,
+        0.15
+       ]
+      },
+      "preferred_swivel_degrees": 15,
+      "limits": {
+       "shoulder_flexion": [
+        -180,
+        180
+       ],
+       "shoulder_abduction": [
+        -90,
+        90
+       ],
+       "shoulder_swivel": [
+        -60,
+        60
+       ],
+       "elbow_flexion": [
+        2,
+        165
+       ],
+       "target_back_ratio": 1.0,
+       "regularization": 0.005,
+       "max_nfev": 60
+      }
+     }
+    },
+    "armR": {
+     "category": "upper_limb",
+     "side": "R",
+     "joints": [
+      "upperarm.R",
+      "forearm.R",
+      "hand.R"
+     ],
+     "operator": "arm_arc",
+     "params": {
+      "angle": {
+       "keys": [
+        0.0,
+        0.3,
+        0.56,
+        0.75,
+        1.0,
+        1.2,
+        1.35,
+        1.55,
+        1.8,
+        2.1,
+        2.6,
+        3.0
+       ],
+       "values": [
+        180.0,
+        228.0,
+        15.0,
+        60.0,
+        90.0,
+        110.0,
+        140.0,
+        185.0,
+        200.0,
+        190.0,
+        180.0,
+        180.0
+       ]
+      },
+      "radius": {
+       "keys": [
+        0.0,
+        0.3,
+        0.56,
+        0.75,
+        1.0,
+        1.2,
+        1.35,
+        1.55,
+        2.1,
+        2.6,
+        3.0
+       ],
+       "values": [
+        0.95,
+        0.9,
+        0.95,
+        0.7,
+        0.7,
+        0.8,
+        0.88,
+        0.94,
+        0.94,
+        0.95,
+        0.95
+       ]
+      },
+      "lateral": {
+       "keys": [
+        0.0,
+        1.2,
+        1.55,
+        1.9,
+        2.4,
+        3.0
+       ],
+       "values": [
+        0.15,
+        0.15,
+        0.38,
+        0.3,
+        0.15,
+        0.15
+       ]
+      },
+      "preferred_swivel_degrees": 15,
+      "limits": {
+       "shoulder_flexion": [
+        -180,
+        180
+       ],
+       "shoulder_abduction": [
+        -90,
+        90
+       ],
+       "shoulder_swivel": [
+        -60,
+        60
+       ],
+       "elbow_flexion": [
+        2,
+        165
+       ],
+       "target_back_ratio": 1.0,
+       "regularization": 0.005,
+       "max_nfev": 60
+      }
+     }
+    },
+    "legL": {
+     "category": "lower_limb",
+     "side": "L",
+     "joints": [
+      "thigh.L",
+      "shin.L",
+      "foot.L",
+      "toe.L"
+     ],
+     "operator": "effector",
+     "params": {
+      "pole": [
+       0,
+       0.3,
+       1
+      ],
+      "pole_frame": "body",
+      "flexion": [
+       -5,
+       150
+      ],
+      "plants": [
+       {
+        "start": 0,
+        "end": 0.46,
+        "anchor": "start"
+       },
+       {
+        "start": 1.2,
+        "end": 3.0,
+        "anchor": "start"
+       }
+      ],
+      "keys": [
+       {
+        "t": 0.56,
+        "frame": "body",
+        "offset": [
+         0,
+         0.1,
+         0
+        ]
+       },
+       {
+        "t": 0.72,
+        "frame": "body",
+        "offset": [
+         0,
+         0.55,
+         0.05
+        ]
+       },
+       {
+        "t": 0.98,
+        "frame": "body",
+        "offset": [
+         0,
+         0.55,
+         0.05
+        ]
+       },
+       {
+        "t": 1.12,
+        "frame": "body",
+        "offset": [
+         0,
+         0.12,
+         0
+        ]
+       }
+      ],
+      "end_pitch": {
+       "keys": [
+        0.0,
+        0.46,
+        0.6,
+        1.1,
+        1.2,
+        3.0
+       ],
+       "values": [
+        0.0,
+        0.0,
+        -60.0,
+        -350.0,
+        -360.0,
+        -360.0
+       ]
+      }
+     }
+    },
+    "legR": {
+     "category": "lower_limb",
+     "side": "R",
+     "joints": [
+      "thigh.R",
+      "shin.R",
+      "foot.R",
+      "toe.R"
+     ],
+     "operator": "effector",
+     "params": {
+      "pole": [
+       0,
+       0.3,
+       1
+      ],
+      "pole_frame": "body",
+      "flexion": [
+       -5,
+       150
+      ],
+      "plants": [
+       {
+        "start": 0,
+        "end": 0.46,
+        "anchor": "start"
+       },
+       {
+        "start": 1.2,
+        "end": 3.0,
+        "anchor": "start"
+       }
+      ],
+      "keys": [
+       {
+        "t": 0.56,
+        "frame": "body",
+        "offset": [
+         0,
+         0.1,
+         0
+        ]
+       },
+       {
+        "t": 0.72,
+        "frame": "body",
+        "offset": [
+         0,
+         0.55,
+         0.05
+        ]
+       },
+       {
+        "t": 0.98,
+        "frame": "body",
+        "offset": [
+         0,
+         0.55,
+         0.05
+        ]
+       },
+       {
+        "t": 1.12,
+        "frame": "body",
+        "offset": [
+         0,
+         0.12,
+         0
+        ]
+       }
+      ],
+      "end_pitch": {
+       "keys": [
+        0.0,
+        0.46,
+        0.6,
+        1.1,
+        1.2,
+        3.0
+       ],
+       "values": [
+        0.0,
+        0.0,
+        -60.0,
+        -350.0,
+        -360.0,
+        -360.0
+       ]
+      }
+     }
+    }
+   },
+   "refine": {
+    "iterations": 0,
+    "foot_margin_ratio": 0.0,
+    "residual_weight": 1.0,
+    "ground_weight": 5.0,
+    "body_ground": {
+     "lift": true
+    }
+   }
+  },
+  "video": {
+   "views": [
+    "front",
+    "side"
+   ],
+   "size": [
+    640,
+    640
+   ],
+   "fps": 30,
+   "follow_root": true
+  }
+ }
+}
