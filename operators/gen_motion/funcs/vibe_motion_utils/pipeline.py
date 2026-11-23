@@ -46,6 +46,39 @@ def _chains(skeleton, program):
     return chains
 
 
+# An IK part whose target stays farther than this fraction of its chain length was not followed: the target is
+# unreachable (e.g. an effector dragged to a ground plant while the body is airborne).
+IK_RESIDUAL_FAILURE_RATIO = 0.1
+
+
+def _unreachable_parts(skeleton, program, residuals):
+    rest = np.asarray(skeleton['rest'], float)
+    out = {}
+    for key, chain in _chains(skeleton, program).items():
+        if key not in residuals:
+            continue
+        length = float(np.linalg.norm(np.diff(rest[chain], axis=0), axis=1).sum())
+        if length > 0 and residuals[key] > IK_RESIDUAL_FAILURE_RATIO * length:
+            out[key] = round(float(residuals[key] / length), 4)
+    return out
+
+
+def _heading_poles_when_inverted(skeleton, program, world):
+    """IK parts whose bend direction (pole) follows only the root heading while the body turns upside down; their
+    knees / elbows then bend backwards relative to the body."""
+    parents = np.asarray(skeleton['parents'])
+    root = int(np.flatnonzero(parents < 0)[0])
+    if float(np.min(np.asarray(world)[:, root, 1, 1])) >= 0:
+        return []
+    out = []
+    for key, spec in program['parts'].items():
+        op = spec.get('operator')
+        if op == 'effector' and spec.get('params', {}).get('pole_frame', 'root') in ('root', 'world'):
+            out.append(key)
+        elif op in ('foot_swing', 'contact_path'):
+            out.append(key)
+    return out
+
 def generate_vibe_motion(*, config, mesh=None):
     """Generate a clip (BVH, joint positions, report) and, with a mesh, rig / skin / GLB / OBJ artifacts.
 
@@ -89,7 +122,8 @@ def generate_vibe_motion(*, config, mesh=None):
         if 'skinning' in config:
             constraints = config.get('skin_constraints', {})
             _keys(constraints, (), ('allowed_bones', 'weight_bias', 'anchors'), 'skin_constraints')
-            weights = skinning.skin_mesh(mesh, rig, config=config['skinning'], **constraints)
+            weights = skinning.skin_mesh(mesh, rig, config=config['skinning'],
+                                         cameras=(config.get('rigging') or {}).get('cameras'), **constraints)
             report = skinning.validate_skin(weights, mesh, rig, config=config['skin_quality'])
             artifacts['skin_report_json'] = _json({
                 'parameters': config['skinning'], 'passed': skinning.report_passed(report),
@@ -103,6 +137,15 @@ def generate_vibe_motion(*, config, mesh=None):
     metrics = report['metrics']
     metrics['failures'] = ([] if metrics['finite'] else ['non_finite_motion']) + (
         ['bone_length'] if metrics['bone_length_max_error'] > 1e-6 * extent else [])
+    unreachable = _unreachable_parts(skeleton, program, metrics.get('ik_max_residual', {}))
+    if unreachable:
+        metrics['ik_unreachable_parts'] = unreachable
+        metrics['failures'].append('ik_residual')
+    inverted = _heading_poles_when_inverted(skeleton, program, result.result['world'])
+    if inverted:
+        report['warnings'].append(
+            f'Body turns upside down but the bend direction of {inverted} follows only the root heading; '
+            'set effector pole_frame to body so knees / elbows keep bending the same way relative to the body.')
     positions = result.result['positions']
     artifacts.update(bvh_bytes=clip_to_bvh_bytes(clip), fps=float(clip.fps), joints=positions, clip=clip,
                      metrics=report['metrics'], warnings=list(report['warnings']), action=report['action'],

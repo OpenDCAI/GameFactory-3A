@@ -703,6 +703,35 @@ class PortedRiggingTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             skinning.skin_mesh(mesh, rig, config={**SKIN, 'falloff': 100.0})
 
+    def test_part_bones_and_view_regions_restrict_influences(self):
+        _, rig = self.two_posts()
+        vertices = np.r_[VERTICES * [0.3, 1, 0.3] + [-1, 0, 0], VERTICES * [0.3, 1, 0.3] + [1, 0, 0]]
+        mesh = skeleton.mesh_from_arrays(vertices, np.r_[FACES, FACES + 8], name='two_posts',
+                                         weld_tolerance_ratio=1e-6, node_ids=np.r_[np.zeros(8), np.ones(8)])
+        np.testing.assert_array_equal(mesh.node_ids, np.r_[np.zeros(8), np.ones(8)])
+        names = list(rig.joint_names)
+        parts = skinning.skin_mesh(mesh, rig, config={**SKIN, 'part_bones': {'1': ['b.1']}}).weights
+        self.assertTrue(np.all(parts[8:, names.index('b.1')] == 1))
+        front = {'front': {'width': 100, 'height': 100, 'right': [1, 0, 0], 'up': [0, 1, 0], 'center': [0, 0, 0],
+                           'pixels_per_unit': 10, 'pixel_origin': [50, 50]}}
+        region = {'view': 'front', 'box': [0, 0, 50, 100], 'bones': ['a.0', 'a.1']}
+        left = skinning.skin_mesh(mesh, rig, config={**SKIN, 'regions': [region]}, cameras=front).weights
+        allowed = np.isin(names, ['a.0', 'a.1'])
+        self.assertTrue(np.all(left[:8][:, ~allowed] == 0))
+        later = {**region, 'box': [0, 0, 100, 100], 'abs_range': [0, 0.5, 2], 'bones': ['base']}
+        both = skinning.skin_mesh(mesh, rig, config={**SKIN, 'regions': [region, later], 'cameras': front}).weights
+        self.assertTrue(np.all(both[:, names.index('base')] == 1))
+        for bad, kwargs in (({'regions': [region]}, {}),
+                            ({'regions': [{**region, 'view': 'side'}]}, {'cameras': front}),
+                            ({'regions': [{**region, 'bones': ['missing']}]}, {'cameras': front}),
+                            ({'regions': [{**region, 'segment': [0, 0, 1]}]}, {'cameras': front}),
+                            ({'part_bones': {'7': ['base']}}, {}),
+                            ({'part_bones': {'x': ['base']}}, {})):
+            with self.assertRaises(ValueError):
+                skinning.skin_mesh(mesh, rig, config={**SKIN, **bad}, **kwargs)
+        with self.assertRaises(ValueError):
+            skinning.skin_mesh(self.two_posts()[0], rig, config={**SKIN, 'part_bones': {'0': ['base']}})
+
     def test_weight_checks_report_bleed_and_unused_bones(self):
         mesh, rig = self.two_posts()
         wrong = np.zeros((16, 5))

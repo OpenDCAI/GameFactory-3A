@@ -12,6 +12,8 @@ class CreatureMesh:
     faces: np.ndarray
     weld_map: np.ndarray
     source: Path | None = None
+    #: scene-node index per welded vertex (``None`` when the source had no node split); used by ``part_bones``
+    node_ids: np.ndarray | None = None
 
     @property
     def num_vertices(self) -> int:

@@ -218,6 +218,7 @@ class ExampleTest(unittest.TestCase):
                 self.assertTrue(np.isfinite(result["clip"].quats).all())
                 self.assertTrue(np.isfinite(result["clip"].trans).all())
                 self.assertEqual(result["metrics"]["failures"], [])
+                self.assertFalse([w for w in result["warnings"] if "upside down" in w])
                 self.assertLess(result["metrics"]["bone_length_max_error"], 1e-6 * max(
                     1., float(np.ptp(np.asarray(config["skeleton"]["rest"]), axis=0).max())))
                 hierarchy, motion_text = result["bvh_bytes"].decode("utf-8").split("MOTION\n", 1)
@@ -233,6 +234,19 @@ class ExampleTest(unittest.TestCase):
                 report = json.loads(result["vibe_report_json"])
                 self.assertEqual(report["metrics"], result["metrics"])
                 json.dumps(report, allow_nan=False)
+
+    def test_flip_flags_heading_poles_and_unreachable_airborne_feet(self):
+        config = flat_config("male02_landing")
+        for key in ("legL", "legR"):
+            params = config["program"]["parts"][key]["params"]
+            self.assertEqual(params.pop("pole_frame"), "body")
+        heading = pipeline.generate_vibe_motion(config=deepcopy(config))
+        self.assertTrue([w for w in heading["warnings"] if "upside down" in w and "legL" in w])
+        for key in ("legL", "legR"):
+            config["program"]["parts"][key]["params"].pop("keys")
+        grounded = pipeline.generate_vibe_motion(config=config)
+        self.assertIn("ik_residual", grounded["metrics"]["failures"])
+        self.assertEqual(set(grounded["metrics"]["ik_unreachable_parts"]), {"legL", "legR"})
 
     def test_wrapped_config_equals_flat_config(self):
         wrapped = load_config("male02_landing")

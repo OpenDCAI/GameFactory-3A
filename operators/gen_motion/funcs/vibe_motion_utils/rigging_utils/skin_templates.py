@@ -32,6 +32,60 @@ def resolve_gate_config(gate):
     return g
 
 
+def _bone_list(bones, label):
+    if not isinstance(bones, list) or not bones or not all(isinstance(b, str) and b for b in bones):
+        raise ValueError(f'{label}: bones must be a non-empty list of joint names')
+    return list(bones)
+
+
+def resolve_part_bones(part_bones):
+    """``{"<node>[,<node>...]": [bone names]}``: vertices of those scene nodes may only take these bones."""
+    if not isinstance(part_bones, dict):
+        raise ValueError('part_bones must map scene-node ids to bone lists')
+    out = {}
+    for key, bones in part_bones.items():
+        try:
+            nodes = tuple(int(x) for x in str(key).split(','))
+        except ValueError:
+            raise ValueError(f'part_bones key {key!r} must be comma-separated scene-node ids') from None
+        out[nodes] = _bone_list(bones, f'part_bones[{key}]')
+    return out
+
+
+REGION_SHAPES = {'box': 4, 'circle': 3, 'segment': 5, 'abs_range': 3}
+
+
+def resolve_regions(regions):
+    """View-space restrictions, applied in order (later regions override earlier ones).
+
+    Each region: ``view`` (a camera name), ``box`` ``[u0, v0, u1, v1]`` pixels, ``bones``; optional ``circle``
+    ``[u, v, radius]`` or ``segment`` ``[u0, v0, u1, v1, half_width]`` replacing the box, and ``abs_range``
+    ``[axis, lo, hi]`` (world ``|coordinate|`` range) intersecting it.
+    """
+    if not isinstance(regions, list):
+        raise ValueError('regions must be a list')
+    out = []
+    for i, r in enumerate(regions):
+        label = f'regions[{i}]'
+        if not isinstance(r, dict) or not {'view', 'box', 'bones'} <= set(r) or set(r) - {'view', 'bones', *REGION_SHAPES}:
+            raise ValueError(f'{label}: required view, box, bones; optional circle, segment, abs_range')
+        if not isinstance(r['view'], str):
+            raise ValueError(f'{label}: view must be a camera name')
+        region = {'view': r['view'], 'bones': _bone_list(r['bones'], label)}
+        for key, size in REGION_SHAPES.items():
+            if key in r:
+                values = r[key]
+                if not isinstance(values, list) or len(values) != size:
+                    raise ValueError(f'{label}: {key} needs {size} numbers')
+                for value in values:
+                    finite_number(value, f'{label}.{key}')
+                region[key] = [float(v) for v in values]
+        if 'abs_range' in region and region['abs_range'][0] not in (0., 1., 2.):
+            raise ValueError(f'{label}: abs_range axis must be 0, 1 or 2')
+        out.append(region)
+    return out
+
+
 def resolve_skin_config(config):
     fields = (
         'kernel', 'falloff', 'radius_scale', 'max_influences', 'floor',
@@ -41,9 +95,12 @@ def resolve_skin_config(config):
     if not isinstance(config, dict):
         raise ValueError('skin config must be a dictionary')
     gate = resolve_gate_config(config.get('gate'))
-    optional = ('gate', 'component_rigid', 'component_max_fraction')
+    optional = ('gate', 'component_rigid', 'component_max_fraction', 'part_bones', 'regions', 'cameras')
     p = require_config({k: v for k, v in config.items() if k not in optional}, fields, 'skin')
     p['gate'] = gate
+    p['part_bones'] = resolve_part_bones(config.get('part_bones', {}))
+    p['regions'] = resolve_regions(config.get('regions', []))
+    p['cameras'] = config.get('cameras')
     p['component_rigid'] = config.get('component_rigid', False)
     p['component_max_fraction'] = config.get('component_max_fraction', 1.0)
     if not isinstance(p['component_rigid'], bool):

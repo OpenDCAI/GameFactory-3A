@@ -12,8 +12,8 @@ Five steps. If the result is not right, edit the `config` and run again; do not 
    - `style`: `turn_degrees`, `travel_ratio`, `jump_ratio`, `crouch_ratio`, `arm_reach`, `arm_clearance`. Curves can refer to them as `"$turn_degrees"`.
    - `program`: `action`, `forward`, `root`, `parts`, `refine`. `root` is `curves` (x / y / z / yaw, optionally pitch / roll / forward_speed; lengths are in mean leg lengths) or `ballistic`. Each entry in `parts` picks one operator (see Operators). `refine` requires `iterations`, `foot_margin_ratio`, `residual_weight`, `ground_weight`, and optionally `body_ground`, `collision`, `smooth`.
 3. **Run.** `GenMotionOperator(output_dir=...).run({"task_type": "vibe", "task_id": ..., "config": ...})`. Also pass `target_mesh_path` to get skinning and the GLB.
-4. **Check the report.** Open `vibe_report.json`: `metrics.failures` must be empty. Then read `metrics.ik_max_residual` (can each part reach its target) and `warnings`.
-5. **Preview.** Load `motion.bvh` or `animated.glb` in the previewer and go back to step 2 if it looks wrong.
+4. **Check the report.** Open `vibe_report.json`: `metrics.failures` must be empty. `ik_residual` there means some part could not follow its target (`metrics.ik_unreachable_parts` gives the residual as a fraction of the chain length). Then read `warnings`, and with a mesh also `skin_report.json`.
+5. **Preview.** Render the video and look at it, especially at the fastest frames and at the skinning around the armpits and hips; go back to step 2 if it looks wrong.
 
 Missing required parameters and unknown fields raise an error; optional parameters fall back to defaults. Example configs are in `<repo_path>/test/vibe_motion_examples/*.json` (`male02_landing.json` is a complete humanoid).
 
@@ -31,6 +31,10 @@ Pick one operator per part. `category` is one of `head`, `trunk`, `upper_limb`, 
 | Cloaks, hair, tails with inertia | `spring` |
 | Carry a prop or place it directly | `translate` |
 
+Between two `plants` an `effector` target slides along the ground from one plant to the next. When the body leaves the ground (jump, flip), add `keys` in that gap with `"frame": "body"` so the feet travel with the body, e.g. a tuck at `"offset": [0, 0.5, 0.05]` (leg lengths, relative to the rest foot). Otherwise the legs stretch toward the floor and `failures` reports `ik_residual`.
+
+`pole` sets the side a knee or elbow bends toward, in the axes of `pole_frame` (`root` by default, which only turns with the heading). If the body turns over during the motion (flip, roll, lying down), use `"pole_frame": "body"` so the bend side turns with the body.
+
 ## Troubleshooting
 
 Look at the report first, then change the config accordingly.
@@ -38,11 +42,14 @@ Look at the report first, then change the config accordingly.
 | Symptom | Fix |
 |---|---|
 | `failures` contains `non_finite_motion` or `bone_length` | The `config` is wrong; check `skeleton` and the curve values. |
-| Large `ik_max_residual` | The target is out of reach: reduce the amplitude, widen `flexion` / `limits`, or check that `plants` do not conflict with the root motion. |
+| Large `ik_max_residual` / `failures` has `ik_residual` | The target is out of reach: add airborne `keys` (see Operators), reduce the amplitude, widen `flexion` / `limits`, or check that `plants` do not conflict with the root motion. |
 | Large `contact_foot_max_speed` | The foot slides while planted; check the `plants` / `gait` time windows. |
 | Penetrates the ground | Raise `root.y`, or add `body_ground` to `refine` (needs a mesh). |
 | A limb passes through the body | Add `collision` to `refine` (needs a mesh) and raise `iterations`. |
 | Joint angles jump | Add `despike_degrees` / `sigma_frames` under `refine.smooth`. |
+| A joint bends the wrong way | Point `pole` to the side the joint should bend toward (`"rest"` takes the bend of the bind pose) and keep `flexion` positive. If it only happens while the body is turned over, set `"pole_frame": "body"`. |
+| A part follows the wrong bone | Bind it with `skinning.part_bones` (scene node ids to allowed bones), or mark it with `regions`. |
+| Skin tears where body parts touch | Pin the torn area to the part it belongs to: add `skinning.regions` over it with only that part's bones; set "component_rigid": true` with `"component_max_fraction": 0.1` so loose pieces move as a whole. |
 
 ## Physical Plausibility
 

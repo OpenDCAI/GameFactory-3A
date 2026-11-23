@@ -510,6 +510,35 @@
               "end": "finish",
               "anchor": "start"
             }
+          ],
+          "keys": [
+            {
+              "t": 0.34,
+              "frame": "body",
+              "offset": [
+                0,
+                0.125,
+                0
+              ]
+            },
+            {
+              "t": 0.46,
+              "frame": "body",
+              "offset": [
+                0,
+                0.25,
+                0.05
+              ]
+            },
+            {
+              "t": 0.6,
+              "frame": "body",
+              "offset": [
+                0,
+                0.125,
+                0
+              ]
+            }
           ]
         }
       },
@@ -540,6 +569,35 @@
               "start": "land_right",
               "end": "finish",
               "anchor": "start"
+            }
+          ],
+          "keys": [
+            {
+              "t": 0.42,
+              "frame": "body",
+              "offset": [
+                0,
+                0.125,
+                0
+              ]
+            },
+            {
+              "t": 0.54,
+              "frame": "body",
+              "offset": [
+                0,
+                0.25,
+                0.05
+              ]
+            },
+            {
+              "t": 0.68,
+              "frame": "body",
+              "offset": [
+                0,
+                0.125,
+                0
+              ]
             }
           ]
         }

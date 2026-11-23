@@ -8,6 +8,10 @@ from .templates import finite_number, integer
 from .skin_units import SkinWeights, validate_weights
 from .checks import validate_tree
 
+# Absolute slack (times the mesh scale) of the near-minimum bone set on components without any seed,
+# as in the reference ``gating.gated_allowed``.
+_FALLBACK_ABS_RATIO = 0.01
+
 
 def bone_distances(mesh: CreatureMesh, rig: RigResult, *, convention: str) -> np.ndarray:
     """Measure distance to incoming or outgoing joint segments as requested."""
@@ -209,12 +213,13 @@ def geodesic_gate(mesh, rig, distances, *, config):
     _, component = connected_components(graph, directed=False)
     unseeded = ~np.isin(component, np.unique(component[seeded]))
     if unseeded.any():
-        allowed[unseeded] = d[unseeded] <= config['fallback_ratio'] * d[unseeded].min(1, keepdims=True)
-    # Vertices left without any bone take the closest one relative to its local radius.
+        allowed[unseeded] = d[unseeded] <= (config['fallback_ratio'] * d[unseeded].min(1, keepdims=True)
+                                            + _FALLBACK_ABS_RATIO * mesh.scale)
+    # Vertices left without any bone take the geodesically closest seeded bone, else the nearest one.
     orphan = np.flatnonzero(~allowed.any(1))
     if len(orphan):
-        relative = d[orphan] / np.where(np.isfinite(radius), np.maximum(radius, np.finfo(float).tiny), np.inf)
-        choice = np.where(np.isfinite(relative).any(1), np.argmin(relative, 1), nearest[orphan])
+        reach = np.isfinite(geodesic[orphan]).any(1)
+        choice = np.where(reach, np.argmin(geodesic[orphan], 1), nearest[orphan])
         allowed[orphan, choice] = True
     return allowed, {'seed_counts': seed_counts, 'unseeded_vertices': int(unseeded.sum()),
                      'orphan_vertices': int(len(orphan)), 'gated_out_fraction': float(1 - allowed.mean())}
@@ -269,8 +274,58 @@ def anchored_weights(mesh, prior, ids, values, allowed, *, config):
     return output
 
 
+def part_restrictions(mesh: CreatureMesh, rig: RigResult, p: dict, cameras=None):
+    """``[(vertex mask, bone mask)]`` from ``part_bones`` (scene nodes) then ``regions`` (view-space shapes), in
+    application order. Region cameras come from ``p['cameras']`` or ``cameras`` (the rigging cameras)."""
+    names = list(rig.joint_names)
+    out = []
+
+    def bone_mask(bones, label):
+        missing = sorted(set(bones) - set(names))
+        if missing:
+            raise ValueError(f'{label}: unknown bones {missing}')
+        return np.isin(names, bones)
+
+    if p['part_bones']:
+        if mesh.node_ids is None:
+            raise ValueError('part_bones needs a mesh loaded with scene-node ids')
+        for nodes, bones in p['part_bones'].items():
+            select = np.isin(mesh.node_ids, nodes)
+            if not select.any():
+                raise ValueError(f'part_bones: no vertex on scene nodes {list(nodes)}')
+            out.append((select, bone_mask(bones, f'part_bones{list(nodes)}')))
+    if p['regions']:
+        cams = p['cameras'] if p['cameras'] is not None else cameras
+        if not cams:
+            raise ValueError('skinning regions need cameras (skinning.cameras or rigging.cameras)')
+        from .generate import camera_matrices
+        matrices = camera_matrices(cams, tolerance=1e-6)
+        vertices = np.asarray(mesh.vertices, float)
+        for i, r in enumerate(p['regions']):
+            if r['view'] not in matrices:
+                raise ValueError(f'regions[{i}]: unknown view {r["view"]!r}, available {sorted(matrices)}')
+            matrix, offset, _ = matrices[r['view']]
+            uv = vertices @ matrix.T + offset
+            u0, v0, u1, v1 = r['box']
+            select = (uv[:, 0] >= u0) & (uv[:, 0] <= u1) & (uv[:, 1] >= v0) & (uv[:, 1] <= v1)
+            if 'circle' in r:
+                cu, cv, radius = r['circle']
+                select = np.hypot(uv[:, 0] - cu, uv[:, 1] - cv) <= radius
+            if 'segment' in r:
+                a0, b0, a1, b1, width = r['segment']
+                d = np.array([a1 - a0, b1 - b0])
+                t = np.clip(((uv[:, 0] - a0) * d[0] + (uv[:, 1] - b0) * d[1]) / max(float(d @ d), 1e-12), 0, 1)
+                select = np.hypot(uv[:, 0] - a0 - t * d[0], uv[:, 1] - b0 - t * d[1]) <= width
+            if 'abs_range' in r:
+                axis, lo, hi = r['abs_range']
+                a = np.abs(vertices[:, int(axis)])
+                select &= (a >= lo) & (a <= hi)
+            out.append((select, bone_mask(r['bones'], f'regions[{i}]')))
+    return out
+
+
 def skin_mesh(mesh: CreatureMesh, rig: RigResult, *, config: dict,
-              allowed_bones=None, weight_bias=None, anchors=None) -> SkinWeights:
+              allowed_bones=None, weight_bias=None, anchors=None, cameras=None) -> SkinWeights:
     """One constrained prior/diffusion path; no unrestricted post-smoothing fallback."""
     p = resolve_skin_config(config)
     dist = bone_distances(mesh, rig, convention=p['bone_convention'])
@@ -281,11 +336,16 @@ def skin_mesh(mesh: CreatureMesh, rig: RigResult, *, config: dict,
     if bias.shape != dist.shape or not np.isfinite(bias).all() or np.any(bias < 0):
         raise ValueError('weight_bias must be a finite nonnegative (V,J) array')
     allowed = allowed & (bias > 0)
+    caller = allowed.copy()
     gate_stats = None
     if p['gate'] is not None:
         gated, gate_stats = geodesic_gate(mesh, rig, dist, config=p['gate'])
         # The gate only narrows caller constraints; it never re-enables a forbidden bone.
         allowed = np.where((allowed & gated).any(1, keepdims=True), allowed & gated, allowed)
+    # Part / region restrictions replace the gate on their vertices (reference ``compute_weights``), still
+    # within the caller's constraints.
+    for select, mask in part_restrictions(mesh, rig, p, cameras):
+        allowed[select] = mask[None] & caller[select]
     if np.any(~allowed.any(1)):
         raise ValueError('Each vertex needs a positive allowed influence')
     raw = distance_weights(dist, kernel=p['kernel'], falloff=p['falloff'], radius=p['radius_scale'] * mesh.scale,
@@ -302,18 +362,24 @@ def skin_mesh(mesh: CreatureMesh, rig: RigResult, *, config: dict,
                 nxt[i] = (1 - p['smooth_rate']) * weights[i] + p['smooth_rate'] * weights[neighbors].mean(0)
         weights, _ = prune_to_k(np.where(allowed, nxt, 0), distance, max_influences=p['max_influences'])
     if anchors is None:
-        ids, values = np.empty(0, int), np.empty((0, rig.num_joints))
+        ids = np.empty(0, int)
     else:
         from .templates import require_config
         require_config(anchors, ('ids', 'values'), 'anchors')
         ids, values = anchors['ids'], anchors['values']
-    weights = anchored_weights(mesh, weights, ids, values, allowed, config=p)
-    voted = 0
-    if p['component_rigid']:
-        from .skin_gating import component_vote
-        weights, voted = component_vote(mesh, weights, rigid=True, max_fraction=p['component_max_fraction'], keep=ids)
+        # Exact anchors are propagated by screened diffusion; without anchors the smoothed weights are final,
+        # as in the reference ``constrained_weights``.
+        if len(ids):
+            weights = anchored_weights(mesh, weights, ids, values, allowed, config=p)
+        ids = np.asarray(ids, int)
     if np.any(weights[~allowed] != 0):
         raise ValueError('Forbidden influence escaped constrained diffusion')
+    voted = 0
+    if p['component_rigid']:
+        # An explicit override after diffusion (reference ``compute_weights``): a small loose piece follows the bone
+        # that dominates it as a whole, even where a region or the gate forbade that bone on some of its vertices.
+        from .skin_gating import component_vote
+        weights, voted = component_vote(mesh, weights, rigid=True, max_fraction=p['component_max_fraction'], keep=ids)
     notes = [f'bone_convention={p["bone_convention"]}; topology diffusion with {len(ids)} exact anchors']
     if voted:
         notes.append(f'{voted} connected components bound rigidly to one bone')

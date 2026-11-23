@@ -645,6 +645,7 @@
        0.3,
        1
       ],
+      "pole_frame": "body",
       "flexion": [
        -5,
        150
@@ -659,6 +660,44 @@
         "start": 1.2,
         "end": 3.0,
         "anchor": "start"
+       }
+      ],
+      "keys": [
+       {
+        "t": 0.56,
+        "frame": "body",
+        "offset": [
+         0,
+         0.1,
+         0
+        ]
+       },
+       {
+        "t": 0.72,
+        "frame": "body",
+        "offset": [
+         0,
+         0.55,
+         0.05
+        ]
+       },
+       {
+        "t": 0.98,
+        "frame": "body",
+        "offset": [
+         0,
+         0.55,
+         0.05
+        ]
+       },
+       {
+        "t": 1.12,
+        "frame": "body",
+        "offset": [
+         0,
+         0.12,
+         0
+        ]
        }
       ],
       "end_pitch": {
@@ -697,6 +736,7 @@
        0.3,
        1
       ],
+      "pole_frame": "body",
       "flexion": [
        -5,
        150
@@ -711,6 +751,44 @@
         "start": 1.2,
         "end": 3.0,
         "anchor": "start"
+       }
+      ],
+      "keys": [
+       {
+        "t": 0.56,
+        "frame": "body",
+        "offset": [
+         0,
+         0.1,
+         0
+        ]
+       },
+       {
+        "t": 0.72,
+        "frame": "body",
+        "offset": [
+         0,
+         0.55,
+         0.05
+        ]
+       },
+       {
+        "t": 0.98,
+        "frame": "body",
+        "offset": [
+         0,
+         0.55,
+         0.05
+        ]
+       },
+       {
+        "t": 1.12,
+        "frame": "body",
+        "offset": [
+         0,
+         0.12,
+         0
+        ]
        }
       ],
       "end_pitch": {
