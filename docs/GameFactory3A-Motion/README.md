@@ -1,7 +1,7 @@
 # 3AGameFactory-Motion: Agentic Rigging and Reliable Complex Motion Generation for Diverse 3D Assets
 
 <p align="center">
-  <a href="#"><img src="https://img.shields.io/badge/arXiv-submitting-b31b1b?style=flat-square&logo=arxiv" alt="arXiv (submitting)" /></a>
+  <a href="https://arxiv.org/abs/2611.30013"><img src="https://img.shields.io/badge/arXiv-2611.30013-b31b1b?style=flat-square&logo=arxiv" alt="arXiv 2611.30013" /></a>
   <a href="https://huggingface.co/datasets/zbhpku/DivDynBench"><img src="https://img.shields.io/badge/%F0%9F%A4%97%20Benchmark-DivDynBench-ffd21e?style=flat-square" alt="DivDynBench on Hugging Face" /></a>
 </p>
 
@@ -94,6 +94,7 @@ Rigging is evaluated from raw meshes against the ground-truth rigs (Source Fidel
 @article{zeng2026gamefactory3amotion,
   title   = {3AGameFactory-Motion: Agentic Rigging and Reliable Complex Motion Generation for Diverse 3D Assets},
   author  = {Zeng, Bohan and Zhu, Kaixin and Yang, Yifan and Yu, Dongge and Wu, Zihao and Dai, Yifan and Liu, Zhou and Niu, Junbo and Ma, Xiaochen and Ge, Shiran and Meng, Zimo and Liang, Junzhu and Zhang, Huanyao and Liu, Jinhang and Xiao, Tianqi and Zhang, Jinhao and Bai, Tianyi and Zeng, Zhixiong and Zhao, Penghao and Peng, Yuanbo and Zhang, Key and Zhang, Wentao},
+  journal = {arXiv preprint arXiv:2611.30013},
   year    = {2026}
 }
 ```

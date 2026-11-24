@@ -259,6 +259,13 @@ GameFactory-3A/
   howpublished = {\url{https://github.com/OpenDCAI/GameFactory-3A}},
   note         = {Open-source software repository}
 }
+
+@article{zeng2026gamefactory3amotion,
+  title   = {3AGameFactory-Motion: Agentic Rigging and Reliable Complex Motion Generation for Diverse 3D Assets},
+  author  = {Zeng, Bohan and Zhu, Kaixin and Yang, Yifan and Yu, Dongge and Wu, Zihao and Dai, Yifan and Liu, Zhou and Niu, Junbo and Ma, Xiaochen and Ge, Shiran and Meng, Zimo and Liang, Junzhu and Zhang, Huanyao and Liu, Jinhang and Xiao, Tianqi and Zhang, Jinhao and Bai, Tianyi and Zeng, Zhixiong and Zhao, Penghao and Peng, Yuanbo and Zhang, Key and Zhang, Wentao},
+  journal = {arXiv preprint arXiv:2611.30013},
+  year    = {2026}
+}
 ```
 
 ---
