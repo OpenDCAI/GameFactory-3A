@@ -12,9 +12,7 @@
   <img src="https://img.shields.io/badge/Assets-Image%20%7C%203D%20%7C%20Motion%20%7C%20Audio%20%7C%20CG%20Video-00897b?style=flat-square" alt="Asset coverage" />
 </p>
 
-> **📚 New reports coming soon — we will soon open-source several new reports.**
->
-> **🚀 Major upgrade ahead — we are preparing a major repository update and simplification to support powerful models such as Astra and ops5.5.**
+> **📚 New report: [3AGameFactory-Motion](docs/GameFactory3A-Motion/README.md) — agentic rigging and reliable complex motion generation for diverse 3D assets. More reports are coming soon.**
 
 # 3AGameFactory
 
@@ -256,6 +254,13 @@ Welcome to our WeChat group! Feel free to join us for project discussions, devel
   year         = {2026},
   howpublished = {\url{https://github.com/OpenDCAI/GameFactory-3A}},
   note         = {Open-source software repository}
+}
+
+@article{zeng2026gamefactory3amotion,
+  title   = {3AGameFactory-Motion: Agentic Rigging and Reliable Complex Motion Generation for Diverse 3D Assets},
+  author  = {Zeng, Bohan and Zhu, Kaixin and Yang, Yifan and Yu, Dongge and Wu, Zihao and Dai, Yifan and Liu, Zhou and Niu, Junbo and Ma, Xiaochen and Ge, Shiran and Meng, Zimo and Liang, Junzhu and Zhang, Huanyao and Liu, Jinhang and Xiao, Tianqi and Zhang, Jinhao and Bai, Tianyi and Zeng, Zhixiong and Zhao, Penghao and Peng, Yuanbo and Zhang, Key and Zhang, Wentao},
+  journal = {arXiv preprint arXiv:2611.30013},
+  year    = {2026}
 }
 ```
 
